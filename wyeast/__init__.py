@@ -14,5 +14,5 @@ Layout:
                  shim scripts at the repo root. Stage modules may import
                  venv-specific dependencies.
 
-See docs/specs/restructuring-spec.md for the migration plan.
+See docs/archive/specs/restructuring-spec.md for the migration plan.
 """

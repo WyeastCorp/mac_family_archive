@@ -526,7 +526,7 @@ def _participants_display(msgs: list[dict], resolved: dict = None) -> list[str]:
     """Display names (falling back to addresses) in first-appearance order.
 
     An address-book name outranks the header's display name — same rule as
-    email_triage's own sender naming (docs/specs/contact-name-surfaces.md §5),
+    email_triage's own sender naming (docs/archive/specs/contact-name-surfaces.md §5),
     so a thread reads with the same names as the Messages surface.
     """
     seen: dict = {}
