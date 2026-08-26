@@ -2,7 +2,7 @@
 wyeast.core.release — the family-release fingerprint, stamp, and verify.
 
 This is the mechanical heart of the examiner release gate
-(docs/specs/examiner-release-gate.md). It answers one question two ways:
+(docs/archive/specs/examiner-release-gate.md). It answers one question two ways:
 
     "Is the delivered family tree still exactly what a named human released?"
 

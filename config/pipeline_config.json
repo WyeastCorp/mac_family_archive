@@ -501,7 +501,7 @@
       ".ods"
     ],
     "dedup": {
-      "_note": "Message deduplication pre-pass. See docs/specs/email-message-dedup.md. Collapse requires agreement on BOTH a normalized Message-ID and a hash over decoded, canonicalized content, so Apple Mail's draft autosave (which reuses one Message-ID across differing bodies) yields SEPARATE survivors flagged msgid_content_divergent instead of silently discarding real messages. Redundant copies are MOVED to duplicates/email/ through the move ledger, never deleted. mode='report' measures and moves nothing \u2014 run it first on a corpus of any new shape, then review the largest and every divergent group before switching to 'move'. enabled=false makes the stage byte-identical to its pre-dedup behavior.",
+      "_note": "Message deduplication pre-pass. See docs/archive/specs/email-message-dedup.md. Collapse requires agreement on BOTH a normalized Message-ID and a hash over decoded, canonicalized content, so Apple Mail's draft autosave (which reuses one Message-ID across differing bodies) yields SEPARATE survivors flagged msgid_content_divergent instead of silently discarding real messages. Redundant copies are MOVED to duplicates/email/ through the move ledger, never deleted. mode='report' measures and moves nothing \u2014 run it first on a corpus of any new shape, then review the largest and every divergent group before switching to 'move'. enabled=false makes the stage byte-identical to its pre-dedup behavior.",
       "enabled": true,
       "mode": "move",
       "part_digest_bytes": 262144,
@@ -636,7 +636,7 @@
   },
   "negative_space": {
     "_notes": [
-      "Tier-2 v2 estate negative-space resolution (docs/specs/estate-negative-space-v2-inferential-resolution.md). Examiner-only.",
+      "Tier-2 v2 estate negative-space resolution (docs/archive/specs/estate-negative-space-v2-inferential-resolution.md). Examiner-only.",
       "coreference: deterministic cross-item linking of a bare reference ('the trust') to the single named instrument of that category. Default on; safe.",
       "llm_enrichment: OFF by default. When true, an Ollama pass over ONLY the items behind already-fired findings resolves colloquial references to the per-case gazetteer (a closed candidate set); adds method:'llm', inferred, soft entities with provenance. Never the full corpus.",
       "llm_max_items: cap on referencing items sent to the model across all findings.",

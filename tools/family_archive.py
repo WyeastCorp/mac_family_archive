@@ -4093,7 +4093,7 @@ def verb_reset(case, payload):
 # ── the examiner release gate (examiner-only) ────────────────────────────────
 #
 # A named human releases the family bundle; the record says exactly what that
-# means. See docs/specs/examiner-release-gate.md. The disposition gate here is
+# means. See docs/archive/specs/examiner-release-gate.md. The disposition gate here is
 # CLEARANCE, not acknowledgement (K7): every flagged item must be dispositioned
 # by a state-changing, logged verb — never a click-through ack.
 

@@ -204,7 +204,7 @@ def load_conversation_index(paths, audience: str = FAMILY) -> list:
 # sources, resolved by source precedence to one displayed name.
 #
 # Both tiers show the family a name (operator decision 2026-08-15,
-# docs/specs/contact-name-surfaces.md §2, reversing spec §4). What the family
+# docs/archive/specs/contact-name-surfaces.md §2, reversing spec §4). What the family
 # does NOT get is the losing candidates: `participants`/`display_name` and
 # these records carry the winner alone, while the full candidate list stays an
 # examiner surface (message_triage_summary's `contact_resolution.contested`).
