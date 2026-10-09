@@ -1,0 +1,47 @@
+# CI for the macOS Family Archive mirror. Runs on pull requests, after a merge to main, and on demand.
+# The suite is the carried Wyeast unit tests; macOS is the platform that matters,
+# Linux is the cheap second opinion.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Syntax-check all Python and shell
+        run: |
+          git ls-files '*.py' | xargs -n 25 python -m py_compile
+          git ls-files '*.sh' | xargs -n 1 bash -n
+
+      - name: wyeast.core imports with no third-party packages
+        run: python -c "import wyeast.core.audience, wyeast.core.config, wyeast.core.custody, wyeast.core.delivery, wyeast.core.errors, wyeast.core.filetypes, wyeast.core.io, wyeast.core.media, wyeast.core.moves, wyeast.core.paths, wyeast.core.rebase, wyeast.core.release, wyeast.core.safe_names; print('core OK')"
+
+      - name: Footprint and export-integrity guard
+        run: python .github/scripts/check_export.py
+
+      - name: Install via the real setup script (pillow, pillow_heif, FTS5, HEIC)
+        env:
+          WYEAST_PYTHON: python
+        run: ./setup.sh --dev
+
+      - name: Run test suite
+        run: ./run_tests.sh -q
+
+      - name: Server starts and prints usage
+        run: ./.venv/bin/python3 tools/family_archive.py --help
