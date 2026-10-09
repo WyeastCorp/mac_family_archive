@@ -181,6 +181,61 @@ def test_discard_quarantine_then_undo(tmp_path):
     assert any(e["canonical_path"] == str(canonical) for e in m2["entries"])
 
 
+def _add_quarantined_video_with_frames(paths, name="clip.mov",
+                                       filt="explicit_sexual_imagery"):
+    """A quarantined video whose two keyframes delivery_quarantine swept into
+    quarantine/<filter>/frames/<name>/ and listed on its manifest record."""
+    entry, canonical, view, qfile = _add_quarantine(paths, name, filt=filt)
+    photos = paths.case_dir / "extracted" / "photos"
+    photos.mkdir(parents=True, exist_ok=True)
+    fdir = qfile.parent / "frames" / name
+    fdir.mkdir(parents=True, exist_ok=True)
+    frames = []
+    for n in ("clip_f000001.jpg", "clip_f000002.jpg"):
+        (fdir / n).write_bytes(b"\xff\xd8" + n.encode())
+        frames.append({"src": str(photos / n), "quarantine_path": str(fdir / n)})
+    mpath = paths.metadata_dir / "quarantine_manifest.json"
+    m = json.loads(mpath.read_text())
+    for e in m["entries"]:
+        if e["canonical_path"] == entry["canonical_path"]:
+            e["frames"] = frames
+    mpath.write_text(json.dumps(m))
+    return canonical, [Path(f["src"]) for f in frames], [Path(f["quarantine_path"]) for f in frames]
+
+
+def test_release_restores_swept_frames_and_undo_resweeps(tmp_path):
+    case, paths = setup_case(tmp_path)
+    canonical, srcs, qframes = _add_quarantined_video_with_frames(paths)
+    res = fa.verb_release(case, {"canonical_path": str(canonical)})
+    assert all(s.exists() for s in srcs) and not any(q.exists() for q in qframes), \
+        "a released video's keyframes come back to extracted/photos"
+    ledger = (paths.metadata_dir / "_move_ledger.ndjson").read_text()
+    # the video and both frames, each an intent + done line
+    assert ledger.count('"reason": "family:release"') == 3 * 2
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert all(q.exists() for q in qframes) and not any(s.exists() for s in srcs), \
+        "undoing the release re-sweeps the frames"
+
+
+def test_discard_quarantine_takes_frames_along_and_undo_restores(tmp_path):
+    case, paths = setup_case(tmp_path)
+    canonical, _srcs, qframes = _add_quarantined_video_with_frames(paths)
+    res = fa.verb_discard_quarantine(case, {"canonical_path": str(canonical)})
+    bdir = paths.output_dir / fa.BANISHED_DIR / "quarantine" / "frames" / "clip.mov"
+    assert not any(q.exists() for q in qframes), "no orphan frames left in quarantine/"
+    assert sorted(p.name for p in bdir.iterdir()) == ["clip_f000001.jpg", "clip_f000002.jpg"]
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert all(q.exists() for q in qframes) and not any(bdir.iterdir())
+
+
+def test_release_of_pre_sweep_entry_without_frames_unchanged(tmp_path):
+    # Entries written before the sweep carry no "frames" key: release works as before.
+    case, paths = setup_case(tmp_path)
+    _e, canonical, _v, _q = _add_quarantine(paths, "old.mov")
+    assert fa.verb_release(case, {"canonical_path": str(canonical)})["ok"]
+    assert canonical.exists()
+
+
 def test_release_batch_skips_missing_and_undoes(tmp_path):
     """#17: bulk-select coverage for the quarantine table, mirroring verb_banish's
     batch pattern — every item releases, the case reloads ONCE, and a missing
@@ -2207,6 +2262,46 @@ def test_video_frames_family_gated_to_delivered(tmp_path):  # G-11
     assert case.video_frames_section("/work/undelivered.mov")["frames"] == []
 
 
+@pytest.mark.parametrize("role", ["family", "examiner"])
+def test_quarantined_video_frames_refused_by_media(tmp_path, role):
+    # Quarantine moves a video's archive copy but leaves its keyframes in
+    # extracted/. Membership in video_frame_map used to be enough for /media to
+    # serve them, so a direct URL still returned stills of the pulled video.
+    case, paths = setup_case(tmp_path, role=role)
+    src1, _ = _setup_videos(paths, case)
+    frame = str(paths.case_dir / "extracted" / "photos" / "party_f000001.jpg")
+    assert fa.resolve_media_path(case, frame).is_file()        # delivered: served
+    (paths.archive_dir / "party.mov").unlink()                  # quarantined/discarded
+    with pytest.raises(fa.VerbError) as e:
+        fa.resolve_media_path(case, frame)
+    assert e.value.code == 403
+    # …including through a symlinked alias the frame-map key would not match.
+    alias = paths.case_dir / "extracted" / "alias_f.jpg"
+    alias.symlink_to(frame)
+    with pytest.raises(fa.VerbError):
+        fa.resolve_media_path(case, str(alias))
+
+
+def test_undelivered_video_frame_bytes_family_refused_examiner_served(tmp_path):
+    # A frame of a video that was never delivered (no archive entry): the section
+    # already hid it from family; the bytes must be refused too. The examiner sees
+    # undelivered material, so it is still served there.
+    for role, served in (("family", False), ("examiner", True)):
+        case, paths = setup_case(tmp_path / role, role=role)
+        _setup_videos(paths, case)
+        ghost = paths.case_dir / "extracted" / "photos" / "ghost_f000001.jpg"
+        ghost.write_bytes(b"\xff\xd8\xff\xd9")
+        vfm = json.loads((paths.metadata_dir / "video_frame_map.json").read_text())
+        vfm[str(ghost)] = {"source_video": "/work/undelivered.mov", "frame_offset_seconds": 0}
+        (paths.metadata_dir / "video_frame_map.json").write_text(json.dumps(vfm))
+        case.load()
+        if served:
+            assert fa.resolve_media_path(case, str(ghost)).is_file()
+        else:
+            with pytest.raises(fa.VerbError):
+                fa.resolve_media_path(case, str(ghost))
+
+
 def test_search_section_fed_uncapped_emails(tmp_path):
     # build_search must be fed the uncapped email/document builders, or a thread
     # past the old 5000 cap is unfindable (the index itself was truncated).
@@ -2479,11 +2574,15 @@ def test_family_media_allows_delivered_and_working_trees(tmp_path):
     case, paths = setup_case(tmp_path, role="family")
     # SRC_A maps through archive_map to output/archive/a.jpg — allowed.
     assert fa.resolve_media_path(case, SRC_A) == (paths.archive_dir / "a.jpg")
-    # A legitimate video keyframe under extracted/photos (in video_frame_map) —
-    # served directly, allowed.
+    # A legitimate video keyframe under extracted/photos (in video_frame_map, of a
+    # DELIVERED video) — served directly, allowed.
     frame = paths.extracted_dir / "photos" / "frame.jpg"
     frame.parent.mkdir(parents=True, exist_ok=True)
     frame.write_bytes(b"\xff\xd8\xff\xd9")
+    (paths.archive_dir / "v.mp4").write_bytes(b"\x00")
+    am = json.loads((paths.metadata_dir / "archive_map.json").read_text())
+    am["entries"]["/work/extracted/v.mp4"] = str(paths.archive_dir / "v.mp4")
+    (paths.metadata_dir / "archive_map.json").write_text(json.dumps(am))
     (paths.metadata_dir / "video_frame_map.json").write_text(
         json.dumps({str(frame): {"source_video": "/work/extracted/v.mp4"}}))
     case.load()

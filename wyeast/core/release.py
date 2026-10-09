@@ -170,7 +170,7 @@ def _person_name_suffix(folder: str) -> str:
     """Label-independent name for a person-cluster folder.
 
     'Person_03' -> ''  (no assigned name)
-    'Person_03_Jane_Harding' -> 'Jane_Harding'
+    'Person_03_Jane_Harvennick' -> 'Jane_Harvennick'
     Anything not matching the Person_NN structural prefix is returned verbatim.
 
     Keyed on the on-disk folder-name suffix (NOT face_clustering.json's

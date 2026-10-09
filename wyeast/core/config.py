@@ -56,9 +56,11 @@ LEGACY_SECTION_NAMES = {
     "email_triage":      (),
     "message_triage":    (),
     "estate_materiality": (),
+    "subject_profile":   (),
     "sensitive_scan":    ("sensitive_detection",),
     "delivery_quarantine": (),
     "vital_doc_confirm": (),
+    "date_index":        (),   # new stage — no pre-rename section name exists
     "llm_synthesis":     ("phase4",),
     "email_threads":     (),   # new stage — no pre-rename section name exists
     "reconciliation":    (),

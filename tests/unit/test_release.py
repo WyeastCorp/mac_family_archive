@@ -85,11 +85,11 @@ def test_fingerprint_stable_across_person_renumber(tmp_path):
 
 
 def test_fingerprint_changes_on_naming_a_person(tmp_path):
-    """Assigning a name (Person_03 -> Person_03_Jane_Harding) is a real change."""
+    """Assigning a name (Person_03 -> Person_03_Jane_Harvennick) is a real change."""
     paths = make_case(tmp_path)
     before = release.fingerprint(paths)
     src = paths.output_dir / "by_person" / "Person_03"
-    src.rename(paths.output_dir / "by_person" / "Person_03_Jane_Harding")
+    src.rename(paths.output_dir / "by_person" / "Person_03_Jane_Harvennick")
     assert release.fingerprint(paths) != before
 
 

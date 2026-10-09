@@ -57,8 +57,20 @@ class ChainOfCustody:
         """
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(self.log_path,
-                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o664)
         try:
+            # Group-writable regardless of the creator's umask, so every
+            # member of the shared pipeline group (examiner tools, the admin
+            # console) can append; a 0644 log made by one account refused
+            # everyone else's EVENT lines with EACCES. Only an empty file we
+            # own is touched, so an existing log's mode (e.g. chattr +a
+            # hardening on Zone B) is never changed.
+            st = os.fstat(fd)
+            if st.st_size == 0 and st.st_uid == os.geteuid() and st.st_mode & 0o020 == 0:
+                try:
+                    os.fchmod(fd, 0o664)
+                except OSError:
+                    pass
             if fcntl is not None:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             try:

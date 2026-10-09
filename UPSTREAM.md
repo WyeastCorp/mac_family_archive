@@ -6,7 +6,7 @@ this repo is copied from **WyeastCorp/Wyeast**, not written here.
 | | |
 |---|---|
 | Source repo | https://github.com/WyeastCorp/Wyeast |
-| Source commit | `5d1cd5778aed20ddb471ab07354872965e504dfb` (`5d1cd57`) |
+| Source commit | `dd3233b09cb16529d2df3f608aa51cfbfbd8dba8` (`dd3233b`) |
 | Spec | [`docs/specs/family-archive-macos-standalone.md`](https://github.com/WyeastCorp/Wyeast/blob/main/docs/specs/family-archive-macos-standalone.md) |
 | Phase | Phase 0 — de-risk (terminal launch, no `.app`, no signing) |
 

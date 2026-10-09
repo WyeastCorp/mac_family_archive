@@ -17,6 +17,7 @@ the two things a real delivery does:
 
 so a plain prefix swap is necessary but NOT sufficient — see the relocation tests.
 """
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -30,9 +31,11 @@ if str(REPO) not in sys.path:
 import tools.family_archive as fa  # noqa: E402
 from wyeast.core.paths import CasePaths  # noqa: E402
 
+# Upstream loads make_case out of tests/unit/test_build_explorer.py by path;
+# that module tests tools/build_explorer.py, which is outside this repo's import
+# closure, so the fixture lives in _case_fixture.py here instead.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _case_fixture as _tbe  # noqa: E402
-
 make_case = _tbe.make_case
 
 RECORDED = "/data/cases/CASE_T"          # the workstation root baked into the indexes

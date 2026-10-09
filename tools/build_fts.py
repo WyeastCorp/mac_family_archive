@@ -6,7 +6,7 @@ lightweight photo/people metadata — so the family/examiner interfaces can answ
 "find the letter that mentions the cabin". `build_search` in _archive_data.py only
 indexed titles + 160-char snippets; this closes that gap.
 
-Design notes (see docs/specs/family-archive-full-text-search.md):
+Design notes (see docs/archive/specs/family-archive-full-text-search.md):
   * stdlib `sqlite3` with FTS5 — no new dependency, air-gap clean.
   * ROLE GATING lives in ONE place per type: rows are drawn from the already
     role-gated builders in _archive_data (document_rows(role), audio_rows(role),

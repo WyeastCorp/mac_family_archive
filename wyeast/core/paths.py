@@ -15,7 +15,7 @@ from pathlib import Path
 def sanitize_person_name(name: str) -> str:
     """Reduce a real name to a filesystem-safe token: keep [A-Za-z0-9._-],
     collapse every other run to a single underscore, trim edge underscores.
-    'Jane Harding' -> 'Jane_Harding'."""
+    'Jane Harvennick' -> 'Jane_Harvennick'."""
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip())
     return safe.strip("_")
 
@@ -24,7 +24,7 @@ def display_person_folder(person_id: str, cluster_identities=None) -> str:
     """Folder/label name for a person cluster.
 
     Returns the bare structural id ('Person_03') when the cluster has no
-    enrolled identity, or 'Person_03_Jane_Harding' when it does. Keeping the
+    enrolled identity, or 'Person_03_Jane_Harvennick' when it does. Keeping the
     Person_NN prefix preserves cluster traceability (chain-of-custody) and the
     downstream person_clusters[person_id] contract; the name is additive.
 
