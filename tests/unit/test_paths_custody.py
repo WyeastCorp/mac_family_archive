@@ -9,7 +9,7 @@ from wyeast.core.paths import (
 
 
 def test_sanitize_person_name():
-    assert sanitize_person_name("Jane Harding") == "Jane_Harding"
+    assert sanitize_person_name("Jane Harvennick") == "Jane_Harvennick"
     assert sanitize_person_name("  O'Brien-Smith, Jr.  ") == "O_Brien-Smith_Jr."
     assert sanitize_person_name("///") == ""
     assert sanitize_person_name("") == ""
@@ -21,8 +21,8 @@ def test_display_person_folder():
     assert display_person_folder("Person_03", {}) == "Person_03"
     assert display_person_folder("Person_03", {"Person_01": {"name": "X"}}) == "Person_03"
     # enrolled name -> additive, sanitized
-    ids = {"Person_03": {"name": "Jane Harding"}}
-    assert display_person_folder("Person_03", ids) == "Person_03_Jane_Harding"
+    ids = {"Person_03": {"name": "Jane Harvennick"}}
+    assert display_person_folder("Person_03", ids) == "Person_03_Jane_Harvennick"
     # synthetic / passthrough ids are unaffected
     assert display_person_folder("unidentified", ids) == "unidentified"
 

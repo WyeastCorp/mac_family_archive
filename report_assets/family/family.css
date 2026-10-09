@@ -600,6 +600,16 @@ button.vcand:hover { color: var(--accent); }
 .vitals-noitem { font-size: 13px; color: var(--muted); padding: 3px 8px; }
 /* Marks a vital item whose evidence is an email — the link goes to the Emails
    section, not the document viewer, so say so rather than surprising the reader. */
+.vitals-date { font-size: 12px; color: var(--muted); padding: 3px 0 3px 4px; cursor: help; }
+.vitals-date.bound { font-style: italic; }
+.vitals-src-box { flex-basis: 100%; margin: 2px 0 6px 0; padding: 8px 10px;
+  border: 1px solid var(--border, #d8d8d8); border-radius: 6px; background: var(--card, #fafafa); }
+.vitals-src-subject { font-weight: 600; margin-bottom: 4px; }
+.vitals-src-line { font-size: 12px; color: var(--muted); }
+.vitals-src-body { white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto;
+  margin: 8px 0 4px; padding: 8px; background: var(--bg, #fff); border-radius: 4px; font: inherit; font-size: 13px; }
+.vitals-src-note { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.vitals-src-pick { margin: 0 6px 6px 0; }
 .vitals-inemails { font-size: 11px; color: var(--muted); padding: 3px 0 3px 4px; }
 .vitals-none { margin: 4px 0 0 28px; font-size: 13px; color: var(--muted); }
 

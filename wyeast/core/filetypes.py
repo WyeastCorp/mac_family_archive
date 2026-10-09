@@ -261,7 +261,7 @@ _DEFAULTS = {
             ],
             "names": [
                 "expandfiles_summary.json", "raw_metadata.json",
-                "mms_parts_map.json",
+                "mms_parts_map.json", "eml_attachments_map.json",
                 "AlbumInfo.json", "Subscribed Albums.json",
                 "thumbs.db", "ehthumbs.db", "ehthumbs_vista.db", "desktop.ini",
                 ".ds_store", ".localized",
@@ -473,6 +473,40 @@ def skip_dirs(cfg=None) -> dict:
         "names": frozenset(n.lower() for n in entry.get("names", [])),
         "root_markers": frozenset(m.lower() for m in entry.get("root_markers", [])),
     }
+
+
+SYMLINK_IN_DROP = "in_drop"
+SYMLINK_OUTSIDE_DROP = "outside_drop"
+SYMLINK_DANGLING = "dangling"
+
+
+def symlink_kind(path, root):
+    """Classify a symlink found while walking an acquisition tree, or None if
+    `path` is not a symlink.
+
+    A drop (a Mac home folder, a backup tree, a previously processed case) can
+    hold symlinks. They are never collected: moving the link object relocates
+    the link, not the bytes, and a relative target stops resolving from its new
+    directory. Shared by collect_dedup (which skips them) and reconciliation
+    (which accounts for them), so both agree on the three kinds:
+      - in_drop:      target resolves inside `root`; the target is handled on
+                      its own, so the link adds nothing.
+      - outside_drop: target resolves outside `root`; its bytes were never part
+                      of the drop, so they are NOT acquired — the examiner
+                      should know.
+      - dangling:     target does not exist (often because the target itself
+                      was already collected out of `root`).
+    Directory symlinks never reach here: Path.rglob does not descend them."""
+    p = Path(path)
+    if not p.is_symlink():
+        return None
+    if not p.exists():
+        return SYMLINK_DANGLING
+    real = Path(os.path.realpath(p))
+    root_real = Path(os.path.realpath(root))
+    if real == root_real or root_real in real.parents:
+        return SYMLINK_IN_DROP
+    return SYMLINK_OUTSIDE_DROP
 
 
 def dir_pruner(src_dir, cfg=None):

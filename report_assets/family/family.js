@@ -1882,7 +1882,7 @@
         });
       }).catch(function () {});
     }
-    // Pagination model (docs/specs/family-archive-pagination.md, F-3):
+    // Pagination model (docs/archive/specs/family-archive-pagination.md, F-3):
     //  • Sort (newest/oldest) + date range are SERVER params — so the oldest tail
     //    and a given date window are reachable without paging through everything.
     //  • Scene / Place / Event / media (photo/video) filter the LOADED pages
@@ -2872,7 +2872,7 @@
     cb.setAttribute("aria-label", "Select " + (r.name || r.thread_subject || r.conversation_subject || "this near-miss"));
     cb.onclick = function (e) { e.stopPropagation(); };  // don't trigger the row link underneath
     cb.onchange = function () {
-      if (cb.checked) VITAL_SEL[r.id] = { id: r.id, label: r.name || r.thread_subject || r.conversation_subject };
+      if (cb.checked) VITAL_SEL[r.id] = { id: r.id, label: r.name || r.thread_subject || r.conversation_subject || r.recording_name };
       else delete VITAL_SEL[r.id];
       vitalSelBar();
     };
@@ -2897,6 +2897,13 @@
       ca.onclick = function (e) { e.preventDefault(); go({ page: "messages", conversation: r.conversation_id }); };
       head.appendChild(ca);
       head.appendChild(el("span", "vitals-inemails", "in Messages"));
+    } else if (r.recording_id) {
+      // A voicemail/recording transcript hit (#32) opens its recording detail.
+      var ra = el("a", "vcand-link", esc(r.recording_name || r.name || "(recording)"));
+      ra.href = "#";
+      ra.onclick = function (e) { e.preventDefault(); go({ page: "recordings", rec: r.recording_id }); };
+      head.appendChild(ra);
+      head.appendChild(el("span", "vitals-inemails", "in Recordings"));
     } else {
       head.appendChild(el("span", "vcand-noitem", esc(r.name || "document")));
     }
@@ -2969,9 +2976,103 @@
     var chip = el("span", "vcap-chip",
       k ? "showing the top " + num(k) + " — more may exist" : "more may exist");
     chip.title = "The pipeline retrieved at most " + (k ? num(k) : "a fixed number") +
-      " candidates for this type; more may exist. Raise vital_per_target_k in " +
-      "case_config.json and re-run the embed stage to widen the search.";
+      " candidates for this type; more may exist. To search deeper: raise " +
+      "vital_docs.target_k for this type in case_config.json, then re-run " +
+      "`./stage embed CASE_ID --vital-only` and `./stage vital_doc_confirm CASE_ID`.";
     return chip;
+  }
+
+  // BACKLOG #43 — where a vital document came from, and which date to show for it.
+  // EXAMINER-ONLY: the server sends these fields to the examiner role only. `date_used`
+  // always carries its basis, so an email's "no later than" date is never read as a
+  // signing date. All estate-derived text goes through esc() or textContent.
+  var VITAL_MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+                      "August", "September", "October", "November", "December"];
+  function vitalDateText(du) {
+    var v = String(du.value || ""), p = v.split("-");
+    if (du.precision === "year") return p[0];
+    if (du.precision === "month" && p.length > 1) return VITAL_MONTHS[(+p[1]) - 1] + " " + p[0];
+    return v;
+  }
+  function vitalDateLabel(du) {
+    var when = vitalDateText(du);
+    if (du.basis === "email_sent_no_later_than") return "Existed by " + when + " (email sent)";
+    if (du.basis === "form_date") return "Form dated " + when + " (looks unfilled)";
+    if (du.basis === "period_end") return "Period ended " + when;
+    return "Dated " + when;
+  }
+  var VITAL_DATE_TIP = {
+    execution_date: "The date written in the document.",
+    period_end: "The end of the statement period written in the document.",
+    form_date: "The document has blanks where names belong, so it looks like an unfilled form or draft. " +
+      "This is the month or year printed on it: when the form was prepared, not when it was signed.",
+    email_sent_no_later_than: "The document has no date of its own that could be read. " +
+      "This is when the email that carried it was sent: the document existed by then, " +
+      "which is not when it was signed."
+  };
+  function vitalSourceEmailBox(box, id) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "vitals-src-loading", "Loading…"));
+    getJSON("/api/vital/source-email?id=" + encodeURIComponent(id)).then(function (m) {
+      box.innerHTML = "";
+      var head = el("div", "vitals-src-head");
+      head.appendChild(el("div", "vitals-src-subject", esc(m.subject || "(no subject)")));
+      [["From", m.from], ["To", m.to], ["Cc", m.cc], ["Date", m.date_header || m.date]].forEach(function (kv) {
+        if (kv[1]) head.appendChild(el("div", "vitals-src-line",
+          "<b>" + esc(kv[0]) + ":</b> " + esc(kv[1])));
+      });
+      if ((m.attachment_names || []).length) {
+        head.appendChild(el("div", "vitals-src-line",
+          "<b>Attachments:</b> " + esc(m.attachment_names.join(", "))));
+      }
+      box.appendChild(head);
+      var body = el("pre", "vitals-src-body");
+      body.textContent = m.body_text || "(no text body)";      // text only, never markup
+      box.appendChild(body);
+      if (m.truncated) box.appendChild(el("div", "vitals-src-note", "Message text truncated."));
+      box.appendChild(el("div", "vitals-src-note",
+        "This email was set aside as bulk or automated mail, so it is not in the Emails list. " +
+        "It is shown here because it carried a vital document."));
+    }).catch(function (e) {
+      box.innerHTML = "";
+      box.appendChild(el("div", "notice",
+        esc("Couldn't load the source email: " + (e && e.message ? e.message : "error"))));
+    });
+  }
+  // Appends the date + source-email controls to the item row; returns the (hidden)
+  // detail box for the caller to append directly after the row, or null.
+  function vitalProvenance(it, itemRow) {
+    var du = it.date_used, box = null;
+    if (du) {
+      var d = el("span", "vitals-date" + (du.basis === "email_sent_no_later_than" ? " bound" : ""),
+                 esc(vitalDateLabel(du)));
+      d.title = VITAL_DATE_TIP[du.basis] || "";
+      itemRow.appendChild(d);
+    }
+    var emails = it.source_emails || [];
+    if (emails.length) {
+      box = el("div", "vitals-src-box"); box.style.display = "none";
+      var open = el("button", "vitals-act", emails.length === 1 ? "Source email" : "Source emails (" + emails.length + ")");
+      open.onclick = function () {
+        if (box.style.display === "none") {
+          box.style.display = "";
+          box.innerHTML = "";
+          emails.forEach(function (e) {
+            var b = el("button", "vitals-act vitals-src-pick",
+              esc((e.date ? e.date.slice(0, 10) + " · " : "") + (e.from || "") + " · " + (e.subject || "(no subject)")));
+            b.onclick = function () { vitalSourceEmailBox(msgBox, e.id); };
+            if (emails.length > 1) box.appendChild(b);
+          });
+          var msgBox = el("div", "vitals-src-msg"); box.appendChild(msgBox);
+          vitalSourceEmailBox(msgBox, emails[0].id);
+        } else { box.style.display = "none"; }
+      };
+      itemRow.appendChild(open);
+    } else if (it.source_unresolved) {
+      itemRow.appendChild(el("span", "vitals-inemails",
+        "source email not found (older expansion — re-run expandfiles)"));
+    }
+    return box;
   }
 
   // G-2: full vital-documents checklist — one row per searched-for document type,
@@ -3026,7 +3127,7 @@
           };
         })(t.target, toggle, drawer, vd);
         rhead.appendChild(toggle);
-        if (t.near_miss_capped) rhead.appendChild(vitalCapChip(vd.per_target_k));
+        if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
         row.appendChild(rhead);
         row.appendChild(drawer);
         // Re-open a drawer the examiner had open before this render, as deep as
@@ -3045,7 +3146,7 @@
         // Retrieval can hit the cap even with no near-misses left to review (every
         // hit already confirmed/dismissed) — the truncation still means more
         // candidates may exist unretrieved, so flag it whether or not a drawer opened.
-        if (EXAMINER && t.near_miss_capped) rhead.appendChild(vitalCapChip(vd.per_target_k));
+        if (EXAMINER && t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
         row.appendChild(rhead);
       }
       if (t.found) {
@@ -3083,6 +3184,16 @@
             })(it.conversation_id);
             itemRow.appendChild(ca);
             itemRow.appendChild(el("span", "vitals-inemails", "in Messages"));
+          } else if (it.recording_id) {
+            // A vital doc evidenced by a voicemail/recording transcript (#32)
+            // opens the recording detail (player + transcript).
+            var ra = el("a", "vitals-link", esc(it.recording_name || label));
+            ra.href = "#";
+            ra.onclick = (function (rid) {
+              return function (e) { e.preventDefault(); go({ page: "recordings", rec: rid }); };
+            })(it.recording_id);
+            itemRow.appendChild(ra);
+            itemRow.appendChild(el("span", "vitals-inemails", "in Recordings"));
           } else {
             itemRow.appendChild(el("span", "vitals-noitem", esc(label)));
           }
@@ -3125,7 +3236,9 @@
             };
             itemRow.appendChild(reassign);
           }
+          var srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
           items.appendChild(itemRow);
+          if (srcBox) items.appendChild(srcBox);
         });
         row.appendChild(items);
       } else {
@@ -4086,6 +4199,9 @@
       } else if (it.conversation_id) {
         card.appendChild(vitalConversationPreview(it, stageToken));
         return;
+      } else if (it.recording_id) {
+        card.appendChild(vitalRecordingPreview(it, stageToken));
+        return;
       } else {
         open = el("span", "muted", "No preview available for this item.");
       }
@@ -4145,6 +4261,30 @@
         if (token !== stageToken) return;
         sh.box.innerHTML = "";
         sh.box.appendChild(el("p", "muted", "Couldn't load this conversation — use Open in Messages."));
+      });
+      return sh.wrap;
+    }
+
+    // A voicemail/recording transcript (#32): the transcript text in the card,
+    // with the full player + seek-synced detail one click away.
+    function vitalRecordingPreview(it, token) {
+      var sh = previewShell(it.recording_name || it.name || "(recording)",
+                            "/recordings?rec=" + encodeURIComponent(it.recording_id),
+                            "Open in Recordings");
+      sh.box.classList.add("reading", "pdoc-reading");
+      sh.box.appendChild(el("p", "muted", "Loading transcript…"));
+      getJSON("/api/transcript?id=" + encodeURIComponent(it.recording_id)).then(function (d) {
+        if (token !== stageToken) return;
+        sh.box.innerHTML = "";
+        var text = (d && d.segments && d.segments.length)
+          ? d.segments.map(function (g) { return g.text; }).join(" ")
+          : (d && d.transcript_text) || "";
+        sh.box.appendChild(text ? el("div", "body transcript-plain", esc(text))
+                                : el("p", "muted", "No transcript is available for this recording."));
+      }).catch(function () {
+        if (token !== stageToken) return;
+        sh.box.innerHTML = "";
+        sh.box.appendChild(el("p", "muted", "Couldn't load this transcript — use Open in Recordings."));
       });
       return sh.wrap;
     }

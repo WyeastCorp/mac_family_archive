@@ -199,7 +199,7 @@
       ],
       "names": [
         "expandfiles_summary.json", "raw_metadata.json",
-        "mms_parts_map.json",
+        "mms_parts_map.json", "eml_attachments_map.json",
         "AlbumInfo.json", "Subscribed Albums.json",
         "thumbs.db", "ehthumbs.db", "ehthumbs_vista.db", "desktop.ini",
         ".ds_store", ".localized",

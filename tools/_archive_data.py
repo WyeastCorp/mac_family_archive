@@ -268,6 +268,21 @@ def is_video_frame(src, frame_set):
     return src in frame_set or bool(VIDEO_FRAME_RE.search(str(src)))
 
 
+def video_viewable(source_video, archive_entries, role):
+    """Whether a video, and so every keyframe extracted from it, may still be
+    shown to `role`. A frame lives in extracted/ with no archive_map entry of its
+    own, so its source video's state is the only thing that says whether it is
+    still deliverable: family needs the video delivered (archive-mapped), and both
+    roles need its archive copy still on disk — a quarantined or discarded video's
+    copy has been moved out, and its frames must go with it. An undelivered video
+    (no archive entry) stays viewable for the examiner, who sees undelivered
+    material."""
+    canonical = (archive_entries or {}).get(source_video) if source_video else None
+    if role == "family" and not canonical:
+        return False
+    return not (canonical and not os.path.exists(canonical))
+
+
 # Message chunks (message_triage) are flagged by sensitive_scan under a synthetic
 # path "<abs source path>#chunk=<12hex>", where the suffix is chunk_sha256[:12] of
 # the message_index.json record. The suffix path is NOT a servable file.
@@ -880,12 +895,7 @@ def people_rows(face_clustering, summary, universe, thumbs, role, removed=None,
         # needs the video delivered (in the archive map) and BOTH roles need its
         # archive copy still on disk.
         vsrc = ((frame_map or {}).get(m) or {}).get("source_video")
-        if not vsrc:
-            return None
-        canonical = arc_entries.get(vsrc)
-        if role == "family" and not canonical:
-            return None
-        if canonical and not os.path.exists(canonical):
+        if not vsrc or not video_viewable(vsrc, arc_entries, role):
             return None
         return vsrc
 
@@ -996,7 +1006,7 @@ def video_rows(archive_map, metadata_index, video_frame_map, role, *, cap=None,
     `cap` is opt-in truncation for callers that don't paginate (the static
     explorer may pass one). Default None returns the FULL sorted list — the
     section/API layer (family_archive) does the offset/limit slicing so a capped
-    view is never presented as the whole set (see docs/specs/family-archive-pagination.md)."""
+    view is never presented as the whole set (see docs/archive/specs/family-archive-pagination.md)."""
     from wyeast.core.media import VIDEO_EXTENSIONS  # 35 dotted exts, config-driven
     entries = archive_map.get("entries", {}) or {}
     identities = cluster_identities or {}
@@ -1992,6 +2002,26 @@ def _near_miss_hits(candidates, confirmed, decisions, target, rejections=None):
                                        -(r["score"] or 0), r["path"] or ""))
 
 
+def _recording_links(summary, wanted, role, recordings_delivered=True):
+    """{path: display name} for the `wanted` paths that are delivered recordings.
+
+    A vital-doc hit whose evidence is a voicemail/recording transcript carries the
+    AUDIO file's path, which none of the document/email/message resolvers know, so
+    it rendered as a dead label (P2 #32). The recordings set is
+    summary.audio_classifications (= deliverable_audio) — exactly what audio_rows
+    lists and /api/transcript serves — and the family role loses it when
+    transcribe.deliver is false, the same gate audio_rows applies.
+    """
+    if not wanted or (role != "examiner" and not recordings_delivered):
+        return {}
+    out = {}
+    for a in summary.get("audio_classifications", []) or []:
+        f = a.get("file")
+        if f in wanted and f not in out:
+            out[f] = _clean_recording_name(a.get("filename") or os.path.basename(f))
+    return out
+
+
 def near_miss_rows(paths, summary, role, target, decisions=None, threads_index=None):
     """The reviewable near-miss subset for ONE vital-doc target (examiner-only).
 
@@ -2039,6 +2069,8 @@ def near_miss_rows(paths, summary, role, target, decisions=None, threads_index=N
     unlinked = {r["path"] for r in rows if r["path"] and r["path"] not in browsable}
     thread_links = _vital_thread_links(md, role, unlinked, threads_index=threads_index)
     message_links = _vital_message_links(md, role, unlinked - set(thread_links))
+    recording_links = _recording_links(
+        summary, unlinked - set(thread_links) - set(message_links), role)
 
     out = []
     for r in rows:
@@ -2058,12 +2090,132 @@ def near_miss_rows(paths, summary, role, target, decisions=None, threads_index=N
             # database chunk deep-links into its conversation the same way.
             "conversation_id": mlink.get("conversation_id"),
             "conversation_subject": mlink.get("subject") or None,
+            # A voicemail/recording transcript hit (#32) opens its recording.
+            "recording_id": p if p in recording_links else None,
+            "recording_name": recording_links.get(p),
         })
     return out
 
 
+# ── source emails of vital documents (BACKLOG #43) ───────────────────────────────
+# date_index writes output/metadata/vital_doc_provenance.json: for every confirmed
+# vital document that arrived as a mail attachment, the email(s) that carried it
+# (headers only). email_triage may have discarded that email, so it is in no email
+# view; this is how the examiner reaches it. EXAMINER-ONLY end to end: the file is in
+# metadata/ (never exported), the checklist fields below are added for the examiner
+# role only, and the body reader answers only ids recorded in that file.
+
+SOURCE_EMAIL_MAX_CHARS = 200_000
+_EMAIL_ID_RX = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _vital_provenance(md):
+    data = load_json(Path(md) / "vital_doc_provenance.json", None)
+    return data if isinstance(data, dict) else {}
+
+
+def _vital_provenance_index(md):
+    """{document path: provenance record}."""
+    return {r["path"]: r for r in (_vital_provenance(md).get("items") or [])
+            if isinstance(r, dict) and r.get("path")}
+
+
+def _date_used_index(md):
+    """{document path: date_used} from date_index.json (examiner display)."""
+    data = load_json(Path(md) / "date_index.json", None)
+    if not isinstance(data, dict):
+        return {}
+    return {i["file"]: i.get("date_used") for i in (data.get("items") or [])
+            if isinstance(i, dict) and i.get("file") and i.get("date_used")}
+
+
+def _addr_text(addrs):
+    out = []
+    for a in addrs or []:
+        name, addr = (a.get("name") or "").strip(), (a.get("address") or "").strip()
+        out.append(f"{name} <{addr}>" if name and addr else (addr or name))
+    return ", ".join(x for x in out if x)
+
+
+def _source_email_summary(e):
+    return {"id": e.get("id"), "subject": e.get("subject") or "",
+            "from": _addr_text(e.get("from")), "date": e.get("date")}
+
+
+def _html_to_text(markup):
+    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", " ", markup)
+    markup = re.sub(r"(?i)<\s*(br|/p|/div|/tr|/li|/h[1-6])\b[^>]*>", "\n", markup)
+    text = re.sub(r"<[^>]+>", " ", markup)
+    import html as _html
+    text = _html.unescape(text)
+    text = re.sub(r"[ \t\xa0]+", " ", text)
+    return re.sub(r"\n\s*\n\s*\n+", "\n\n", text).strip()
+
+
+def vital_source_email(paths, email_id):
+    """Examiner-only: one source email of a vital document — headers, attachment
+    names and the text body — as ``(status, payload)``.
+
+    The id must be one recorded in vital_doc_provenance.json: the .eml path comes from
+    that file, never from the caller, and is then checked to sit inside the case tree.
+    The body is read from the .eml on demand and truncated; HTML is reduced to text and
+    never returned as markup, so the client renders plain text only.
+    """
+    if not isinstance(email_id, str) or not _EMAIL_ID_RX.match(email_id):
+        return 400, {"error": "invalid email id"}
+    prov = _vital_provenance(paths.metadata_dir)
+    found, docs = None, []
+    for rec in prov.get("items") or []:
+        for e in rec.get("emails") or []:
+            if e.get("id") == email_id:
+                found = found or e
+                docs.append({"name": os.path.basename(rec.get("path") or ""),
+                             "label": vital_doc_label(rec.get("target"))})
+    if not found:
+        return 404, {"error": "unknown source email"}
+    case_dir = Path(paths.case_dir).resolve()
+    try:
+        eml = (case_dir / (found.get("eml") or "")).resolve()
+        eml.relative_to(case_dir)
+    except (ValueError, OSError):
+        return 404, {"error": "source email is outside the case"}
+    if not eml.is_file():
+        return 404, {"error": "source email file is no longer on disk"}
+    from email import policy as _policy
+    from email.parser import BytesParser
+    try:
+        with open(eml, "rb") as f:
+            msg = BytesParser(policy=_policy.default).parse(f)
+        body = ""
+        for pref in ("plain", "html"):       # plain first; html when plain is absent or blank
+            part = msg.get_body(preferencelist=(pref,))
+            if part is None:
+                continue
+            text = part.get_content()
+            if pref == "html":
+                text = _html_to_text(text)
+            if text.strip():
+                body = text
+                break
+    except Exception:  # noqa: BLE001 - a malformed message degrades to headers only
+        body = ""
+    truncated = len(body) > SOURCE_EMAIL_MAX_CHARS
+    return 200, {
+        "id": email_id,
+        "subject": found.get("subject") or "",
+        "from": _addr_text(found.get("from")), "to": _addr_text(found.get("to")),
+        "cc": _addr_text(found.get("cc")),
+        "date_header": found.get("date_header"), "date": found.get("date"),
+        "message_id": found.get("message_id") or "",
+        "container": found.get("container"), "message_index": found.get("message_index"),
+        "attachment_names": found.get("attachment_names") or [],
+        "body_text": body[:SOURCE_EMAIL_MAX_CHARS], "truncated": truncated,
+        "documents": docs,
+    }
+
+
 def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
-                    per_target_k=None):
+                    per_target_k=None, recordings_delivered=True):
     """The vital-documents checklist (spec G-2): for every document type the
     pipeline searched for, was one actually found?
 
@@ -2097,6 +2249,12 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         that did not exist. Family never sees raw candidate hits at all.
       - an item may be PROMOTED (`promoted: True`): a near-miss the examiner
         asserted is the document. It is `reviewed` by construction.
+      - `near_miss_capped` + `k` (examiner-only, the `truncated_at_k` marker):
+        whether retrieval for this SPECIFIC target hit its own depth ceiling —
+        read from the candidate block's `truncated_at_k`/`k` when present (every
+        case re-embedded after this change), else approximated from the flat
+        `per_target_k` argument (older cases, same caveat it always had: only
+        correct for a target with no per-target row).
     """
     md = paths.metadata_dir
     confirmed = load_json(md / "vital_doc_confirmed.json", None)
@@ -2139,6 +2297,9 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     #                                           I say yes"). Synthesized into the
     #                                           item list below; vital_doc_confirmed
     #                                           .json is not touched, same as the rest.
+    # Examiner-only: where each document came from (BACKLOG #43) and which date to show.
+    prov_idx = _vital_provenance_index(md) if role == "examiner" else {}
+    date_idx = _date_used_index(md) if role == "examiner" else {}
     decisions = decisions or {}
     dismissed = decisions.get("vital_doc_dismissed") or {}
     retarget = decisions.get("vital_doc_target") or {}
@@ -2198,6 +2359,9 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 if i.get("path") and i.get("path") not in browsable}
     thread_links = _vital_thread_links(md, role, unlinked, threads_index=threads_index)
     message_links = _vital_message_links(md, role, unlinked - set(thread_links))
+    recording_links = _recording_links(
+        summary, unlinked - set(thread_links) - set(message_links), role,
+        recordings_delivered=recordings_delivered)
 
     targets = []
     found_count = 0
@@ -2218,7 +2382,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                         or iid in retarget)
             if not resolved:
                 unconfirmed_count += 1
-            items.append({
+            item_row = {
                 "id": iid,
                 "path": path,
                 "name": os.path.basename(path or "") or (i.get("tag") or ""),
@@ -2235,6 +2399,10 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 # chat/SMS database chunk, resolved the same way as email above.
                 "conversation_id": mlink.get("conversation_id"),
                 "conversation_subject": mlink.get("subject") or None,
+                # Recording deep link (#32): a vital doc whose evidence is a
+                # voicemail/recording transcript opens its recording detail.
+                "recording_id": path if path in recording_links else None,
+                "recording_name": recording_links.get(path),
                 # Whether the examiner has explicitly confirmed this item as a
                 # reviewed vital doc (drives the release-gate disposition + the
                 # UI's confirmed state). Reassign also clears the gate but is
@@ -2245,7 +2413,17 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 "reviewed": iid in reviewed or bool(i.get("_promoted")),
                 # This item came from the near-miss list, not from the pipeline.
                 "promoted": bool(i.get("_promoted")),
-            })
+            }
+            if role == "examiner":
+                prec = prov_idx.get(path)
+                if path in date_idx:
+                    item_row["date_used"] = date_idx[path]
+                if prec:
+                    item_row["source_emails"] = [_source_email_summary(e)
+                                                 for e in prec.get("emails") or []]
+                    if prec.get("unresolved"):
+                        item_row["source_unresolved"] = True
+            items.append(item_row)
         found = bool(items)  # a target is "found" iff ≥1 item SURVIVES the overlay
         if found:
             found_count += 1
@@ -2264,14 +2442,28 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 _near_miss_hits(candidates, confirmed, decisions, t))
             row["description"] = cand.get("description")
             # Whether retrieval hit the per-target ceiling for THIS target: the
-            # embed stage pulls at most `vital_per_target_k` hits before LLM
-            # confirmation, so a target holding exactly k hits was (very likely)
-            # truncated — matching documents beyond the k-th were never retrieved,
-            # so the near-miss list is a floor, not the whole field. Surfaced so
-            # the Documents view can say "the cap was reached, raise it and re-run
-            # to see more". Only meaningful when k is known (per_target_k passed).
-            if per_target_k:
+            # embed stage pulls at most k hits before LLM confirmation, so a
+            # target holding exactly k hits was (very likely) truncated —
+            # matching documents beyond the k-th were never retrieved, so the
+            # near-miss list is a floor, not the whole field. Surfaced so the
+            # Documents view can say "the cap was reached, raise it and re-run
+            # to see more".
+            #
+            # `truncated_at_k` and `k` are written by embed.retrieve_vital_candidates
+            # directly onto the candidate block (the `truncated_at_k` marker,
+            # docs/BACKLOG.md "vital-doc shortlist measurement") — the PER-TARGET
+            # depth actually applied, not the flat `vital_per_target_k` fallback.
+            # Prefer it. A candidates.json written before this field existed (every
+            # case on disk before this change) falls back to comparing against the
+            # caller-supplied `per_target_k`, which is only correct for a target
+            # that never had its own row in config/estate_keywords.json — the same
+            # caveat the pre-existing fallback always carried.
+            if "truncated_at_k" in cand:
+                row["near_miss_capped"] = bool(cand["truncated_at_k"])
+                row["k"] = cand.get("k")
+            elif per_target_k:
                 row["near_miss_capped"] = n_hits >= per_target_k
+                row["k"] = per_target_k
         targets.append(row)
 
     return {
@@ -2507,7 +2699,7 @@ def vital_pager_items(unconfirmed, near_miss):
     vital_docs_data's `targets[].items` stamped with its display `target`, kept
     only when NOT reviewed / promoted / reassigned). `near_miss` are near_miss_rows
     entries, each stamped with its candidate `target`. Both carry file_id /
-    thread_id / conversation_id (never a thumb — vital docs have no thumbnail)
+    thread_id / conversation_id / recording_id (never a thumb — vital docs have no thumbnail)
     and their action set differs by sub-queue (§5):
 
       unconfirmed → confirm / dismiss / reassign
@@ -2526,6 +2718,8 @@ def vital_pager_items(unconfirmed, near_miss):
             "thread_subject": it.get("thread_subject"),
             "conversation_id": it.get("conversation_id"),
             "conversation_subject": it.get("conversation_subject"),
+            "recording_id": it.get("recording_id"),
+            "recording_name": it.get("recording_name"),
             "disposition": None,
             "blur": False,
             "actions": ["confirm", "dismiss", "reassign"],
@@ -2542,6 +2736,8 @@ def vital_pager_items(unconfirmed, near_miss):
             "thread_subject": r.get("thread_subject"),
             "conversation_id": r.get("conversation_id"),
             "conversation_subject": r.get("conversation_subject"),
+            "recording_id": r.get("recording_id"),
+            "recording_name": r.get("recording_name"),
             # Why the pipeline did not confirm it (+ the snippet/score context the
             # examiner reads before promoting), straight from near_miss_rows.
             "disposition": r.get("disposition"),

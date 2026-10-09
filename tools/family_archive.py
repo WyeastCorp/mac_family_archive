@@ -81,10 +81,10 @@ from tools._archive_data import (  # noqa: E402
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
-    near_miss_rows, vital_doc_label,
+    near_miss_rows, vital_doc_label, vital_source_email,
     quarantine_pager_items, vital_pager_items,
     junk_rows, transparency_data, guided_review_data,
-    apply_face_overlay, resolve_merge, is_video_frame, SCENE_LABELS,
+    apply_face_overlay, resolve_merge, is_video_frame, video_viewable, SCENE_LABELS,
     VITAL_DOC_LABELS,
 )
 from tools import build_fts  # noqa: E402
@@ -292,7 +292,7 @@ FINANCIAL_SUBCATEGORY_NAMES = [
 # with this as the fallback when the file/key is absent.
 VITAL_PER_TARGET_K_DEFAULT = 8
 
-# Section/API pagination (docs/specs/family-archive-pagination.md). The pure
+# Section/API pagination (docs/archive/specs/family-archive-pagination.md). The pure
 # builders return FULL lists; the slicing + {rows,total,offset,limit} wrapping
 # happens here at the section boundary so a capped view is never presented as the
 # whole set, and the search index stays complete (fed the uncapped builders).
@@ -1081,7 +1081,8 @@ class ArchiveCase:
                                  vital_docs=vital_docs_data(self.paths, self.summary, self.role,
                                                             decisions=decisions,
                                                             threads_index=self.email_threads,
-                                                            per_target_k=self.vital_per_target_k()),
+                                                            per_target_k=self.vital_per_target_k(),
+                                                            recordings_delivered=self.recordings_delivered()),
                                  archive_warning=archive_warning)
         if page == "photos":
             return self._photo_rows()
@@ -1116,7 +1117,8 @@ class ArchiveCase:
                     "vital_docs": vital_docs_data(self.paths, self.summary, self.role,
                                                   decisions=self.decisions,
                                                   threads_index=self.email_threads,
-                                                  per_target_k=self.vital_per_target_k())}
+                                                  per_target_k=self.vital_per_target_k(),
+                                                  recordings_delivered=self.recordings_delivered())}
         if page == "correspondence":
             # Real (non-email) correspondence docs, grouped by writing medium,
             # plus scanned document/letter IMAGES (not in document_classifications).
@@ -1210,7 +1212,7 @@ class ArchiveCase:
 
     def api_section(self, name, params=None):
         """The JSON payload for GET /api/<name>, adding {rows,total,offset,limit}
-        pagination for the large-list sections (docs/specs/family-archive-
+        pagination for the large-list sections (docs/archive/specs/family-archive-
         pagination.md). `params` is a flat {str: str} of the query string. The
         pure builders still return full lists; the slicing lives here so a capped
         view is never presented as complete. Non-paginated sections pass through.
@@ -1550,6 +1552,12 @@ class ArchiveCase:
         page["label"] = vital_doc_label(target)
         return 200, page
 
+    def source_email_section(self, email_id):
+        """Examiner-only: ``(status, payload)`` for one vital-document source email."""
+        if self.role != "examiner":
+            return 403, {"error": "examiner only"}
+        return vital_source_email(self.paths, email_id)
+
     def review_pager_section(self, group):
         """Examiner-only: the normalized item list a review-queue PAGER pages
         through, for ONE surface (`group` ∈ {quarantine, vital}). Gathers the real
@@ -1598,6 +1606,12 @@ class ArchiveCase:
                     # The canonical target set (+ labels) for the reassign picker.
                     "all_targets": vital.get("all_targets", [])}
         raise VerbError(f"unknown review pager group {group}", 400)
+
+    def recordings_delivered(self):
+        """False when transcribe.deliver is off — the gate audio_rows and
+        transcript_section apply to the family role (vital-doc recording links
+        follow it too, #32)."""
+        return self.cfg.get("transcribe", {}).get("deliver", True) is not False
 
     def transcript_section(self, file):
         """G-3: transcript segments + timings for ONE recording (the seek-synced
@@ -1728,6 +1742,16 @@ def resolve_media_path(case, src):
     forbidden = {"metadata", "suspense", "sensitive", "quarantine", "duplicates",
                  case.paths.logs_dir.name}
     if forbidden & set(rel.parts):
+        raise VerbError("forbidden path", 403)
+    # A video keyframe is servable only while its source video is (both roles):
+    # quarantine moves the video's archive copy but not its frames, which stay in
+    # extracted/ and would otherwise hand out stills of the pulled video to any
+    # direct URL. Looked up by the realpath too, so a symlinked or otherwise
+    # aliased spelling cannot step around the frame-map key.
+    frame_map = case.video_frame_map or {}
+    frame = frame_map.get(norm) if norm in frame_map else frame_map.get(str(real))
+    if mapped is None and frame is not None and not video_viewable(
+            (frame or {}).get("source_video"), case.archive_entries, case.role):
         raise VerbError("forbidden path", 403)
     if case.role != "examiner":
         if not _under_any(real, family_media_roots(case)):
@@ -3375,6 +3399,24 @@ def _match_quarantine_entry(case, key):
     return None
 
 
+def _move_frames(case, pairs, reason):
+    """Move a quarantined video's keyframes alongside it: each (from, to) pair
+    whose `from` is on disk is moved (ledgered + custody-logged); a frame absent
+    at `from` (pruned, or never swept on a pre-sweep case) is skipped, and so is
+    one whose `to` is already taken (e.g. video_frames re-extracted it) rather
+    than leaving a renamed duplicate. Returns the [from, final] pairs actually
+    moved, for the action log / undo."""
+    out = []
+    for a, b in pairs:
+        a = Path(a)
+        if not a.is_file() or Path(b).exists():
+            continue
+        final = move_tracked(a, Path(b), reason=reason,
+                             ledger=case.ledger, custody=case.custody)
+        out.append([str(a), str(final)])
+    return out
+
+
 def _release_one(case, key):
     """Release ONE quarantined item back into the delivery tree. Raises
     VerbError on any per-item failure (unknown key, file already gone) —
@@ -3397,9 +3439,15 @@ def _release_one(case, key):
             recreated += 1
         except OSError:
             pass
+    # Keyframes swept with the video come back with it, or a released video
+    # loses its person thumbnails and its video-only people vanish.
+    frames = _move_frames(case, [(f["quarantine_path"], f["src"])
+                                 for f in entry.get("frames", []) or []],
+                          "family:release")
     _rewrite_quarantine(case, drop=entry, add_released=entry)
     act = append_action(case, "release", canonical,
-                        {"entry": entry}, {"location": str(restored), "views": recreated},
+                        {"entry": entry}, {"location": str(restored), "views": recreated,
+                                           "frames": len(frames)},
                         reversible=True)
     return act, str(restored)
 
@@ -3487,8 +3535,12 @@ def _requarantine(case, entry):
                 removed += 1
         except OSError:
             pass
+    frames = _move_frames(case, [(f["src"], f["quarantine_path"])
+                                 for f in entry.get("frames", []) or []],
+                          "family:requarantine")
     _rewrite_quarantine(case, add_entry=entry, drop_released=entry)
-    return {"requarantined": str(moved), "views_removed": removed}
+    return {"requarantined": str(moved), "views_removed": removed,
+            "frames": len(frames)}
 
 
 def verb_demote_ranked(case, payload):
@@ -3787,9 +3839,16 @@ def _discard_quarantine_one(case, key):
     dest = case.paths.output_dir / BANISHED_DIR / "quarantine" / quarantined.name
     moved = move_tracked(quarantined, dest, reason="family:discard-quarantine",
                          ledger=case.ledger, custody=case.custody)
+    # Its keyframes go with it, or they would sit in quarantine/ with no entry
+    # left to review, release or account for them.
+    fdir = dest.parent / "frames" / quarantined.name
+    frames = _move_frames(case, [(f["quarantine_path"], fdir / Path(f["quarantine_path"]).name)
+                                 for f in entry.get("frames", []) or []],
+                          "family:discard-quarantine")
     _rewrite_quarantine(case, drop=entry)
     act = append_action(case, "discard_quarantine", entry["canonical_path"],
-                        {"entry": entry, "banished": str(moved)}, {"location": str(moved)},
+                        {"entry": entry, "banished": str(moved), "banished_frames": frames},
+                        {"location": str(moved)},
                         reversible=True)
     return act, str(moved)
 
@@ -3971,6 +4030,8 @@ def _apply_inverse(case, entry):
         qpath.parent.mkdir(parents=True, exist_ok=True)
         moved = move_tracked(banished, qpath, reason="family:undiscard-quarantine",
                              ledger=case.ledger, custody=case.custody)
+        _move_frames(case, [(b, q) for q, b in entry["before"].get("banished_frames", []) or []],
+                     "family:undiscard-quarantine")
         _rewrite_quarantine(case, add_entry=e)
         case.load()
         return {"restored": str(moved)}
@@ -4756,6 +4817,14 @@ class FamilyArchiveHandler(BaseHTTPRequestHandler):
                 return self._json(403, {"error": "examiner only"})
             return self._json(*CASE.near_miss_section(
                 (qs.get("target") or [None])[0], qs))
+        if name == "vital/source-email":
+            # Examiner-only (BACKLOG #43): one source email of a vital document —
+            # headers, attachment names, text body — for mail email_triage discarded
+            # and no email view shows. The id must be one recorded in
+            # vital_doc_provenance.json; the .eml path never comes from the request.
+            if CASE.role != "examiner":
+                return self._json(403, {"error": "examiner only"})
+            return self._json(*CASE.source_email_section((qs.get("id") or [None])[0]))
         if name == "review-pager":
             # Examiner-only: the normalized item union a bulk-triage PAGER walks for
             # one surface (?group=quarantine|vital). Same gate as the other review

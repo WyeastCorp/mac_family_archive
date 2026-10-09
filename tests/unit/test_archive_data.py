@@ -7,6 +7,7 @@ the server-only builders and the role-sensitive ones.
 Run under venv-phase1.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -114,10 +115,10 @@ def test_confirm_queue_count_decrements_past_the_old_cap():
 def test_people_rows_named_flag_and_dict_identities():
     face_clustering = {
         "person_clusters": {"Person_01": ["/x/a.jpg", "/x/b.jpg"]},
-        "cluster_identities": {"Person_01": {"name": "Jane Harding"}},
+        "cluster_identities": {"Person_01": {"name": "Jane Harvennick"}},
     }
     rows = ad.people_rows(face_clustering, {}, {"/x/a.jpg": {}, "/x/b.jpg": {}}, {}, "examiner")
-    assert rows[0]["name"] == "Jane Harding"
+    assert rows[0]["name"] == "Jane Harvennick"
     assert rows[0]["named"] is True
     assert rows[0]["sample_ids"][:2] == ["/x/a.jpg", "/x/b.jpg"]
     # full member list for the person drill-through view (#1)
@@ -1594,6 +1595,67 @@ def test_vital_pager_items_carries_conversation_fields():
     assert items[0]["conversation_subject"] == "Alice, Bob"
 
 
+_VOICEMAIL = "/c/extracted/other/audio/+1-555-0100 - Voicemail - 2014-07-23T21_08_27Z.mp3"
+
+
+def _with_recording(summary):
+    return {**summary, "audio_classifications": [
+        {"file": _VOICEMAIL, "filename": os.path.basename(_VOICEMAIL),
+         "category": "voicemail", "transcript_txt": "/c/x.txt"}]}
+
+
+def test_near_miss_rows_deep_links_audio_via_recording(tmp_path):
+    # P2 #32: a hit whose evidence is a voicemail transcript carries the AUDIO
+    # path — not a document, thread or conversation — so it must resolve to the
+    # recording (summary.audio_classifications) instead of a dead label.
+    paths, summary = _near_miss_case(tmp_path)
+    summary = _with_recording(summary)
+    candidates = json.loads((paths.metadata_dir / "vital_doc_candidates.json").read_text())
+    candidates["will_testament"]["hits"].append(
+        {"path": _VOICEMAIL, "score": 0.7, "snippet": "a message about the will"})
+    (paths.metadata_dir / "vital_doc_candidates.json").write_text(json.dumps(candidates))
+
+    by = {r["path"]: r for r in ad.near_miss_rows(paths, summary, "examiner", "will_testament")}
+    r = by[_VOICEMAIL]
+    assert r["file_id"] is None and r["thread_id"] is None and r["conversation_id"] is None
+    assert r["recording_id"] == _VOICEMAIL
+    assert r["recording_name"] == ad._clean_recording_name(os.path.basename(_VOICEMAIL))
+    # A non-audio hit gets no recording link.
+    assert all(x["recording_id"] is None for p, x in by.items() if p != _VOICEMAIL)
+
+
+def test_vital_docs_audio_item_links_recording_and_honours_deliver_gate(tmp_path):
+    paths, summary = _vital_case(tmp_path)
+    summary = _with_recording(summary)
+    confirmed = json.loads((paths.metadata_dir / "vital_doc_confirmed.json").read_text())
+    confirmed.append({"path": _VOICEMAIL, "target": "power_of_attorney",
+                      "tag": "vital_doc:power_of_attorney"})
+    (paths.metadata_dir / "vital_doc_confirmed.json").write_text(json.dumps(confirmed))
+
+    def item(role, **kw):
+        vd = ad.vital_docs_data(paths, summary, role, **kw)
+        return {t["target"]: t for t in vd["targets"]}["power_of_attorney"]["items"][0]
+
+    assert item("examiner")["recording_id"] == _VOICEMAIL
+    assert item("family")["recording_id"] == _VOICEMAIL
+    # transcribe.deliver: false withholds recordings from family (audio_rows'
+    # gate), so the checklist must not link one; the examiner keeps it.
+    assert item("family", recordings_delivered=False)["recording_id"] is None
+    assert item("examiner", recordings_delivered=False)["recording_id"] == _VOICEMAIL
+    # Other items are untouched.
+    vd = ad.vital_docs_data(paths, summary, "family")
+    will = {t["target"]: t for t in vd["targets"]}["will_testament"]["items"][0]
+    assert will["file_id"] == "/d/will.pdf" and will["recording_id"] is None
+
+
+def test_vital_pager_items_carries_recording_fields():
+    near = [{"id": "t::" + _VOICEMAIL, "target": "t", "name": "vm.mp3",
+             "recording_id": _VOICEMAIL, "recording_name": "Voicemail"}]
+    items = ad.vital_pager_items([], near)
+    assert items[0]["recording_id"] == _VOICEMAIL
+    assert items[0]["recording_name"] == "Voicemail"
+
+
 def test_near_miss_rows_examiner_only(tmp_path):
     paths, summary = _near_miss_case(tmp_path)
     assert ad.near_miss_rows(paths, summary, "family", "will_testament") == []
@@ -2234,6 +2296,62 @@ def test_vital_no_overlay_keys_unchanged(tmp_path):
     base = ad.vital_docs_data(paths, summary, "examiner")
     with_empty = ad.vital_docs_data(paths, summary, "examiner", decisions={})
     assert base == with_empty
+
+
+# ── truncated_at_k marker: per-target, not the flat per_target_k fallback ─────
+# docs/BACKLOG.md "vital-doc shortlist measurement" (R1). Per-target k shipped
+# 2026-08-16, but this checklist row used to compare n_hits against the flat
+# case-global fallback — wrong for any target with its own shipped/overridden k.
+
+def _vital_paths_with(tmp_path, candidates, confirmed=None):
+    return _vital_paths(tmp_path, confirmed or [], candidates)
+
+
+def test_near_miss_capped_prefers_persisted_truncated_at_k(tmp_path):
+    """A target retrieval-capped at its OWN k=150 must read as capped even when
+    the caller's flat per_target_k (the case-global default) is much smaller."""
+    candidates = {"financial_statement": {"description": "d", "k": 150,
+                                          "truncated_at_k": True, "hits": []}}
+    paths = _vital_paths_with(tmp_path, candidates)
+    vd = ad.vital_docs_data(paths, {}, "examiner", per_target_k=8)
+    row = _row(vd, "financial_statement")
+    assert row["near_miss_capped"] is True
+    assert row["k"] == 150
+
+
+def test_near_miss_capped_false_when_target_not_truncated_despite_flat_k(tmp_path):
+    """The old flat check (n_hits >= per_target_k) would false-positive here: 8
+    hits >= the flat default of 8, but this target's real k is 150 and the
+    ranking simply ran out — not a truncation."""
+    candidates = {"birth_certificate": {"description": "d", "k": 150,
+                                        "truncated_at_k": False,
+                                        "hits": [{"path": f"/d/{i}.pdf"} for i in range(8)]}}
+    paths = _vital_paths_with(tmp_path, candidates)
+    vd = ad.vital_docs_data(paths, {}, "examiner", per_target_k=8)
+    row = _row(vd, "birth_certificate")
+    assert row["near_miss_capped"] is False
+    assert row["k"] == 150
+
+
+def test_near_miss_capped_falls_back_to_flat_k_on_pre_upgrade_candidates(tmp_path):
+    """A candidates.json written before this field existed (every case on disk
+    pre-upgrade) must keep working via the old flat-k approximation, not crash
+    or silently drop the capped signal."""
+    candidates = {"will_testament": {"description": "d",
+                                     "hits": [{"path": f"/d/{i}.pdf"} for i in range(8)]}}
+    paths = _vital_paths_with(tmp_path, candidates)
+    vd = ad.vital_docs_data(paths, {}, "examiner", per_target_k=8)
+    row = _row(vd, "will_testament")
+    assert row["near_miss_capped"] is True
+    assert row["k"] == 8
+
+
+def test_near_miss_capped_absent_without_per_target_k_or_marker(tmp_path):
+    candidates = {"will_testament": {"description": "d", "hits": []}}
+    paths = _vital_paths_with(tmp_path, candidates)
+    vd = ad.vital_docs_data(paths, {}, "examiner")
+    row = _row(vd, "will_testament")
+    assert "near_miss_capped" not in row
 
 
 # ── vital-doc conversation deep links (backlog P2 #12) ───────────────────────

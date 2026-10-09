@@ -131,6 +131,7 @@ def test_engine_sets_match_legacy_values():
     ("stage.log", ("ignore", "ignore", None)),
     ("raw_metadata.json", ("ignore", "ignore", None)),   # exact-name ignore
     ("mms_parts_map.json", ("ignore", "ignore", None)),  # expand_mms linkage map
+    ("eml_attachments_map.json", ("ignore", "ignore", None)),  # expand_eml linkage map
     ("AlbumInfo.json", ("ignore", "ignore", None)),      # restored gallery sidecar
     ("mystery.xyz", ("unknown", "flag", None)),
     # AppleDouble resource-fork stubs: basename pattern beats every extension
