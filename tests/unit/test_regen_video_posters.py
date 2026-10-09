@@ -15,8 +15,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
+TOOLS = REPO / "tools"
+for _p in (REPO, TOOLS):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 import regen_video_posters as rp  # noqa: E402
 
