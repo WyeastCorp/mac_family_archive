@@ -44,6 +44,7 @@
     "tests/unit/test_moves.py": "4b5334ba68ae92af92794f73bb4f267012787888e8433cf24a35049911068e6c",
     "tests/unit/test_paths_custody.py": "370f603fb363b9d5e2a05b951565790110cf476b7138711991d6c35674cc2ba2",
     "tests/unit/test_rebase.py": "60e7f322f90da564ca0b750fcf92afcefbf2756ae4ecbd6d53962f8ae536f075",
+    "tests/unit/test_regen_video_posters.py": "115f238136b3da3f4f62fc801f71b2374db7ee7a0358a7cf12d7c5876ae213e8",
     "tests/unit/test_release.py": "447c21d58d7241cfd5e5c28180da03716ba0f21f7b9f8b821ca128872bea372e",
     "tests/unit/test_release_enforcement.py": "614bbc604fa8118b7256c90f263ef2848687316c7607219a2f169fc772f320c6",
     "tests/unit/test_release_verbs.py": "2f1e69b2f31ed2ac623ff5227715e258c8a21b12e0ef460c635a65ffa748a8c1",
@@ -53,6 +54,7 @@
     "tools/export_delivery.py": "8009a5307710d3480a83e19d1aad11628fe49f213c454b5ec54a334702379bcc",
     "tools/family_archive.py": "8c5daf3164a8b4d1dc9890beb3177f7a9be674161dc7b330be596c17ee98ee9c",
     "tools/gen_email_threads.py": "27d5b171701c4a8b3ef680a280ced085c9aae0c4db2ff633f83975f881e2d0b2",
+    "tools/regen_video_posters.py": "91144440dbb175f9f3811213d206dcc49322d97a46bd928b40ebe5eb4fe5a023",
     "wyeast/__init__.py": "9e5d7e92bc10b0f077fdd40e7f4d840a6ad55e1b05d5062baa60dfbbf2901949",
     "wyeast/core/__init__.py": "c3643ed5b82b80809248084895021113a0654b6423b9c925d29140e2be8ea576",
     "wyeast/core/audience.py": "987814eb538ccd1b8c860c387f93228b57485142e93d567e9989348ac8dd819f",
@@ -70,6 +72,6 @@
     "wyeast/core/safe_names.py": "784ea85edb9e53cabbef20f1eedddefbb799880efe0bb010bd1f8a12066f2368"
   },
   "schema_version": 1,
-  "source_commit": "dd3233b09cb16529d2df3f608aa51cfbfbd8dba8",
+  "source_commit": "5d52a0b53e8fb662f3e49e6c785589d211f56d6a",
   "source_repo": "https://github.com/WyeastCorp/Wyeast"
 }

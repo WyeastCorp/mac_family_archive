@@ -33,9 +33,9 @@ SAFETY. This writes into a case, so:
     in the server changes; the posters simply start resolving.
 
 Usage:
-  ./regen_video_posters.py CASE_ID --cases-root /path/to/cases            # dry run
-  ./regen_video_posters.py CASE_ID --cases-root /path/to/cases --apply
-  ./regen_video_posters.py CASE_ID --cases-root ... --apply --limit 5     # trial
+  python3 tools/regen_video_posters.py CASE_ID --cases-root /path/to/cases            # dry run
+  python3 tools/regen_video_posters.py CASE_ID --cases-root /path/to/cases --apply
+  python3 tools/regen_video_posters.py CASE_ID --cases-root ... --apply --limit 5     # trial
 """
 import argparse
 import concurrent.futures
@@ -47,7 +47,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent
+_ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
