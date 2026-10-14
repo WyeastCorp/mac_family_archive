@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./run_tests.sh tests/unit/test_rebase.py -q          # one file
 ./run_tests.sh tests/unit/test_rebase.py::test_name  # one test
 ./family_archive.sh CASE_ID --cases-root /path/to/cases   # serve, then open http://127.0.0.1:7766/
-./sync_from_wyeast.sh /path/to/Wyeast                # re-copy the closure from upstream
+./sync_from_wyeast.sh /path/to/Wyeast                # DO NOT RUN without reading "The operating constraint" below
 ```
 
 `$WYEAST_PYTHON` overrides the interpreter; `$WYEAST_CASES_ROOT` the cases root.
@@ -18,7 +18,21 @@ There is no linter or formatter configured — pytest is the only check.
 
 Exit codes: `0` served · `1` bad args / missing case · `2` case not complete · `3` family view blocked.
 
-## The operating constraint: this is a mirror, not a source
+**Read `STATE.md` first.** It is the session-handoff doc: what shipped, what is blocked and on
+whom, known issues not yet filed, and the one command to start the next session with. Newest entry
+at the top. Keep it current when shipping, inside the feature branch. Like this file, it is not part
+of the export, so a sync leaves it alone.
+
+## The operating constraint: this was a mirror; it is now the source
+
+**As of 2026-10-14 all work happens directly in this repo, front end included.** The rest of this
+section describes how the program files got here, and still matters for one reason: Wyeast's
+`ops/export_family_archive.sh` (also run by `./sync_from_wyeast.sh`) would replace them. It refuses to overwrite a file edited here
+unless given `--force`, and with `--force` it wipes that work. **Never run an export with
+`--force`**, and warn the user before running one at all. Edit the files here; do not route
+changes through Wyeast's `ops/family_archive_patches/` unless the user asks.
+
+History:
 
 Everything under `tools/`, `wyeast/`, `report_assets/`, `config/` and `tests/` is **copied from
 WyeastCorp/Wyeast** — the complete import closure of `tools/family_archive.py`, derived by walking
@@ -26,7 +40,8 @@ the AST. Read `UPSTREAM.md` before editing any of it. Fixes to the archive itsel
 and flow here via `sync_from_wyeast.sh`, which re-copies the closure and re-applies a short list of
 local modifications. Local edits that aren't on that list get silently reverted on the next sync.
 Mac-only features (the Documents folder-tree view and `--documents-only`) are on that list as
-patches kept upstream in Wyeast's `ops/family_archive_patches/`; change them there, not here.
+patches kept upstream in Wyeast's `ops/family_archive_patches/`. They were changed there until
+2026-10-14; they are now changed here (see the top of this section).
 
 The pipeline that *produces* a case (`wyeast/stages/`, orchestration, the stage registry) is **not
 here**. A Mac only ever consumes a case that is already finished.
@@ -156,3 +171,42 @@ case-sensitive Linux storing NFC. Two delivered files differing only in case col
 filenames matched between a directory scan and an index JSON can mismatch. Apple's system `python3`
 has historically shipped without SQLite FTS5 (breaks Search), and without `pillow_heif` iPhone
 thumbnails fail **silently blank rather than erroring** — `setup.sh` checks both.
+
+## Verify in a browser
+
+A green `./run_tests.sh` says nothing about the family-facing UI. Navigation defects are
+structurally invisible to pytest: every function returns what it promises, and the failure exists
+only in the sequence of clicks. Drive the real app at `http://127.0.0.1:7766` after any change that
+reaches `report_assets/family/`. **Clicking writes real decisions to the real case** (confirmations,
+moves, banishes all persist and are audited in `output/metadata/family_actions.ndjson`), so a count
+that moved is more often a click than a bug.
+
+## What must never enter a commit
+
+**Never post user data or PII. Warn the user if any personally identifying data will be
+included in the repo.** Warn — do not quietly scrub and carry on. It is the user's data,
+the user's repo and the user's call; the job is to make sure they are the one making it,
+with the specific strings in front of them.
+
+The case tree is not the risk. It lives outside the checkout (`~/WyeastCases`, or a mounted drive
+image), `.gitignore` blocks `/cases/`, and nothing case-shaped is tracked — so "will my data be
+committed?" has a reassuring answer, and it is the wrong question.
+
+The leak path that actually bites is **quotation**: real names, phone numbers, email addresses
+and document titles copied out of a live case into a code comment, a commit message, a PR body,
+or a doc, to illustrate the bug being fixed. That material is not in `.gitignore`'s reach, and on
+a public repo it is permanent — a later commit that deletes the line leaves it readable in history
+forever. It has happened here before: `report_assets/family/family.js` once carried real contacts
+of the deceased, with live mobile numbers, in an explanatory comment.
+
+So, when writing a comment, a commit message, a PR body or a doc in this repo:
+
+- **Never paste from the live case.** Use invented stand-ins — Alex Rendon, `+15035550178`,
+  `a.rendon@example.com`. `555-01xx` numbers are reserved for fiction precisely for this.
+- That covers **names, phone numbers, email addresses, street addresses, account numbers, and
+  document titles** that identify a real person or a real instrument. "A divorce judgment filed
+  under court_filing" is fine; the filename and the parties are not.
+- A case id (`813_mf`, `oct7_mf`) is fine on its own — it names a case, not a person.
+- **Check before pushing, not after.** `/ship` step 2 scans the outgoing range. If something turns
+  up, rebuild the branch so the string never enters a commit — a scrub commit on top does not
+  remove it from history.
