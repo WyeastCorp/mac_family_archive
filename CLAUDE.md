@@ -18,6 +18,11 @@ There is no linter or formatter configured — pytest is the only check.
 
 Exit codes: `0` served · `1` bad args / missing case · `2` case not complete · `3` family view blocked.
 
+**Read `STATE.md` first.** It is the session-handoff doc: what shipped, what is blocked and on
+whom, known issues not yet filed, and the one command to start the next session with. Newest entry
+at the top. Keep it current when shipping, inside the feature branch. Like this file, it is not part
+of the export, so a sync leaves it alone.
+
 ## The operating constraint: this is a mirror, not a source
 
 Everything under `tools/`, `wyeast/`, `report_assets/`, `config/` and `tests/` is **copied from
@@ -156,3 +161,42 @@ case-sensitive Linux storing NFC. Two delivered files differing only in case col
 filenames matched between a directory scan and an index JSON can mismatch. Apple's system `python3`
 has historically shipped without SQLite FTS5 (breaks Search), and without `pillow_heif` iPhone
 thumbnails fail **silently blank rather than erroring** — `setup.sh` checks both.
+
+## Verify in a browser
+
+A green `./run_tests.sh` says nothing about the family-facing UI. Navigation defects are
+structurally invisible to pytest: every function returns what it promises, and the failure exists
+only in the sequence of clicks. Drive the real app at `http://127.0.0.1:7766` after any change that
+reaches `report_assets/family/`. **Clicking writes real decisions to the real case** (confirmations,
+moves, banishes all persist and are audited in `output/metadata/family_actions.ndjson`), so a count
+that moved is more often a click than a bug.
+
+## What must never enter a commit
+
+**Never post user data or PII. Warn the user if any personally identifying data will be
+included in the repo.** Warn — do not quietly scrub and carry on. It is the user's data,
+the user's repo and the user's call; the job is to make sure they are the one making it,
+with the specific strings in front of them.
+
+The case tree is not the risk. It lives outside the checkout (`~/WyeastCases`, or a mounted drive
+image), `.gitignore` blocks `/cases/`, and nothing case-shaped is tracked — so "will my data be
+committed?" has a reassuring answer, and it is the wrong question.
+
+The leak path that actually bites is **quotation**: real names, phone numbers, email addresses
+and document titles copied out of a live case into a code comment, a commit message, a PR body,
+or a doc, to illustrate the bug being fixed. That material is not in `.gitignore`'s reach, and on
+a public repo it is permanent — a later commit that deletes the line leaves it readable in history
+forever. It has happened here before: `report_assets/family/family.js` once carried real contacts
+of the deceased, with live mobile numbers, in an explanatory comment.
+
+So, when writing a comment, a commit message, a PR body or a doc in this repo:
+
+- **Never paste from the live case.** Use invented stand-ins — Alex Rendon, `+15035550178`,
+  `a.rendon@example.com`. `555-01xx` numbers are reserved for fiction precisely for this.
+- That covers **names, phone numbers, email addresses, street addresses, account numbers, and
+  document titles** that identify a real person or a real instrument. "A divorce judgment filed
+  under court_filing" is fine; the filename and the parties are not.
+- A case id (`813_mf`, `oct7_mf`) is fine on its own — it names a case, not a person.
+- **Check before pushing, not after.** `/ship` step 2 scans the outgoing range. If something turns
+  up, rebuild the branch so the string never enters a commit — a scrub commit on top does not
+  remove it from history.
