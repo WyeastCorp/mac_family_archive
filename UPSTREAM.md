@@ -75,8 +75,9 @@ Re-applied by every sync (Wyeast's `ops/export_family_archive.sh`; the roster is
      `report_assets/family/family.{js,css}` and `tests/unit/test_family_archive.py`.
 
    To change a Mac-only feature, change its patch in Wyeast (the runbook, §9d,
-   says how) and re-sync. An edit made here instead is flagged by CI's
-   export-integrity guard and refused by the next sync.
+   says how) and re-sync. An edit made here instead is refused by the next
+   sync. (Since 2026-10-14 edits are made here — see CLAUDE.md — and CI's
+   export-integrity guard lists them as warnings rather than failing.)
 
 Nothing in `wyeast/core/` is modified. It is byte-identical to upstream,
 including the now-dead `DEFAULT_SCRIPTS_DIR = Path("/opt/estate-pipeline/app")`

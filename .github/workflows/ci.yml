@@ -32,7 +32,7 @@ jobs:
       - name: wyeast.core imports with no third-party packages
         run: python -c "import wyeast.core.audience, wyeast.core.config, wyeast.core.custody, wyeast.core.delivery, wyeast.core.errors, wyeast.core.filetypes, wyeast.core.io, wyeast.core.media, wyeast.core.moves, wyeast.core.paths, wyeast.core.rebase, wyeast.core.release, wyeast.core.safe_names; print('core OK')"
 
-      - name: Footprint and export-integrity guard
+      - name: Footprint guard (fails) and export drift report (warns)
         run: python .github/scripts/check_export.py
 
       - name: Install via the real setup script (pillow, pillow_heif, FTS5, HEIC)
