@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ./run_tests.sh tests/unit/test_rebase.py -q          # one file
 ./run_tests.sh tests/unit/test_rebase.py::test_name  # one test
 ./family_archive.sh CASE_ID --cases-root /path/to/cases   # serve, then open http://127.0.0.1:7766/
-./sync_from_wyeast.sh /path/to/Wyeast                # re-copy the closure from upstream
+./sync_from_wyeast.sh /path/to/Wyeast                # DO NOT RUN without reading "The operating constraint" below
 ```
 
 `$WYEAST_PYTHON` overrides the interpreter; `$WYEAST_CASES_ROOT` the cases root.
@@ -23,7 +23,16 @@ whom, known issues not yet filed, and the one command to start the next session 
 at the top. Keep it current when shipping, inside the feature branch. Like this file, it is not part
 of the export, so a sync leaves it alone.
 
-## The operating constraint: this is a mirror, not a source
+## The operating constraint: this was a mirror; it is now the source
+
+**As of 2026-10-14 all work happens directly in this repo, front end included.** The rest of this
+section describes how the program files got here, and still matters for one reason: Wyeast's
+`ops/export_family_archive.sh` (also run by `./sync_from_wyeast.sh`) would replace them. It refuses to overwrite a file edited here
+unless given `--force`, and with `--force` it wipes that work. **Never run an export with
+`--force`**, and warn the user before running one at all. Edit the files here; do not route
+changes through Wyeast's `ops/family_archive_patches/` unless the user asks.
+
+History:
 
 Everything under `tools/`, `wyeast/`, `report_assets/`, `config/` and `tests/` is **copied from
 WyeastCorp/Wyeast** — the complete import closure of `tools/family_archive.py`, derived by walking
@@ -31,7 +40,8 @@ the AST. Read `UPSTREAM.md` before editing any of it. Fixes to the archive itsel
 and flow here via `sync_from_wyeast.sh`, which re-copies the closure and re-applies a short list of
 local modifications. Local edits that aren't on that list get silently reverted on the next sync.
 Mac-only features (the Documents folder-tree view and `--documents-only`) are on that list as
-patches kept upstream in Wyeast's `ops/family_archive_patches/`; change them there, not here.
+patches kept upstream in Wyeast's `ops/family_archive_patches/`. They were changed there until
+2026-10-14; they are now changed here (see the top of this section).
 
 The pipeline that *produces* a case (`wyeast/stages/`, orchestration, the stage registry) is **not
 here**. A Mac only ever consumes a case that is already finished.

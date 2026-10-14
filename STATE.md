@@ -32,11 +32,11 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 - `/ship` now runs the PII scan before committing (step 2), and `CLAUDE.md` carries the
   "never commit PII" and "verify in a browser" rules the fork had.
 
-**Where the front end has to change.** Program files here (`tools/`, `wyeast/`,
-`report_assets/`, `config/`, `tests/`) are an export from the private `WyeastCorp/Wyeast` repo
-and are replaced on the next export. Mac-only features (the Documents view,
-`--documents-only`) live as patches in Wyeast's `ops/family_archive_patches/`. Read
-`UPSTREAM.md` before editing any of them. To see what the export carries:
+**All work happens directly in this repo, front end included.** Program files here (`tools/`,
+`wyeast/`, `report_assets/`, `config/`, `tests/`) were exported from the private
+`WyeastCorp/Wyeast` repo until now. Wyeast's export script refuses to overwrite files edited
+here, and `--force` would wipe them — **never run it with `--force`**, and warn before running
+an export at all. To see which files an export would touch:
 `gh api repos/WyeastCorp/Wyeast/contents/ops/family_archive_closure.py --jq .content | base64 -d`
 
 **The fork's UI work is not here.** Breadcrumbs, the Reports section, Document Photos, the
