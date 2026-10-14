@@ -14,7 +14,7 @@ import json
 import os
 import re
 import sys
-from collections import Counter
+from collections import Counter, OrderedDict
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -94,6 +94,38 @@ VITAL_DOC_LABELS = {
     "cost_basis_valuation": "Cost-basis valuation",
     "letter_of_instruction": "Letter of instruction",
 }
+
+
+# Display grouping for the Documents tree: each vital target under the estate
+# keyword category it belongs to. Mirrors Wyeast's estate_materiality
+# VITAL_TARGET_CATEGORY, which this repo does not carry; a test pins it to
+# VITAL_DOC_LABELS so a new target cannot go ungrouped.
+VITAL_DOC_GROUPS = OrderedDict([
+    ("estate_legal", ("Estate & legal", [
+        "will_testament", "trust_instrument", "certificate_of_trust",
+        "letters_testamentary", "letter_of_instruction", "power_of_attorney"])),
+    ("tax_records", ("Taxes", [
+        "tax_return", "gift_tax_return", "estate_ein_confirmation",
+        "k1_estate_related", "foreign_asset_disclosure"])),
+    ("banking_cash_debt", ("Banking", ["financial_statement", "safe_deposit"])),
+    ("real_estate_property", ("Property", [
+        "deed_title", "vehicle_title", "tod_pod_registration"])),
+    ("insurance", ("Insurance", ["life_insurance"])),
+    ("investments_retirement", ("Investments & retirement", [
+        "beneficiary_designation", "cost_basis_valuation"])),
+    ("identity_government", ("Identity & government", [
+        "birth_certificate", "death_certificate", "marriage_certificate",
+        "passport_id", "military_record"])),
+    ("critical_credentials", ("Passwords & accounts", ["credentials"])),
+    ("employment_hr_business", ("Business", [
+        "business_operating_agreement", "buy_sell_agreement"])),
+])
+VITAL_DOC_GROUP_OF = {t: g for g, (_label, ts) in VITAL_DOC_GROUPS.items() for t in ts}
+
+
+def vital_doc_group(target):
+    """The display group key for a vital target ("other" for an unknown one)."""
+    return VITAL_DOC_GROUP_OF.get(target, "other")
 
 
 def vital_doc_label(target):
@@ -2427,7 +2459,8 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         found = bool(items)  # a target is "found" iff ≥1 item SURVIVES the overlay
         if found:
             found_count += 1
-        row = {"target": t, "label": vital_doc_label(t), "found": found, "items": items}
+        row = {"target": t, "label": vital_doc_label(t), "group": vital_doc_group(t),
+               "found": found, "items": items}
         if role == "examiner":
             cand = candidates.get(t) or {}
             hits = cand.get("hits")
@@ -2482,6 +2515,8 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         # The canonical target set (+ labels) for the reassign picker's choices.
         "all_targets": [{"target": t, "label": vital_doc_label(t)}
                         for t in VITAL_DOC_LABELS],
+        # Display order + labels for the Documents tree's vital-kind groups.
+        "groups": [{"group": g, "label": label} for g, (label, _ts) in VITAL_DOC_GROUPS.items()],
     }
 
 

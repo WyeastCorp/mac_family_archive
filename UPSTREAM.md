@@ -6,7 +6,7 @@ this repo is copied from **WyeastCorp/Wyeast**, not written here.
 | | |
 |---|---|
 | Source repo | https://github.com/WyeastCorp/Wyeast |
-| Source commit | `5d52a0b53e8fb662f3e49e6c785589d211f56d6a` (`5d52a0b`) |
+| Source commit | `a290b7ee58e796dfb0a8e07d39032bfb224730c0` (`a290b7e`) |
 | Spec | [`docs/specs/family-archive-macos-standalone.md`](https://github.com/WyeastCorp/Wyeast/blob/main/docs/specs/family-archive-macos-standalone.md) |
 | Phase | Phase 0 — de-risk (terminal launch, no `.app`, no signing) |
 
@@ -48,22 +48,35 @@ Everything the walk found is here.
 
 ## Local modifications to copied files
 
-Deliberately kept to the absolute minimum so `diff` against upstream stays
-readable:
+Re-applied by every sync (Wyeast's `ops/export_family_archive.sh`; the roster is
+`LOCAL_MODS` in Wyeast's `ops/family_archive_closure.py`):
 
 1. `tools/family_archive.py`, `tools/export_delivery.py` — shebang changed from
    `#!/opt/estate-pipeline/envs/venv-phase1/bin/python3` to
    `#!/usr/bin/env python3`. (Both are run via `python3 -m`, so this is
    cosmetic, but a Zone-B-literal path in a Mac repo is a trap.)
-2. `tests/unit/test_family_archive.py` — upstream loads its `make_case` fixture
-   out of `tests/unit/test_build_explorer.py` by path. That module tests
-   `tools/build_explorer.py`, which is outside the closure, so `make_case` was
-   lifted verbatim into `tests/unit/_case_fixture.py` and the loader block now
-   imports it from there.
-3. `tests/unit/test_safe_names.py` — dropped `test_safe_album_dirname_delegates`,
+2. `tests/unit/_case_fixture.py` — upstream loads its `make_case` fixture out of
+   `tests/unit/test_build_explorer.py` by path. That module tests
+   `tools/build_explorer.py`, which is outside the closure, so `make_case` is
+   lifted verbatim into this file.
+3. `tests/unit/test_family_archive.py`, `tests/unit/test_rebase.py` — the
+   `make_case` loader block imports it from `_case_fixture` instead.
+4. `tests/unit/test_safe_names.py` — dropped `test_safe_album_dirname_delegates`,
    which asserts delegation from `wyeast.stages.llm_synthesis` (not carried).
-4. `tests/unit/test_config.py` — not carried; it imports
+5. `tests/unit/test_config.py` — not carried; it imports
    `wyeast.core.registry`, the pipeline stage table.
+6. **Mac-only features**, applied as patches kept upstream in Wyeast's
+   `ops/family_archive_patches/`. Wyeast's own copy does not have them.
+   - `documents-view.patch` — the Documents page as a folder tree (vital kinds,
+     categories, collections) with List/Detail views, drag-to-file, an undo
+     banner and document fields in the viewer; and the `--documents-only`
+     server mode (Documents alone, no section rail). Touches
+     `tools/family_archive.py`, `tools/_archive_data.py`,
+     `report_assets/family/family.{js,css}` and `tests/unit/test_family_archive.py`.
+
+   To change a Mac-only feature, change its patch in Wyeast (the runbook, §9d,
+   says how) and re-sync. An edit made here instead is flagged by CI's
+   export-integrity guard and refused by the next sync.
 
 Nothing in `wyeast/core/` is modified. It is byte-identical to upstream,
 including the now-dead `DEFAULT_SCRIPTS_DIR = Path("/opt/estate-pipeline/app")`
@@ -78,5 +91,7 @@ at Zone B's `/data/cases`, which is why `family_archive.sh` always supplies
 
 ## Re-syncing
 
-`./sync_from_wyeast.sh /path/to/Wyeast` re-copies the closure and re-applies
-modifications 1–3 above. Run `./run_tests.sh` afterwards.
+`./sync_from_wyeast.sh /path/to/Wyeast` runs Wyeast's
+`ops/export_family_archive.sh` against this checkout: it re-copies the closure,
+re-applies modifications 1–6 above and records `.wyeast-export.json`. Run
+`./run_tests.sh` afterwards.

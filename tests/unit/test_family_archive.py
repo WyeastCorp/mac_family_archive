@@ -10,6 +10,7 @@ Run under venv-phase1.
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
 from pathlib import Path
@@ -4971,3 +4972,197 @@ def test_family_search_excludes_withheld_conversations(tmp_path):
     hits = json.dumps(case.section("search"))
     assert "Bank Alerts" not in hits, "a rescued conversation is searchable by the family"
     assert "Mom" in hits, "the family lost their own conversation from search"
+
+
+# ── Documents folder-tree view: vital stamping, vital/collection filters, sort ──
+
+def _seed_docs_view(tmp_path, role="examiner"):
+    """Four documents, one confirmed vital will (with a readable date), one
+    near-miss deed candidate, one in a curation collection."""
+    case, paths = setup_case(tmp_path, role=role)
+    md = paths.metadata_dir
+    summ = json.loads((md / "case_summary.json").read_text())
+    summ["document_classifications"] = [
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5},
+        {"file": "/d/deed.docx", "filename": "deed.docx", "category": "legal",
+         "source": "document", "significance": 3},
+        {"file": "/d/Budget.xlsx", "filename": "Budget.xlsx", "category": "financial",
+         "subcategory": "banking", "source": "document", "significance": 4},
+        {"file": "/d/apple.pdf", "filename": "apple.pdf", "category": "recipe",
+         "source": "document", "significance": 1},
+    ]
+    (md / "case_summary.json").write_text(json.dumps(summ))
+    (md / "vital_doc_confirmed.json").write_text(json.dumps([
+        {"path": "/d/will.pdf", "target": "will_testament", "tag": "will"}]))
+    (md / "vital_doc_candidates.json").write_text(json.dumps({
+        "will_testament": {"description": "a will", "hits": [
+            {"path": "/d/will.pdf", "score": 0.9, "snippet": "x"}]},
+        "deed_title": {"description": "a deed", "hits": [
+            {"path": "/d/deed.docx", "score": 0.6, "snippet": "y"}]},
+    }))
+    (md / fa.CURATION_FILE).write_text(json.dumps({
+        "favorites": {}, "notes": {},
+        "collections": {"for-attorney": {"title": "For the attorney",
+                                         "members": ["/d/Budget.xlsx"]}}}))
+    case.load()
+    return case, paths
+
+
+def _docs(case, **params):
+    p = {"offset": "0", "limit": "50"}
+    p.update(params)
+    return case.api_section("documents", p)
+
+
+def test_documents_rows_carry_vital_items_and_candidates(tmp_path):
+    case, _paths = _seed_docs_view(tmp_path)
+    by = {r["file"]: r for r in _docs(case)["rows"]}
+    will = by["/d/will.pdf"]
+    assert [v["target"] for v in will["vital"]] == ["will_testament"]
+    assert will["vital"][0]["id"] == "will_testament::/d/will.pdf"
+    assert will["vital"][0]["group"] == "estate_legal"
+    # already vital for will_testament → not offered again as a candidate
+    assert "vital_candidates" not in will
+    assert by["/d/deed.docx"]["vital_candidates"] == ["deed_title"]
+    assert "vital" not in by["/d/deed.docx"]
+    # an untouched row gains no keys (additive, like apply_curation)
+    assert "vital" not in by["/d/apple.pdf"] and "vital_candidates" not in by["/d/apple.pdf"]
+
+
+def test_documents_vital_candidates_are_examiner_only(tmp_path):
+    case, _paths = _seed_docs_view(tmp_path, role="family")
+    rows = _docs(case)["rows"]
+    assert not any("vital_candidates" in r for r in rows)
+    will = [r for r in rows if r["file"] == "/d/will.pdf"][0]
+    assert will["vital"][0]["target"] == "will_testament"
+    assert "source_emails" not in will["vital"][0] and "date_used" not in will["vital"][0]
+
+
+def test_documents_vital_filter_narrows_before_the_slice(tmp_path):
+    case, _paths = _seed_docs_view(tmp_path)
+    one = _docs(case, vital="will_testament")
+    assert one["total"] == 1 and one["rows"][0]["file"] == "/d/will.pdf"
+    assert _docs(case, vital="*")["total"] == 1
+    assert _docs(case, vital="deed_title")["total"] == 0   # a candidate is not vital
+    assert sum(c["count"] for c in one["index"]) == 4, "index still spans every row"
+
+
+def test_documents_collection_filter(tmp_path):
+    case, _paths = _seed_docs_view(tmp_path)
+    got = _docs(case, collection_curation="for-attorney")
+    assert got["total"] == 1 and got["rows"][0]["file"] == "/d/Budget.xlsx"
+    assert _docs(case, collection_curation="nope")["total"] == 0
+
+
+def test_documents_sort_by_name_and_kind(tmp_path):
+    case, _paths = _seed_docs_view(tmp_path)
+    default = [r["file"] for r in _docs(case)["rows"]]
+    assert default == ["/d/will.pdf", "/d/Budget.xlsx", "/d/deed.docx", "/d/apple.pdf"], \
+        "no ?sort keeps document_rows' significance order"
+    names = [r["name"] for r in _docs(case, sort="name")["rows"]]
+    assert names == ["apple.pdf", "Budget.xlsx", "deed.docx", "will.pdf"]   # case-insensitive
+    assert [r["name"] for r in _docs(case, sort="name", dir="desc")["rows"]] == names[::-1]
+    kinds = [r["name"] for r in _docs(case, sort="kind")["rows"]]
+    assert kinds == ["deed.docx", "apple.pdf", "will.pdf", "Budget.xlsx"]
+    assert _docs(case, sort="bogus")["rows"][0]["file"] == default[0]
+    # sort and paging compose: page 2 continues the sorted order
+    p2 = _docs(case, sort="name", offset="2", limit="2")
+    assert [r["name"] for r in p2["rows"]] == names[2:] and p2["total"] == 4
+
+
+
+class _PageHandler:
+    """Just enough of the HTTP handler to call the real ``_page`` and capture it."""
+    def __init__(self):
+        self.sent = None
+
+    def _send(self, code, ctype, body, extra=None):
+        self.sent = (code, body, extra or {})
+
+    def _json(self, code, obj):
+        self.sent = (code, json.dumps(obj).encode(), {})
+
+
+def _ctx_of(body):
+    m = re.search(rb'<script type="application/json" id="ctx">(.*?)</script>', body, re.S)
+    return json.loads(m.group(1))
+
+
+def test_documents_only_mode_redirects_other_pages_and_flags_solo(tmp_path, monkeypatch):
+    case, _paths = setup_case(tmp_path)
+    monkeypatch.setattr(fa, "CASE", case)
+    monkeypatch.setattr(fa, "SOLO_PAGE", "documents")
+    for path in ("/", "/overview", "/emails", "/history"):
+        h = _PageHandler()
+        fa.FamilyArchiveHandler._page(h, path)
+        assert h.sent[0] == 302 and h.sent[2]["Location"] == "/documents", path
+    h = _PageHandler()
+    fa.FamilyArchiveHandler._page(h, "/documents")
+    assert h.sent[0] == 200 and _ctx_of(h.sent[1])["solo"] == "documents"
+
+
+def test_full_archive_mode_has_no_solo_flag(tmp_path, monkeypatch):
+    case, _paths = setup_case(tmp_path)
+    monkeypatch.setattr(fa, "CASE", case)
+    monkeypatch.setattr(fa, "SOLO_PAGE", None)
+    h = _PageHandler()
+    fa.FamilyArchiveHandler._page(h, "/overview")
+    assert h.sent[0] == 200 and "solo" not in _ctx_of(h.sent[1])
+
+
+def test_documents_only_flag_parses():
+    assert fa.parse_args(["CASE_T", "--documents-only"]).documents_only is True
+    assert fa.parse_args(["CASE_T"]).documents_only is False
+
+
+def test_vital_doc_groups_cover_every_label():
+    """Every vital target the archive labels sits in exactly one tree group."""
+    assert set(_ad.VITAL_DOC_GROUP_OF) == set(_ad.VITAL_DOC_LABELS)
+    seen = [t for _g, (_l, ts) in _ad.VITAL_DOC_GROUPS.items() for t in ts]
+    assert len(seen) == len(set(seen))
+
+
+def _dismissed(paths):
+    d = json.loads((paths.metadata_dir / fa.DECISIONS_FILE).read_text())
+    return d.get("vital_doc_dismissed") or {}
+
+
+def test_undo_promote_restores_the_dismissal_it_cleared(tmp_path):
+    case, paths = setup_case(tmp_path)
+    md = paths.metadata_dir
+    (md / "vital_doc_candidates.json").write_text(json.dumps({
+        "deed_title": {"description": "a deed", "hits": [{"path": "/d/a.pdf", "score": 0.7}]}}))
+    (md / "vital_doc_confirmed.json").write_text(json.dumps([
+        {"path": "/d/a.pdf", "target": "will_testament", "tag": "will"}]))
+    case.load()
+    fa.verb_dismiss_vital(case, {"id": "will_testament::/d/a.pdf"})
+    rec = _dismissed(paths)["/d/a.pdf"]
+    res = fa.verb_promote_vital(case, {"id": "deed_title::/d/a.pdf"})
+    assert "/d/a.pdf" not in _dismissed(paths)            # promote un-dismisses
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert _dismissed(paths).get("/d/a.pdf") == rec        # …and undo puts it back
+
+
+def test_undo_confirm_restores_the_dismissal_it_cleared(tmp_path):
+    case, paths = setup_case(tmp_path)
+    _seed_vitals(paths)
+    case.load()
+    fa.verb_dismiss_vital(case, {"id": "will_testament::/d/will.pdf"})
+    rec = _dismissed(paths)["/d/will.pdf"]
+    res = fa.verb_confirm_vital(case, {"id": "will_testament::/d/will.pdf"})
+    assert "/d/will.pdf" not in _dismissed(paths)
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert _dismissed(paths).get("/d/will.pdf") == rec
+
+
+def test_undo_promote_without_a_prior_dismissal_adds_none(tmp_path):
+    case, paths = setup_case(tmp_path)
+    md = paths.metadata_dir
+    (md / "vital_doc_candidates.json").write_text(json.dumps({
+        "deed_title": {"description": "a deed", "hits": [{"path": "/d/a.pdf", "score": 0.7}]}}))
+    (md / "vital_doc_confirmed.json").write_text(json.dumps([]))
+    case.load()
+    res = fa.verb_promote_vital(case, {"id": "deed_title::/d/a.pdf"})
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert "/d/a.pdf" not in _dismissed(paths)

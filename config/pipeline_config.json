@@ -6,12 +6,14 @@
       "drop:        Monitored drop zone where examiners place incoming case folders. Default: /drop",
       "cases:       Root for all processed case directories. Default: /cases",
       "watcher_log: Absolute path to the watcher daemon log file. Default: /opt/estate-pipeline/logs/watcher.log",
-      "presets:     Local case-config presets saved from the examiner console (tools/console.py). Never inside a case. Default: /data/presets"
+      "presets:     Local case-config presets saved from the examiner console (tools/console.py). Never inside a case. Default: /data/presets",
+      "cache_root:  Shared model caches (Hugging Face incl. System One's vLLM model, DeepFace, PaddleX, torch, CLIP), group wyeast + setgid, so every pipeline user reads the same weights; the stage dispatcher sets HF_HOME etc. under it. Env WYEAST_CACHE_ROOT overrides. Default: /opt/estate-pipeline/cache"
     ],
     "drop": "/data/drop",
     "cases": "/data/cases",
     "watcher_log": "/opt/estate-pipeline/logs/watcher.log",
-    "presets": "/data/presets"
+    "presets": "/data/presets",
+    "cache_root": "/opt/estate-pipeline/cache"
   },
   "ollama_url": "http://localhost:11434/api/generate",
   "models": {
@@ -244,7 +246,7 @@
   "ocr": {
     "_notes": [
       "ocr_confidence_threshold: PaddleOCR average word confidence below which a document is flagged for manual review.",
-      "workers: Concurrent Tesseract document workers. Capped at cpu_count at runtime.",
+      "workers: Concurrent Tesseract document workers. Capped at runtime at the CPUs available (affinity and container CPU quota).",
       "paddle_workers: Concurrent PaddleOCR workers. Each thread loads a full model copy; keep low to avoid OOM.",
       "legacy_convert_*: LibreOffice headless conversion of legacy .doc/.dot/.wbk/.ppt/.pps/.wps before text extraction (needs apt libreoffice-writer + libreoffice-impress). chunk = documents per soffice invocation; each invocation may run legacy_convert_timeout_s + legacy_convert_timeout_per_file_s x chunk seconds before its process group is killed and the batch is bisected to isolate the hanging document. See docs/specs/legacy-office-libreoffice-extraction.md."
     ],
@@ -722,6 +724,7 @@
       "operative_types: vital-document types that get a ranked latest-first view. The ranking is by date only and is labelled 'latest by date, not governing': a lead for the attorney, never a finding that a document is superseded.",
       "date_order: how to read an ambiguous numeric date such as 01/02/2020. unresolved (default, recommended) leaves it flagged with both readings; day_first reads 01/02/2020 as 1 February, month_first as 2 January. Set it per case only when the documents' date locale is known.",
       "min_year / max_year: years outside this range are flagged implausible and never become the primary date. max_year null means the current year.",
+      "email_min_year: the floor for a source email's Date header (default 1990, higher than min_year because an earlier Date is almost always a reset client clock such as 1970-01-01). Earlier dates are kept but flagged implausible_past.",
       "pdf_metadata: record the PDF Info creation and modified dates as low-confidence candidate dates. They are never the primary date; turn off to leave PDF metadata out of the index.",
       "source_email_date: for a document that arrived as a mail attachment, record the source email's Date as a low-confidence 'no later than' candidate (never the primary date).",
       "source_email_fallback: when a document has no execution date, let date_used fall back to the earliest source-email date, labelled email_sent_no_later_than. Off makes date_used the primary date or nothing; the email date is still recorded as a candidate.",
@@ -731,6 +734,7 @@
     "date_order": "unresolved",
     "min_year": 1900,
     "max_year": null,
+    "email_min_year": 1990,
     "pdf_metadata": true,
     "source_email_date": true,
     "source_email_fallback": true,
