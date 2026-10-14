@@ -23,6 +23,25 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-14 — CI no longer fails on edits to carried files
+
+**What changed**
+- `.github/scripts/check_export.py` used to fail the build whenever a carried file differed
+  from the hash recorded in `.wyeast-export.json`. Now that work happens here, that is the normal
+  state, so drift is reported as `::warning::` annotations on the PR instead. The footprint check
+  (no third-party import beyond pillow/pillow_heif) still fails the build.
+
+**Nothing here flows back to Wyeast.** Export is one-way (Wyeast → here). There is no tool that
+carries edits made here upstream; landing them in Wyeast means porting by hand against the
+commit in `.wyeast-export.json` (`source_commit`). The drift warnings are that porting list. To
+see it locally: `python3 .github/scripts/check_export.py`
+
+**Blocked:** nothing.
+
+**Next action:** as below — `git fetch origin && git status` before starting anything.
+
+---
+
 ### 2026-10-14 — this repo became the home
 
 **What changed**
