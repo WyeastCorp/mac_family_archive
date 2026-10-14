@@ -197,6 +197,11 @@
   function go(target) {
     if (!target) return;
     if (target.open && target.file) { lightbox(target.file, mediaKind(target.file)); return; }  // inline, not a new tab (#16)
+    if (CTX.solo && target.page && target.page !== CTX.solo) {
+      // The server would only bounce this back to the one page it serves.
+      toast("That opens in the full archive; this view shows documents only.");
+      return;
+    }
     var url = "/" + (target.page || "overview"), q = [];
     ["person", "scene", "place", "event", "thread", "conversation", "venue", "tab",
      "media", "vperson", "vscene", "favorite_curation", "collection_curation", "people",
@@ -236,7 +241,8 @@
   // the URL via replaceState; the page fn reads it back from Q on the next render.
   function encodeURL() {
     var q = [];
-    ["person", "scene", "place", "event", "thread", "media", "cat", "subcat", "modality", "qcat",
+    ["person", "scene", "place", "event", "thread", "media", "cat", "subcat", "vital", "docview",
+     "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
      "vperson", "vscene", "favorite_curation", "collection_curation", "people"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
@@ -526,6 +532,7 @@
   function shell() {
     var app = document.getElementById("app");
     app.innerHTML = "";
+    if (CTX.solo) return soloShell(app);
     var sh = el("div", "shell");
     var rail = el("nav", "rail");
     rail.setAttribute("role", "navigation");
@@ -559,6 +566,22 @@
     rail.appendChild(el("div", "casemeta", esc(CTX.case_id) + '<br><span class="role-pill">' + esc(CTX.role) + '</span>'));
     var main = el("main", "main"); main.id = "main"; main.setAttribute("role", "main");
     sh.appendChild(rail); sh.appendChild(main); app.appendChild(sh);
+    return main;
+  }
+
+  // --documents-only: no section rail (that is the point of the mode), just a slim
+  // bar naming the archive and the case so the page still says where you are.
+  function soloShell(app) {
+    var sh = el("div", "shell solo");
+    var main = el("main", "main"); main.id = "main"; main.setAttribute("role", "main");
+    var bar = el("div", "solobar");
+    bar.innerHTML = '<span class="mark">Wyeast</span><span class="sub">Family Archive</span>';
+    var meta = el("span", "solometa");
+    meta.appendChild(document.createTextNode(CTX.case_id || ""));
+    meta.appendChild(el("span", "role-pill", esc(CTX.role)));
+    bar.appendChild(meta);
+    main.appendChild(bar);
+    sh.appendChild(main); app.appendChild(sh);
     return main;
   }
 
@@ -1025,6 +1048,12 @@
     if (meta.caption) out.push(["Caption", esc(meta.caption)]);
     if (meta.albums && meta.albums.length) out.push(["Albums", esc(meta.albums.join(", "))]);
     if (meta.source) out.push(["Source", esc(pretty(meta.source))]);
+    // Documents page (docMeta): what the file is, where it is filed, vital status.
+    if (meta.doc_kind) out.push(["Kind", esc(meta.doc_kind)]);
+    if (meta.doc_where) out.push(["Folder", esc(meta.doc_where)]);
+    if (meta.doc_date) out.push(["Date", esc(meta.doc_date)]);
+    if (meta.doc_vital && meta.doc_vital.length) out.push(["Vital", esc(meta.doc_vital.join(", "))]);
+    if (meta.summary) out.push(["About", esc(meta.summary)]);
     // Curation overlay (examiner): starred flag, collection membership, note. All
     // estate/operator-derived → esc() at the sink.
     if (meta.favorite_curation) out.push(["Starred", "★"]);
@@ -3250,47 +3279,782 @@
     main.appendChild(panel);
   }
 
+  // ── Documents: folder tree + list/detail browser ──
+  // Left: a tree of every way into the documents (all, the vital kinds grouped,
+  // the vital checklist, the categories with their financial sub-categories, and
+  // — examiner — the curation collections as drop targets). Right: the chosen
+  // folder as a sortable List or a Detail stack of cards with the per-document
+  // verbs. Every verb is an existing audited, reversible endpoint; the page only
+  // arranges them. Filters ride the URL (cat/subcat/vital/docview/layout/sort/dir)
+  // so a verb's render() lands back on the same folder.
+
+  // Per-viewer UI conveniences only (open tree nodes, list/detail, overview
+  // hidden, size bars). Wrapped: storage can be absent or throw.
+  function prefGet(k, dflt) {
+    try { var v = localStorage.getItem("fa.docs." + k); return v == null ? dflt : JSON.parse(v); }
+    catch (e) { return dflt; }
+  }
+  function prefSet(k, v) { try { localStorage.setItem("fa.docs." + k, JSON.stringify(v)); } catch (e) { /* none */ } }
+
+  // The last Documents verb, so its Undo survives the render() the verb triggers
+  // (a toast is gone after 6 s and is wiped by the rebuild). Session-scoped.
+  function docsLastGet() {
+    try { return JSON.parse(sessionStorage.getItem("fa.docs.last") || "null"); } catch (e) { return null; }
+  }
+  function docsLastSet(v) {
+    try { if (v) sessionStorage.setItem("fa.docs.last", JSON.stringify(v)); else sessionStorage.removeItem("fa.docs.last"); }
+    catch (e) { /* none */ }
+  }
+  // doVerb + remember the result for the undo banner, then re-render.
+  function docsAct(path, body, msg) {
+    return postJSON(path, body).then(function (res) {
+      if (!(res.ok && res.j.ok !== false)) { toast("Couldn't do that: " + (res.j.error || "error")); return null; }
+      var x = res.j;
+      var tok = x.undo_token || ((x.undo_tokens || []).length === 1 ? x.undo_tokens[0] : null);
+      if (x.skipped) msg += " (" + x.skipped + " skipped)";
+      docsLastSet({ text: msg, token: tok });
+      if (!tok) toast(msg);   // no single undo (a batch): History has each one
+      render();
+      return x;
+    }).catch(function (e) {
+      toast("Couldn't do that: " + (e && e.message ? e.message : "server error"));
+      return null;
+    });
+  }
+
+  var DOC_KIND_NAMES = {
+    pdf: "PDF document", doc: "Word document", docx: "Word document", docm: "Word document",
+    dot: "Word template", rtf: "Rich text", txt: "Plain text", wpd: "WordPerfect document",
+    xls: "Excel workbook", xlsx: "Excel workbook", xlsm: "Excel workbook", xlsb: "Excel workbook",
+    csv: "Spreadsheet (CSV)", ppt: "PowerPoint", pptx: "PowerPoint", pps: "PowerPoint",
+    odt: "OpenDocument text", ods: "OpenDocument sheet", pages: "Pages document",
+    key: "Keynote", numbers: "Numbers sheet", epub: "E-book",
+    jpg: "Scanned image", jpeg: "Scanned image", png: "Scanned image", tif: "Scanned image", tiff: "Scanned image",
+  };
+  function docExt(r) {
+    var m = /\.([A-Za-z0-9]{1,6})$/.exec(r.name || r.file || "");
+    return m ? m[1].toLowerCase() : "";
+  }
+  function docKindName(r) {
+    var e = docExt(r);
+    return DOC_KIND_NAMES[e] || (e ? e.toUpperCase() + " file" : "File");
+  }
+  function docExtClass(e) {
+    if (e === "pdf") return "pdf";
+    if (/^(docx?|docm|dot|rtf|odt|pages|wpd|txt)$/.test(e)) return "word";
+    if (/^(xls[xmb]?|csv|ods|numbers)$/.test(e)) return "sheet";
+    if (/^(pptx?|pps|key)$/.test(e)) return "slides";
+    return "other";
+  }
+  function docWhere(r) {
+    return pretty(r.category || "miscellaneous") + (r.subcategory ? " › " + pretty(r.subcategory) : "");
+  }
+  // Wills, directives, trusts and beneficiary forms: several dated versions can
+  // exist and which one governs is a legal question, so those folders say so.
+  var DOC_OPERATIVE = { will_testament: 1, power_of_attorney: 1, trust_instrument: 1,
+                        beneficiary_designation: 1 };
+  function docDateOf(r) {
+    var best = null;
+    (r.vital || []).forEach(function (v) {
+      if (v.date_used && (!best || String(v.date_used.value) > String(best.value))) best = v.date_used;
+    });
+    return best;
+  }
+
+  // The lightbox's side panel for one document (fields read by metaRows).
+  function docMeta(r) {
+    var du = docDateOf(r);
+    return { name: r.name, summary: r.summary, doc_kind: docKindName(r), doc_where: docWhere(r),
+             doc_date: du ? vitalDateLabel(du) : null,
+             doc_vital: (r.vital || []).map(function (v) { return v.label + (v.reviewed ? " (confirmed)" : ""); }),
+             favorite_curation: r.favorite_curation, collections: r.collections, note: r.note };
+  }
+  function openDocs(rows, i) {
+    openLightbox({ list: rows, index: i, resolve: function (r) {
+      return { id: r.file, kind: mediaKind(r.file), meta: docMeta(r) };
+    } });
+  }
+
+  // Drag payload: the dragged row, or the whole selection when the row is in it.
+  var DOC_DRAG = null;
+  function docDragStart(e, r) {
+    var ids = SEL[r.file] ? Object.keys(SEL) : [r.file];
+    DOC_DRAG = ids;
+    try { e.dataTransfer.setData("text/plain", ids.length + " document(s)"); e.dataTransfer.effectAllowed = "move"; }
+    catch (x) { /* old browsers */ }
+    document.body.classList.add("docs-dragging");
+  }
+  function docDragEnd() { DOC_DRAG = null; document.body.classList.remove("docs-dragging"); }
+  function docDropTarget(node, onDrop) {
+    if (!EXAMINER) return;
+    node.addEventListener("dragover", function (e) { if (DOC_DRAG) { e.preventDefault(); node.classList.add("drop-on"); } });
+    node.addEventListener("dragleave", function () { node.classList.remove("drop-on"); });
+    node.addEventListener("drop", function (e) {
+      e.preventDefault(); node.classList.remove("drop-on");
+      var ids = DOC_DRAG; docDragEnd();
+      if (ids && ids.length) onDrop(ids);
+    });
+  }
+
   P.documents = function (main, data) {
     var index = data.index || [];
-    var controls = head(main, "Documents", "Documents", num(data.total || 0) + " documents.");
-    vitalDocsPanel(main, data.vital_docs);  // G-2 checklist at the top of Documents
-    // Category dropdown + (financial) sub-category dropdown in the sticky controls (#9).
-    // Both are SERVER filters now (applied before the page slice) so a category's
-    // tail is reachable via Load-more; the index (from ALL rows) drives the counts.
-    var selCat = el("select"); selCat.appendChild(new Option("All categories", ""));
-    index.forEach(function (c) { selCat.appendChild(new Option(pretty(c.category) + " (" + c.count + ")", c.category)); });
-    var fin = (index.filter(function (c) { return c.category === "financial"; })[0] || {}).subcategories || [];
-    var selSub = el("select"); selSub.style.display = "none";
-    (function fillSub() {
-      selSub.innerHTML = ""; selSub.appendChild(new Option("All sub-categories", ""));
-      fin.forEach(function (s) { selSub.appendChild(new Option(pretty(s.name) + " (" + s.count + ")", s.name)); });
-    })();
-    if (Q.cat) selCat.value = Q.cat;
-    if (Q.subcat) selSub.value = Q.subcat;
-    var expBtn = el("button", "btn", "Export filtered");
-    controls.appendChild(el("span", "flabel", "Category")); controls.appendChild(selCat);
-    controls.appendChild(selSub); controls.appendChild(expBtn);
+    var vd = data.vital_docs || {};
+    var total = 0;
+    index.forEach(function (c) { total += c.count; });
+    var ROWS = {};          // file → row, for drops and the viewer
+    var view = { cat: Q.cat || "", subcat: Q.subcat || "", vital: Q.vital || "", docview: Q.docview || "",
+                 coll: Q.collection_curation || "" };
+    var COLLS = null;       // [{slug,title,count}] once fetched (examiner)
+    var layout = Q.layout || prefGet("layout", "list");
+    var sort = { by: Q.sort || "", dir: Q.dir || "" };
 
-    var holder = el("div"); main.appendChild(holder);
-    var pg = pager("/api/documents", {
-      getParams: function () { return { cat: selCat.value, subcat: selSub.value }; },
-      render: function (all) { holder.innerHTML = ""; fileTable(holder, all); },
-    });
-    main.appendChild(pg.footer);
-    selCat.onchange = function () {
-      selSub.value = ""; selSub.style.display = (selCat.value === "financial" && fin.length) ? "" : "none";
-      setQ({ cat: selCat.value, subcat: "" }); pg.load(true);
-    };
-    selSub.onchange = function () { setQ({ subcat: selSub.value }); pg.load(true); };
-    expBtn.onclick = function () {
-      var cat = selCat.value;
-      if (!cat) return doVerb("/api/export", { items: pg.rows.map(function (r) { return r.file; }) }, "Exported documents");
-      var key = (cat === "financial" && selSub.value) ? cat + ":" + selSub.value : cat;
-      exportCollection("category", key, pretty(selSub.value || cat));
-    };
-    // Seed from page 1; re-fetch with the category filter if one is deep-linked.
-    selSub.style.display = (selCat.value === "financial" && fin.length) ? "" : "none";
-    if (selCat.value) pg.load(true); else pg.seed(data);
+    head(main, "Documents", "Documents", num(total) + " documents.");
+    var wrap = el("div", "docs"); main.appendChild(wrap);
+    var tree = el("nav", "docs-tree"); tree.setAttribute("aria-label", "Folders");
+    var pane = el("div", "docs-pane");
+    wrap.appendChild(tree); wrap.appendChild(pane);
+
+    // ── tree ──
+    var open = prefGet("open", { vital: true, financial: true });
+    var showSizes = prefGet("sizes", true);
+    var maxCount = 1;
+    index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
+    var targets = vd.available ? (vd.targets || []) : [];
+    var groups = vd.groups || [];
+
+    function isCurrent(spec) {
+      return (spec.docview || "") === view.docview && (spec.cat || "") === view.cat &&
+             (spec.subcat || "") === view.subcat && (spec.vital || "") === view.vital &&
+             (spec.coll || "") === view.coll;
+    }
+    function pick(spec) {
+      view = { cat: spec.cat || "", subcat: spec.subcat || "", vital: spec.vital || "", docview: spec.docview || "",
+               coll: spec.coll || "" };
+      setQ({ cat: view.cat, subcat: view.subcat, vital: view.vital, docview: view.docview,
+             collection_curation: view.coll });
+      clearSel();
+      drawTree(); drawPane(true);
+    }
+    function trow(ul, o) {
+      // o: {label, count, spec, depth, key (expandable), muted, mark, drop, title}
+      var li = el("li");
+      var b = el("button", "trow" + (o.muted ? " muted" : ""));
+      b.type = "button";
+      b.style.paddingLeft = (6 + (o.depth || 0) * 16) + "px";
+      if (o.title) b.title = o.title;
+      var chev = el("span", "chev");
+      chev.setAttribute("aria-hidden", "true");
+      if (o.key) {
+        chev.textContent = open[o.key] ? "▾" : "▸";
+        b.setAttribute("aria-expanded", open[o.key] ? "true" : "false");
+      }
+      b.appendChild(chev);
+      b.appendChild(txt("span", "nm", o.label));
+      if (o.mark) {
+        var vm = txt("span", "vm", o.mark);
+        if (o.markLabel) { vm.title = o.markLabel; vm.setAttribute("aria-label", o.markLabel); }
+        b.appendChild(vm);
+      }
+      if (showSizes && o.count != null) {
+        b.appendChild(txt("span", "ct", num(o.count)));
+        var bar = el("span", "bar"); bar.setAttribute("aria-hidden", "true");
+        var fill = el("span"); fill.style.width = Math.max(2, Math.round(100 * o.count / maxCount)) + "%";
+        bar.appendChild(fill); b.appendChild(bar);
+      }
+      if (o.spec && isCurrent(o.spec)) b.setAttribute("aria-current", "page");
+      b.onclick = function () {
+        // An expandable node toggles when it is already the current folder (or
+        // has no folder of its own); otherwise it opens AND becomes current.
+        if (o.key && (!o.spec || isCurrent(o.spec))) {
+          open[o.key] = !open[o.key]; prefSet("open", open);
+          return drawTree();
+        }
+        if (o.key && !open[o.key]) { open[o.key] = true; prefSet("open", open); }
+        pick(o.spec);
+      };
+      if (o.drop) docDropTarget(b, o.drop);
+      li.appendChild(b); ul.appendChild(li);
+    }
+    function sep(ul) { var li = el("li", "tsep"); li.setAttribute("aria-hidden", "true"); ul.appendChild(li); }
+
+    function drawTree() {
+      tree.innerHTML = "";
+      var tools = el("div", "docs-treetools");
+      var sz = el("button", "btn chip", showSizes ? "Hide sizes" : "Show sizes");
+      sz.setAttribute("aria-pressed", showSizes ? "true" : "false");
+      sz.onclick = function () { showSizes = !showSizes; prefSet("sizes", showSizes); drawTree(); };
+      tools.appendChild(sz);
+      tree.appendChild(tools);
+      var ul = el("ul", "tlist");
+      trow(ul, { label: "All documents", count: total, spec: {} });
+
+      if (targets.length) {
+        sep(ul);
+        var foundItems = 0;
+        targets.forEach(function (t) { foundItems += (t.items || []).filter(function (i) { return i.file_id; }).length; });
+        trow(ul, { label: "Vital documents", count: foundItems, key: "vital", spec: { vital: "*" } });
+        if (open.vital) {
+          trow(ul, { label: "Checklist", depth: 1, spec: { docview: "checklist" },
+                     title: num(vd.found_count) + " of " + num(vd.total_count) + " kinds found" +
+                            (EXAMINER && vd.unconfirmed_count ? "; " + num(vd.unconfirmed_count) + " to confirm" : ""),
+                     mark: EXAMINER && vd.unconfirmed_count ? num(vd.unconfirmed_count) + " to confirm" : null });
+          var gorder = groups.map(function (g) { return g.group; });
+          var glabel = {};
+          groups.forEach(function (g) { glabel[g.group] = g.label; });
+          targets.forEach(function (t) { if (gorder.indexOf(t.group || "other") < 0) gorder.push(t.group || "other"); });
+          gorder.forEach(function (g) {
+            var ts = targets.filter(function (t) { return (t.group || "other") === g; });
+            if (!ts.length) return;
+            var gn = 0;
+            ts.forEach(function (t) { gn += (t.items || []).filter(function (i) { return i.file_id; }).length; });
+            var gkey = "vital/" + g;
+            // A group with something found starts open; the viewer's own toggle wins after.
+            if (open[gkey] == null) open[gkey] = gn > 0;
+            trow(ul, { label: glabel[g] || "Other", count: gn, depth: 1, key: gkey, muted: !gn });
+            if (!open[gkey]) return;
+            ts.forEach(function (t) {
+              var n = (t.items || []).filter(function (i) { return i.file_id; }).length;
+              var unconf = (t.items || []).filter(function (i) { return i.file_id && !i.reviewed; }).length;
+              trow(ul, { label: t.label, count: n, depth: 2, spec: { vital: t.target },
+                         muted: !t.found, title: t.found ? null : "Searched for; not found in this collection",
+                         mark: EXAMINER && unconf ? "◆" : null,
+                         markLabel: unconf + " to confirm",
+                         drop: function (ids) { dropOnVital(ids, t); } });
+            });
+          });
+        }
+      }
+
+      sep(ul);
+      index.forEach(function (c) {
+        var subs = c.subcategories || [];
+        trow(ul, { label: pretty(c.category), count: c.count, key: subs.length ? c.category : null,
+                   spec: { cat: c.category },
+                   drop: c.category === "account_credentials" ? null : function (ids) {
+                     docsAct("/api/move", { view: "document", srcs: ids, to: c.category },
+                             "Moved " + ids.length + " document(s) to " + pretty(c.category));
+                   } });
+        if (subs.length && open[c.category]) {
+          subs.forEach(function (s) {
+            trow(ul, { label: pretty(s.name), count: s.count, depth: 1,
+                       spec: { cat: c.category, subcat: s.name },
+                       drop: s.name === "uncategorized" ? null : function (ids) {
+                         docsAct("/api/move", { view: "document", srcs: ids, to: "financial", subcategory: s.name },
+                                 "Moved " + ids.length + " document(s) to " + pretty(s.name));
+                       } });
+          });
+        }
+      });
+
+      if (EXAMINER) {
+        sep(ul);
+        var cap = el("li", "tcap", "Collections"); ul.appendChild(cap);
+        if (COLLS == null) {
+          getJSON("/api/collections").then(function (d) {
+            COLLS = (d && d.collections) || []; drawTree();
+          }).catch(function () { COLLS = []; });
+        } else if (!COLLS.length) {
+          ul.appendChild(el("li", "tnone", "None yet. Select documents, then Add to collection."));
+        } else {
+          COLLS.forEach(function (c) {
+            trow(ul, { label: c.title, count: c.count, spec: { coll: c.slug },
+                       drop: function (ids) {
+                         docsAct("/api/collection/add", { slug: c.slug, ids: ids }, "Added " + ids.length + " to " + c.title);
+                       } });
+          });
+        }
+      }
+      tree.appendChild(ul);
+      if (EXAMINER) tree.appendChild(el("p", "docs-hint",
+        "Drag a document onto a folder to move it, onto a kind of vital document to file it, or onto a collection to add it."));
+    }
+
+    // Drop on a vital kind: re-file a document that is already vital, promote one
+    // the pipeline found as a possible match; anything else is refused (the
+    // promote verb only accepts real candidates, so we say so up front).
+    function dropOnVital(ids, t) {
+      var reassign = [], promote = [], skipped = 0;
+      ids.forEach(function (f) {
+        var r = ROWS[f];
+        if (r && r.vital && r.vital.length) {
+          if (!r.vital.some(function (v) { return v.target === t.target; })) reassign.push(r.vital[0].id);
+        } else if (r && (r.vital_candidates || []).indexOf(t.target) >= 0) {
+          promote.push(t.target + "::" + f);
+        } else { skipped++; }
+      });
+      if (skipped) toast(skipped + " document(s) weren't found as possible " + t.label.toLowerCase() +
+                         " matches, so they can't be filed there.");
+      if (promote.length) docsAct("/api/vital/promote", promote.length === 1 ? { id: promote[0] } : { ids: promote },
+                                  "Filed " + promote.length + " as " + t.label);
+      reassign.forEach(function (id) {
+        docsAct("/api/vital/reassign", { id: id, to_target: t.target, scope: "single" }, "Filed as " + t.label);
+      });
+    }
+
+    // ── main pane ──
+    var pg = null, body = null;
+    function titleFor() {
+      if (view.docview === "checklist") return ["Vital documents", "Checklist"];
+      if (view.coll) {
+        var cc = (COLLS || []).filter(function (x) { return x.slug === view.coll; })[0];
+        return ["Collections", cc ? cc.title : view.coll];
+      }
+      if (view.vital) {
+        if (view.vital === "*") return ["Vital documents", "All vital documents"];
+        var t = targets.filter(function (x) { return x.target === view.vital; })[0];
+        return ["Vital documents", t ? t.label : pretty(view.vital)];
+      }
+      if (view.cat) return view.subcat ? [pretty(view.cat), pretty(view.subcat)] : ["Documents", pretty(view.cat)];
+      return [null, "All documents"];
+    }
+    function drawPane(fetch) {
+      pane.innerHTML = "";
+      var last = docsLastGet();
+      if (last && EXAMINER) {
+        var ub = el("div", "docs-undo"); ub.setAttribute("role", "status");
+        ub.appendChild(txt("span", "t", last.text));
+        var u = el("button", "btn small", last.token ? "Undo" : "History");
+        if (!last.token && CTX.solo) u.hidden = true;   // History is outside this view
+        if (!last.token) u.onclick = function () { location.href = "/history"; };
+        else u.onclick = function () {
+          postJSON("/api/undo", { undo_token: last.token }).then(function (res) {
+            if (res.ok && res.j.ok !== false) { docsLastSet(null); toast("Undone"); render(); return; }
+            toast("Couldn't undo: " + (res.j.error || "error"));
+          });
+        };
+        var x = el("button", "btn small", "Dismiss");
+        x.onclick = function () { docsLastSet(null); ub.remove(); };
+        ub.appendChild(u); ub.appendChild(x);
+        pane.appendChild(ub);
+      }
+      if (!prefGet("hideOverview", false)) pane.appendChild(overview());
+
+      var tt = titleFor();
+      var crumb = el("div", "docs-crumb");
+      if (tt[0]) {
+        var cb = el("button", "linkbtn", esc(tt[0]));
+        cb.onclick = function () {
+          if (view.subcat) pick({ cat: view.cat });
+          else if (view.vital || view.docview) pick({ vital: "*" });
+          else if (view.coll) { if (CTX.solo) pick({}); else location.href = "/collections"; }
+          else pick({});
+        };
+        crumb.appendChild(cb); crumb.appendChild(document.createTextNode(" ›"));
+      }
+      pane.appendChild(crumb);
+      var hrow = el("div", "docs-titlerow");
+      hrow.appendChild(txt("h2", "docs-title", tt[1]));
+      if (prefGet("hideOverview", false)) {
+        var so = el("button", "linkbtn", "Show overview");
+        so.onclick = function () { prefSet("hideOverview", false); drawPane(false); };
+        hrow.appendChild(so);
+      }
+      pane.appendChild(hrow);
+
+      if (view.docview === "checklist") {
+        vitalDocsPanel(pane, vd);
+        return;
+      }
+
+      var ctl = el("div", "docs-ctl");
+      var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "View");
+      [["list", "List"], ["detail", "Detail"]].forEach(function (o) {
+        var b = el("button", null, o[1]); b.type = "button";
+        b.setAttribute("aria-pressed", layout === o[0] ? "true" : "false");
+        b.onclick = function () {
+          layout = o[0]; prefSet("layout", layout); setQ({ layout: layout === "list" ? "" : layout });
+          drawBody();
+        };
+        seg.appendChild(b);
+      });
+      ctl.appendChild(seg);
+      var exp = el("button", "btn small", "Export this folder");
+      exp.onclick = function () {
+        if (view.coll) return exportCollection("curation_collection", view.coll, titleFor()[1]);
+        if (view.cat) {
+          var key = (view.cat === "financial" && view.subcat) ? view.cat + ":" + view.subcat : view.cat;
+          return exportCollection("category", key, pretty(view.subcat || view.cat));
+        }
+        doVerb("/api/export", { items: pg.rows.map(function (r) { return r.file; }) }, "Exported " + pg.rows.length + " document(s)");
+      };
+      ctl.appendChild(exp);
+      pane.appendChild(ctl);
+
+      if (view.vital && view.vital !== "*" && DOC_OPERATIVE[view.vital]) {
+        pane.appendChild(el("div", "docs-rank",
+          "<strong>Newest date first, not the governing one.</strong> Where a date could be read, these are " +
+          "ordered by it. The archive never says one replaces another; which one governs is the attorney's call."));
+      }
+      var elsewhere = vitalElsewhere();
+      if (elsewhere) pane.appendChild(el("p", "docs-note", esc(elsewhere)));
+
+      body = el("div", "docs-body"); pane.appendChild(body);
+      pg = pager("/api/documents", {
+        getParams: function () {
+          return { cat: view.cat, subcat: view.subcat, vital: view.vital, collection_curation: view.coll,
+                   sort: sort.by, dir: sort.dir };
+        },
+        render: function () { drawBody(); },
+      });
+      pg.limit = 300;
+      pane.appendChild(pg.footer);
+      if (fetch || view.cat || view.vital || view.coll || sort.by) pg.load(true); else pg.seed(data);
+    }
+
+    // Vital items with no document file (email/message/recording sourced) can't
+    // be listed here — point at the checklist, where they deep-link.
+    function vitalElsewhere() {
+      if (!view.vital) return null;
+      var n = 0;
+      targets.forEach(function (t) {
+        if (view.vital !== "*" && t.target !== view.vital) return;
+        (t.items || []).forEach(function (i) { if (!i.file_id) n++; });
+      });
+      if (!n) return null;
+      return n + " more " + (n === 1 ? "was" : "were") + " found in emails, messages or recordings rather than as files. " +
+             "The Checklist links to " + (n === 1 ? "it." : "them.");
+    }
+
+    function overview() {
+      var box = el("section", "docs-ov"); box.setAttribute("aria-label", "Overview");
+      var top = el("div", "docs-ovhead");
+      top.appendChild(el("h3", null, "Overview"));
+      var hide = el("button", "linkbtn", "Hide overview");
+      hide.onclick = function () { prefSet("hideOverview", true); drawPane(false); };
+      top.appendChild(hide); box.appendChild(top);
+      var big = index.slice(0, 3).map(function (c) { return pretty(c.category) + " (" + num(c.count) + ")"; });
+      box.appendChild(el("p", null, esc(num(total) + " documents, filed into " + index.length +
+        " folders. The largest are " + big.join(", ") + ".")));
+      if (vd.available) {
+        var line = num(vd.found_count) + " of " + num(vd.total_count) + " kinds of vital document were found.";
+        if (EXAMINER && vd.unconfirmed_count) line += " " + num(vd.unconfirmed_count) + " still need your confirmation; the Checklist has them all.";
+        box.appendChild(el("p", null, esc(line)));
+      }
+      box.appendChild(el("p", null, esc(EXAMINER
+        ? "Pick a folder on the left. Open a document to read it; Detail view has the actions for each one."
+        : "Pick a folder on the left, then open a document to read it.")));
+      return box;
+    }
+
+    function rowsInOrder() {
+      var rows = pg ? pg.rows : [];
+      rows.forEach(function (r) { ROWS[r.file] = r; DOC_CAT[r.file] = r.category; });
+      if (view.vital && view.vital !== "*" && !sort.by) {
+        // Date order inside one vital kind (newest first; undated last).
+        rows = rows.slice().sort(function (a, b) {
+          var da = docDateOf(a), db = docDateOf(b);
+          if (!da) return db ? 1 : 0;
+          if (!db) return -1;
+          return String(db.value).localeCompare(String(da.value));
+        });
+      }
+      return rows;
+    }
+    function drawBody() {
+      if (!body) return;
+      body.innerHTML = "";
+      var rows = rowsInOrder();
+      if (!rows.length) { body.appendChild(el("p", "notice", "Nothing here.")); return; }
+      if (layout === "detail") detailView(rows); else listView(rows);
+    }
+
+    function sortHead(label, key) {
+      var b = el("button", "sorth", "");
+      b.type = "button";
+      var on = sort.by === key;
+      var asc = on && sort.dir !== "desc";
+      b.appendChild(document.createTextNode(label + (on ? (asc ? " ▲" : " ▼") : "")));
+      b.setAttribute("aria-sort", on ? (asc ? "ascending" : "descending") : "none");
+      b.onclick = function () {
+        // off → ascending → descending → off (back to significance order)
+        if (!on) sort = { by: key, dir: "asc" };
+        else if (asc) sort = { by: key, dir: "desc" };
+        else sort = { by: "", dir: "" };
+        setQ({ sort: sort.by, dir: sort.dir });
+        pg.load(true);
+      };
+      return b;
+    }
+
+    function nameCell(r, rows, i) {
+      var cell = el("span", "nmcell");
+      var e = docExt(r);
+      var badge = txt("span", "extb " + docExtClass(e), (e || "?").slice(0, 4).toUpperCase());
+      badge.setAttribute("aria-hidden", "true");
+      cell.appendChild(badge);
+      var a = el("a", "docname", "");
+      a.textContent = r.name;
+      a.href = mediaURL(r.file);
+      a.title = r.name;
+      a.setAttribute("rel", "noopener noreferrer");
+      a.onclick = function (ev) {
+        if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button) return;
+        ev.preventDefault(); openDocs(rows, i);
+      };
+      cell.appendChild(a);
+      if (r.vital && r.vital.length) {
+        var vm = el("span", "vd", "◆"); vm.title = "Vital: " + r.vital.map(function (v) { return v.label; }).join(", ");
+        vm.setAttribute("aria-label", vm.title); cell.appendChild(vm);
+      }
+      if (r.note) { var nt = el("span", "nt", "✎"); nt.title = "Has a note"; nt.setAttribute("aria-label", "Has a note"); cell.appendChild(nt); }
+      if (r.favorite_curation) { var st = el("span", "st", "★"); st.title = "Starred"; st.setAttribute("aria-label", "Starred"); cell.appendChild(st); }
+      return cell;
+    }
+    function pickBox(r, onToggle) {
+      var cb = el("input", "rowpick"); cb.type = "checkbox"; cb.checked = !!SEL[r.file];
+      cb.setAttribute("aria-label", "Select " + r.name);
+      cb.onclick = function (e) { onToggle(cb.checked, e.shiftKey); };
+      return cb;
+    }
+
+    function listView(rows) {
+      var t = el("div", "docs-list"); t.setAttribute("role", "table"); t.setAttribute("aria-label", "Documents");
+      var h = el("div", "fh"); h.setAttribute("role", "row");
+      h.appendChild(el("span"));
+      h.appendChild(sortHead("Name", "name"));
+      h.appendChild(txt("span", "colh", "What it is"));
+      h.appendChild(sortHead("Kind", "kind"));
+      h.appendChild(txt("span", "colh", "Date"));
+      t.appendChild(h);
+      var setters = [], lastIdx = -1;
+      rows.forEach(function (r, i) {
+        var fr = el("div", "fr" + (SEL[r.file] ? " sel" : "")); fr.setAttribute("role", "row");
+        if (EXAMINER) {
+          fr.draggable = true;
+          fr.addEventListener("dragstart", function (e) { docDragStart(e, r); });
+          fr.addEventListener("dragend", docDragEnd);
+        }
+        var c0 = el("span", "cb");
+        var box;
+        function set(on) { box.checked = on; fr.classList.toggle("sel", on); toggleSel(r.file, on); }
+        setters.push(set);
+        box = pickBox(r, function (on, shift) {
+          if (shift && lastIdx >= 0) {
+            var a = Math.min(lastIdx, i), b = Math.max(lastIdx, i);
+            for (var k = a; k <= b; k++) setters[k](on);
+          } else set(on);
+          lastIdx = i;
+        });
+        c0.appendChild(box); fr.appendChild(c0);
+        fr.appendChild(nameCell(r, rows, i));
+        var what = txt("span", "what", r.summary || r.preview || "");
+        what.title = r.summary || "";
+        fr.appendChild(what);
+        fr.appendChild(txt("span", "kind", docKindName(r)));
+        var du = docDateOf(r);
+        var dt = txt("span", "dt", du ? vitalDateText(du) : "—");
+        if (du) dt.title = vitalDateLabel(du);
+        fr.appendChild(dt);
+        t.appendChild(fr);
+      });
+      var sc = el("div", "table-scroll"); sc.appendChild(t);
+      body.appendChild(sc);
+      body.appendChild(el("p", "docs-hint", "Click a name to open the document. ◆ vital · ✎ has a note · ★ starred." +
+        (layout === "list" && EXAMINER ? " Switch to Detail for each document's actions." : "")));
+    }
+
+    var OPEN_PANEL = {};    // file → "move" | "note" (one inline panel per card)
+    function detailView(rows) {
+      var list = el("div", "docs-cards");
+      rows.forEach(function (r, i) { list.appendChild(card(r, rows, i)); });
+      body.appendChild(list);
+    }
+
+    function card(r, rows, i) {
+      var c = el("article", "docs-card" + (SEL[r.file] ? " sel" : ""));
+      c.setAttribute("aria-label", r.name);
+      if (EXAMINER) {
+        c.draggable = true;
+        c.addEventListener("dragstart", function (e) { docDragStart(e, r); });
+        c.addEventListener("dragend", docDragEnd);
+      }
+      var row = el("div", "docs-cardrow"); c.appendChild(row);
+      var box = pickBox(r, function (on) { c.classList.toggle("sel", on); toggleSel(r.file, on); });
+      row.appendChild(box);
+      var b = el("div", "docs-cardbody"); row.appendChild(b);
+      b.appendChild(txt("div", "where", docWhere(r)));
+      var nm = el("button", "docs-cardname", ""); nm.type = "button"; nm.textContent = r.name;
+      nm.onclick = function () { openDocs(rows, i); };
+      b.appendChild(nm);
+      if (r.summary) b.appendChild(txt("div", "docs-summary", r.summary));
+      var meta = el("div", "docs-meta");
+      var du = docDateOf(r);
+      if (du) { var d = txt("span", null, vitalDateLabel(du)); d.title = VITAL_DATE_TIP[du.basis] || ""; meta.appendChild(d); }
+      meta.appendChild(txt("span", null, docKindName(r)));
+      if (r.significance) meta.appendChild(el("span", null, sig(r.significance)));
+      if ((r.collections || []).length) meta.appendChild(txt("span", "inc", "In " + r.collections.join(", ")));
+      b.appendChild(meta);
+
+      vitalControls(b, r);
+      if (r.note && OPEN_PANEL[r.file] !== "note") {
+        var nb = el("div", "docs-notebox");
+        nb.appendChild(txt("span", "ic", "✎")); nb.appendChild(txt("span", "t", r.note));
+        b.appendChild(nb);
+      }
+      var acts = el("div", "docs-acts");
+      var op = el("button", "btn primary small", "Open"); op.onclick = function () { openDocs(rows, i); };
+      acts.appendChild(op);
+      if (EXAMINER) {
+        var star = el("button", "btn small", r.favorite_curation ? "★ Starred" : "☆ Star");
+        star.setAttribute("aria-pressed", r.favorite_curation ? "true" : "false");
+        star.onclick = function () {
+          var on = !r.favorite_curation;
+          docsAct("/api/favorite", { id: r.file, on: on }, (on ? "Starred " : "Unstarred ") + r.name);
+        };
+        acts.appendChild(star);
+        acts.appendChild(panelBtn(r, "note", r.note ? "Edit note" : "Add note"));
+        acts.appendChild(panelBtn(r, "move", "Move to…"));
+        var ac = el("button", "btn small", "Add to collection…");
+        ac.onclick = function () { addToCollection([r.file]); };
+        acts.appendChild(ac);
+        if (view.coll) {
+          var rm = el("button", "btn small", "Remove from this collection");
+          rm.onclick = function () {
+            docsAct("/api/collection/remove", { slug: view.coll, ids: [r.file] }, "Removed " + r.name + " from the collection");
+          };
+          acts.appendChild(rm);
+        }
+      }
+      b.appendChild(acts);
+      if (OPEN_PANEL[r.file] === "note") b.appendChild(noteEditor(r));
+      if (OPEN_PANEL[r.file] === "move") b.appendChild(movePanel(r));
+      return c;
+    }
+    function panelBtn(r, which, label) {
+      var btn = el("button", "btn small", label);
+      btn.setAttribute("aria-expanded", OPEN_PANEL[r.file] === which ? "true" : "false");
+      btn.onclick = function () {
+        OPEN_PANEL[r.file] = OPEN_PANEL[r.file] === which ? null : which;
+        drawBody();
+      };
+      return btn;
+    }
+
+    function vitalControls(b, r) {
+      var vit = r.vital || [], cands = r.vital_candidates || [];
+      if (!vit.length && !(EXAMINER && cands.length)) return;
+      var box = el("div", "docs-vital");
+      vit.forEach(function (v) {
+        var line = el("div", "docs-vline");
+        line.appendChild(txt("span", "tag" + (v.reviewed ? " ok" : " open"), "◆ " + v.label));
+        if (EXAMINER) {
+          if (v.reviewed) line.appendChild(txt("span", "docs-ok", v.promoted ? "You filed this" : "✓ Confirmed"));
+          else {
+            var cf = el("button", "btn small primary", "Yes, that's right");
+            cf.onclick = function () { docsAct("/api/vital/confirm", { id: v.id }, "Confirmed " + r.name + " as " + v.label); };
+            line.appendChild(cf);
+          }
+          var rt = el("button", "linkbtn", "Different kind…");
+          rt.onclick = function () {
+            pickVitalTarget("File " + r.name + " as which kind?", vd.all_targets || [], v.target, function (to) {
+              docsAct("/api/vital/reassign", { id: v.id, to_target: to, scope: "single" }, "Re-filed " + r.name);
+            });
+          };
+          line.appendChild(rt);
+          var srcBox = vitalProvenance({ date_used: null, source_emails: v.source_emails,
+                                         source_unresolved: v.source_unresolved }, line);
+          box.appendChild(line);
+          if (srcBox) box.appendChild(srcBox);
+        } else box.appendChild(line);
+      });
+      if (EXAMINER) {
+        var sw = el("button", "vsw", "");
+        sw.type = "button";
+        var on = vit.length > 0;
+        sw.setAttribute("aria-pressed", on ? "true" : "false");
+        sw.appendChild(el("span", "knob")).setAttribute("aria-hidden", "true");
+        sw.appendChild(document.createTextNode("Vital"));
+        sw.title = on ? "Not a vital document: take it off the checklist" : "This is a vital document: add it to the checklist";
+        sw.onclick = function () {
+          if (on) {
+            docsAct("/api/vital/dismiss", { id: vit[0].id }, r.name + " is no longer vital");
+          } else if (cands.length === 1) {
+            docsAct("/api/vital/promote", { id: cands[0] + "::" + r.file }, "Filed " + r.name + " as vital");
+          } else {
+            var choices = (vd.all_targets || []).filter(function (t) { return cands.indexOf(t.target) >= 0; });
+            pickVitalTarget("Which kind of vital document is it?", choices, null, function (to) {
+              docsAct("/api/vital/promote", { id: to + "::" + r.file }, "Filed " + r.name + " as vital");
+            });
+          }
+        };
+        box.appendChild(sw);
+        if (!on) box.appendChild(txt("span", "docs-hint inline",
+          "Possible " + cands.map(function (t) {
+            var x = (vd.all_targets || []).filter(function (a) { return a.target === t; })[0];
+            return x ? x.label.toLowerCase() : pretty(t);
+          }).join(" or ") + "."));
+      }
+      b.appendChild(box);
+    }
+
+    function noteEditor(r) {
+      var w = el("div", "docs-noteedit");
+      var id = "note-" + Math.random().toString(36).slice(2);
+      var lab = el("label", null, "Note on this document (examiner only)"); lab.htmlFor = id;
+      var ta = el("textarea"); ta.id = id; ta.value = r.note || "";
+      ta.placeholder = "e.g. This return is a relative's, not the account holder's.";
+      w.appendChild(lab); w.appendChild(ta);
+      var bar = el("div", "docs-acts");
+      var save = el("button", "btn primary small", "Save note");
+      save.onclick = function () {
+        var text = ta.value.trim();
+        OPEN_PANEL[r.file] = null;
+        if (!text) {
+          if (r.note) docsAct("/api/note/clear", { id: r.file }, "Removed the note on " + r.name); else drawBody();
+        } else docsAct("/api/note/set", { id: r.file, text: text }, "Saved a note on " + r.name);
+      };
+      var cancel = el("button", "btn small", "Cancel");
+      cancel.onclick = function () { OPEN_PANEL[r.file] = null; drawBody(); };
+      bar.appendChild(save); bar.appendChild(cancel);
+      if (r.note) {
+        var rm = el("button", "btn small", "Remove note");
+        rm.onclick = function () { OPEN_PANEL[r.file] = null; docsAct("/api/note/clear", { id: r.file }, "Removed the note on " + r.name); };
+        bar.appendChild(rm);
+      }
+      w.appendChild(bar);
+      setTimeout(function () { try { ta.focus(); } catch (e) { /* none */ } }, 0);
+      return w;
+    }
+
+    var CATS_CACHE = null;
+    function movePanel(r) {
+      var w = el("div", "docs-panel");
+      w.appendChild(el("div", "docs-panelhead", "Move to which folder? (You can also drag it.)"));
+      var chips = el("div", "docs-chips"); w.appendChild(chips);
+      function fill(resp) {
+        var cats = (resp && resp.categories) || [], subs = (resp && resp.financial_subcategories) || [];
+        cats.forEach(function (cat) {
+          if (cat === "financial" && subs.length) {
+            subs.forEach(function (s) {
+              if (r.category === "financial" && r.subcategory === s) return;
+              var b = el("button", "btn chip", "");
+              b.textContent = "Financial › " + pretty(s);
+              b.onclick = function () {
+                OPEN_PANEL[r.file] = null;
+                docsAct("/api/move", { view: "document", src: r.file, to: "financial", subcategory: s },
+                        "Moved " + r.name + " to Financial › " + pretty(s));
+              };
+              chips.appendChild(b);
+            });
+            return;
+          }
+          if (cat === r.category) return;
+          var b = el("button", "btn chip", ""); b.textContent = pretty(cat);
+          b.onclick = function () {
+            OPEN_PANEL[r.file] = null;
+            docsAct("/api/move", { view: "document", src: r.file, to: cat }, "Moved " + r.name + " to " + pretty(cat));
+          };
+          chips.appendChild(b);
+        });
+      }
+      if (CATS_CACHE) fill(CATS_CACHE);
+      else getJSON("/api/doc-categories").then(function (resp) { CATS_CACHE = resp; fill(resp); })
+        .catch(function (e) { chips.appendChild(el("p", "notice", "Couldn't load folders: " + esc(e.message))); });
+      return w;
+    }
+
+    drawTree();
+    drawPane(false);
   };
 
   P.correspondence = function (main, d) {

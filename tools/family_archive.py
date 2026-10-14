@@ -451,17 +451,93 @@ def _photo_facets(rows):
     return facets
 
 
-def _filter_documents(rows, params):
-    """Server-side category/subcategory filter for Documents, applied BEFORE the
-    page slice so a category's tail is reachable (the full category index is
-    computed separately, from all rows, so counts stay correct)."""
-    cat = _one(params, "cat")
-    if not cat:
+def _attach_vital(rows, vital_docs, candidate_targets=None):
+    """Stamp each document row with the vital-checklist items it IS (`vital`) and,
+    for the examiner, the vital targets it is a near-miss candidate for
+    (`vital_candidates` — what the Documents view's Vital switch can promote it
+    to). Joined on the row's `file` == the checklist item's `file_id`, so a row
+    only ever shows a vital item the checklist itself would link to.
+
+    Additive and copy-on-write like apply_curation: an untouched row passes
+    through as the same dict (no keys added); a stamped row is a shallow copy, so
+    the cached section rows stay clean. `candidate_targets` is {path: [target]}
+    (examiner only; None for family)."""
+    by_file = {}
+    for t in (vital_docs or {}).get("targets") or []:
+        for it in t.get("items") or []:
+            f = it.get("file_id")
+            if not f:
+                continue
+            v = {"id": it.get("id"), "target": t.get("target"), "label": t.get("label"),
+                 "group": t.get("group"), "reviewed": bool(it.get("reviewed")),
+                 "promoted": bool(it.get("promoted"))}
+            # Examiner-only provenance rides through exactly as vital_docs_data
+            # gated it (absent for family) — never re-derived here.
+            for k in ("date_used", "source_emails", "source_unresolved"):
+                if k in it:
+                    v[k] = it[k]
+            by_file.setdefault(f, []).append(v)
+    cands = candidate_targets or {}
+    if not by_file and not cands:
         return rows
-    out = [r for r in rows if (r.get("category") or "miscellaneous") == cat]
-    sub = _one(params, "subcat")
-    if cat == "financial" and sub:
-        out = [r for r in out if (r.get("subcategory") or "uncategorized") == sub]
+    out = []
+    for r in rows:
+        f = r.get("file")
+        vit = by_file.get(f)
+        have = {v["target"] for v in vit or []}
+        cand = [t for t in cands.get(f, ()) if t not in have]
+        if vit or cand:
+            r = dict(r)
+            if vit:
+                r["vital"] = vit
+            if cand:
+                r["vital_candidates"] = cand
+        out.append(r)
+    return out
+
+
+def _doc_kind(r):
+    """The file extension a Documents row sorts by in its Kind column."""
+    return os.path.splitext(r.get("name") or r.get("file") or "")[1].lower()
+
+
+# ?sort= keys for Documents. The default (absent) keeps document_rows' own
+# significance order, so an unparameterized request is byte-for-byte unchanged.
+_DOC_SORTS = {
+    "name": lambda r: (r.get("name") or "").lower(),
+    "kind": lambda r: (_doc_kind(r), (r.get("name") or "").lower()),
+    "significance": lambda r: r.get("significance") or 0,
+}
+
+
+def _filter_documents(rows, params):
+    """Server-side filters + sort for Documents, applied BEFORE the page slice so
+    a category's tail is reachable (the full category index is computed
+    separately, from all rows, so counts stay correct).
+
+    ?cat=/subcat= narrow to a category; ?collection_curation=<slug> to one curation
+    collection (needs rows stamped by apply_curation); ?vital=<target> to the documents that are
+    a checklist item for that target (`vital=*` → any target; needs rows stamped
+    by _attach_vital); ?sort=name|kind|significance with ?dir=asc|desc reorders."""
+    cat = _one(params, "cat")
+    out = rows
+    if cat:
+        out = [r for r in out if (r.get("category") or "miscellaneous") == cat]
+        sub = _one(params, "subcat")
+        if cat == "financial" and sub:
+            out = [r for r in out if (r.get("subcategory") or "uncategorized") == sub]
+    coll = _one(params, "collection_curation")
+    if coll:
+        out = [r for r in out if coll in (r.get("collections") or ())]
+    vital = _one(params, "vital")
+    if vital:
+        out = [r for r in out
+               if any(vital == "*" or v.get("target") == vital for v in r.get("vital") or ())]
+    key = _DOC_SORTS.get(_one(params, "sort"))
+    if key:
+        default_desc = _one(params, "sort") == "significance"
+        d = _one(params, "dir")
+        out = sorted(out, key=key, reverse=(d == "desc") if d else default_desc)
     return out
 
 
@@ -1210,6 +1286,22 @@ class ArchiveCase:
                 conversations=message_rows(st["conversation_index"], self.role)))
         raise VerbError(f"unknown section {page}", 404)
 
+    def vital_candidate_targets(self):
+        """{document path: [vital target, ...]} for every vital_doc_candidates.json
+        hit — the targets the Documents view's Vital switch may promote a document
+        to (verb_promote_vital refuses any path that is not one of these hits).
+        Examiner-only: family never sees raw candidate hits, so None for family."""
+        if self.role != "examiner":
+            return None
+        cands = load_json(self.paths.metadata_dir / "vital_doc_candidates.json", None)
+        out = {}
+        for target, block in (cands or {}).items() if isinstance(cands, dict) else ():
+            for h in (block or {}).get("hits") or []:
+                p = h.get("path") if isinstance(h, dict) else None
+                if p and target not in out.setdefault(p, []):
+                    out[p].append(target)
+        return out
+
     def api_section(self, name, params=None):
         """The JSON payload for GET /api/<name>, adding {rows,total,offset,limit}
         pagination for the large-list sections (docs/archive/specs/family-archive-
@@ -1273,6 +1365,7 @@ class ArchiveCase:
         if name == "documents":
             data = self.section("documents")           # {index, rows(full), vital_docs}
             rows = apply_curation(data["rows"], curation, "file")
+            rows = _attach_vital(rows, data["vital_docs"], self.vital_candidate_targets())
             rows = _filter_documents(rows, params)
             page = _paginate(rows, offset, limit)
             page["index"] = data["index"]              # full index (all rows)
@@ -3662,7 +3755,7 @@ def verb_promote_vital(case, payload):
                                  "ts": _now(), "actor": case.role}
                 # Promote and dismiss are opposite rulings on the same document; a
                 # promote un-dismisses (dismissal is keyed by path), mirroring confirm.
-                (decisions.get("vital_doc_dismissed") or {}).pop(path, None)
+                was_dismissed = (decisions.get("vital_doc_dismissed") or {}).pop(path, None)
                 before_target = None
                 if to_target is not None:
                     overlay = decisions.setdefault("vital_doc_target", {})
@@ -3671,7 +3764,8 @@ def verb_promote_vital(case, payload):
                 atomic_write_json(dpath, decisions)
             entry = append_action(case, "promote_vital", iid,
                                   {"promoted": before, "target": before_target,
-                                   "retargeted": to_target is not None},
+                                   "retargeted": to_target is not None,
+                                   "dismissed": was_dismissed},
                                   {"promoted": {"reason": reason}, "target": to_target},
                                   reversible=True)
             tokens.append(entry["undo_token"])
@@ -3818,10 +3912,12 @@ def verb_confirm_vital(case, payload):
         # confirm and dismiss are mutually exclusive dispositions of the same
         # document; a confirm un-dismisses (dismissal is keyed by path).
         path = iid.split("::", 1)[1] if "::" in iid else iid
-        (decisions.get("vital_doc_dismissed") or {}).pop(path, None)
+        was_dismissed = (decisions.get("vital_doc_dismissed") or {}).pop(path, None)
         atomic_write_json(dpath, decisions)
+    # `dismissed` records the dismissal this confirm cleared, so undo restores it.
     entry = append_action(case, "confirm_vital", iid,
-                          {"reviewed": before}, {"reviewed": {"reason": reason}},
+                          {"reviewed": before, "dismissed": was_dismissed},
+                          {"reviewed": {"reason": reason}},
                           reversible=True)
     return {"ok": True, "undo_token": entry["undo_token"]}
 
@@ -3885,6 +3981,15 @@ def verb_discard_quarantine(case, payload):
         out["undo_token"] = tokens[0]
         out["location"] = moved_last
     return out
+
+
+def _restore_dismissal(decisions, iid, before):
+    """Undo side of a confirm/promote that un-dismissed its document: put the
+    cleared `vital_doc_dismissed` record back (keyed by path, the id's tail)."""
+    rec = before.get("dismissed")
+    if rec is not None:
+        path = iid.split("::", 1)[1] if "::" in iid else iid
+        decisions.setdefault("vital_doc_dismissed", {})[path] = rec
 
 
 def _apply_inverse(case, entry):
@@ -4040,9 +4145,8 @@ def _apply_inverse(case, entry):
         # pop → back to unconfirmed). verb_confirm_vital claims reversible=True but
         # had no inverse here, so undo of a Confirm 409'd ("cannot undo") — the
         # bulk-triage pager's per-item undo bar surfaced the gap. Mirrors
-        # dismiss_vital / promote_vital. The confirm's un-dismiss side effect is not
-        # restored (its `before` doesn't record a cleared dismissal — same limitation
-        # promote_vital's inverse has); the reviewed flag is the decision undo owns.
+        # dismiss_vital / promote_vital. A confirm that cleared a dismissal recorded
+        # it in before["dismissed"] and gets it back here (older entries have no key).
         iid = entry["target"]
         prev = (entry.get("before") or {}).get("reviewed")
         dpath = case.paths.metadata_dir / DECISIONS_FILE
@@ -4053,6 +4157,7 @@ def _apply_inverse(case, entry):
                 reviewed.pop(iid, None)
             else:
                 reviewed[iid] = prev
+            _restore_dismissal(decisions, iid, entry.get("before") or {})
             atomic_write_json(dpath, decisions)
         return {"restored": iid}
     if action == "dismiss_vital":
@@ -4066,6 +4171,9 @@ def _apply_inverse(case, entry):
             atomic_write_json(dpath, decisions)
         return {"restored": iid}
     if action == "promote_vital":
+        # (A promote that cleared a dismissal recorded it in before["dismissed"];
+        # _restore_dismissal puts it back. Entries written before that field
+        # existed carry no key and restore nothing, as they always did.)
         # Inverse of a vital promote: drop the promotion so the item returns to
         # the near-miss list it came from. Restores a prior promotion if the
         # examiner had promoted-then-undone-then-promoted the same item.
@@ -4090,6 +4198,7 @@ def _apply_inverse(case, entry):
                     overlay.pop(iid, None)
                 else:
                     overlay[iid] = prev_target
+            _restore_dismissal(decisions, iid, before)
             atomic_write_json(dpath, decisions)
         case.load()
         return {"restored": iid}
@@ -4593,6 +4702,9 @@ VERBS = {
 # ── HTTP handler ─────────────────────────────────────────────────────────────────
 
 CASE: ArchiveCase = None  # set in main()
+# --documents-only: serve the Documents page alone (no section rail; every other
+# page redirects to it). The /api/* data and verbs it uses stay as they are.
+SOLO_PAGE = None  # set in main()
 
 BASE_HTML = """<!DOCTYPE html>
 <html lang="en"><head>
@@ -4736,6 +4848,9 @@ class FamilyArchiveHandler(BaseHTTPRequestHandler):
     def _page(self, path):
         key = "overview" if path == "/" else path.lstrip("/")
         key = PAGE_ALIASES.get(key, key)
+        if SOLO_PAGE and key != SOLO_PAGE:
+            return self._send(302, "text/plain; charset=utf-8", b"",
+                              extra={"Location": "/" + SOLO_PAGE})
         label, theme = next((lbl, th) for k, lbl, th in PAGES if k == key)
         if key in EXAMINER_ONLY and CASE.role != "examiner":
             return self._json(403, {"error": "examiner only"})
@@ -4743,6 +4858,8 @@ class FamilyArchiveHandler(BaseHTTPRequestHandler):
                if k not in HIDDEN_FROM_NAV
                and not (k in EXAMINER_ONLY and CASE.role != "examiner")]
         ctx = {"page": key, "role": CASE.role, "case_id": CASE.paths.case_id, "nav": nav}
+        if SOLO_PAGE:
+            ctx["solo"] = SOLO_PAGE
         # Escape '<' as < so a case_id / nav label containing '</script>' can
         # never break out of the JSON bootstrap block (case_id derives from the
         # drop-folder name, which originates outside Zone B). JSON.parse restores it.
@@ -5189,6 +5306,8 @@ def parse_args(argv=None):
                         "produced it (e.g. /data/cases/CASE_ID). Normally detected "
                         "from archive_map.json; pass it only when detection fails.")
     p.add_argument("--force", action="store_true", help="serve even if case looks incomplete")
+    p.add_argument("--documents-only", action="store_true",
+                   help="serve only the Documents page, without the section rail")
     return p.parse_args(argv)
 
 
@@ -5261,9 +5380,10 @@ def _assert_family_release_startup(paths):
 
 
 def main(argv=None):
-    global CASE
+    global CASE, SOLO_PAGE
     args = parse_args(argv)
     CASE = build_case(args)
+    SOLO_PAGE = "documents" if args.documents_only else None
     # Recover any half-finished move from a prior crash before serving.
     try:
         from wyeast.core.moves import reconcile
@@ -5291,7 +5411,7 @@ def main(argv=None):
             f"against the same case can interleave curation writes; if you did not "
             f"intend to start a second one, stop this instance (Ctrl+C) and use the "
             f"existing server.", file=sys.stderr)
-    print(f"Family Archive:  http://127.0.0.1:{port}/")
+    print(f"Family Archive:  http://127.0.0.1:{port}/{SOLO_PAGE or ''}")
     print(f"Case:            {CASE.paths.case_id}   (role: {CASE.role})")
     print("Stop with:       Ctrl+C")
     try:

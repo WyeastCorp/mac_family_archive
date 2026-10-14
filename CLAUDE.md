@@ -25,6 +25,8 @@ WyeastCorp/Wyeast** — the complete import closure of `tools/family_archive.py`
 the AST. Read `UPSTREAM.md` before editing any of it. Fixes to the archive itself belong upstream
 and flow here via `sync_from_wyeast.sh`, which re-copies the closure and re-applies a short list of
 local modifications. Local edits that aren't on that list get silently reverted on the next sync.
+Mac-only features (the Documents folder-tree view and `--documents-only`) are on that list as
+patches kept upstream in Wyeast's `ops/family_archive_patches/`; change them there, not here.
 
 The pipeline that *produces* a case (`wyeast/stages/`, orchestration, the stage registry) is **not
 here**. A Mac only ever consumes a case that is already finished.
