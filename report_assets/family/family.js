@@ -2850,6 +2850,34 @@
     });
   }
 
+  // Collapse `node` to nothing in place (fade + height/margin to 0), then
+  // remove it and call `done()` — used instead of a full render() for a
+  // checklist action (dismiss/reassign) so the item just disappears where it
+  // was, with no page-wide rebuild and no scroll jump (#checklist-jump).
+  function fadeOutAndRemove(node, done) {
+    var h = node.getBoundingClientRect().height;
+    node.style.overflow = "hidden";
+    node.style.height = h + "px";
+    node.style.transition = "height .2s ease, opacity .2s ease, margin .2s ease, padding .2s ease";
+    // Force a reflow so the browser registers the starting height before we
+    // animate to the end state — otherwise the two style writes coalesce and
+    // nothing animates.
+    void node.offsetHeight;
+    node.style.opacity = "0";
+    node.style.height = "0";
+    node.style.marginTop = "0"; node.style.marginBottom = "0";
+    node.style.paddingTop = "0"; node.style.paddingBottom = "0";
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      node.remove();
+      if (done) done();
+    }
+    node.addEventListener("transitionend", finish, { once: true });
+    setTimeout(finish, 400);   // belt-and-braces: a transition that never fires (display:none ancestor, etc.) still cleans up
+  }
+
   // Near-miss review drawer (examiner-only): the candidate hits for one vital-doc
   // target that did NOT make the checklist, with WHY, and a deep link to each.
   //
@@ -3129,15 +3157,25 @@
     if (!vd.available) return;
     var panel = el("section", "vitals-panel");
     panel.appendChild(el("h2", null, "Vital documents"));
-    panel.appendChild(el("p", "vitals-tally",
-      esc(num(vd.found_count) + " of " + num(vd.total_count) +
-          " key document types found in this collection.")));
+    // A found→missing transition (last item of a target dismissed/reassigned
+    // away) needs to decrement this in place — track it locally instead of
+    // re-reading vd.found_count, which goes stale the moment that happens.
+    var foundCount = vd.found_count;
+    var tallyEl = el("p", "vitals-tally",
+      esc(num(foundCount) + " of " + num(vd.total_count) +
+          " key document types found in this collection."));
+    panel.appendChild(tallyEl);
+    function updateTally() {
+      tallyEl.textContent = num(foundCount) + " of " + num(vd.total_count) +
+        " key document types found in this collection.";
+    }
     var rows = el("div", "vitals-rows");
     (vd.targets || []).forEach(function (t) {
       var row = el("div", "vitals-row " + (t.found ? "found" : "missing"));
       var rhead = el("div", "vitals-row-head");
       rhead.innerHTML = '<span class="vmark">' + (t.found ? "✓" : "—") + '</span>' +
         '<span class="vlabel">' + esc(t.label) + '</span>';
+      var vmarkEl = rhead.querySelector(".vmark");
       if (EXAMINER && t.near_miss_count) {  // near-miss hits, examiner-only
         // Was a dead span: it stated a number and gave no way to look at it, so
         // reviewing a near-miss meant opening vital_doc_candidates.json on the
@@ -3187,6 +3225,23 @@
       }
       if (t.found) {
         var items = el("div", "vitals-items");
+        // An item leaving this target (dismissed, or reassigned elsewhere) —
+        // smooth collapse in place (fadeOutAndRemove), never a full render(),
+        // so the page doesn't jump to the top. If it was the last item, this
+        // target itself flips to "missing" and the tally updates to match.
+        function onItemLeft(itemRow, srcBox) {
+          if (srcBox) srcBox.remove();
+          fadeOutAndRemove(itemRow, function () {
+            if (items.children.length) return;
+            t.found = false;
+            foundCount -= 1;
+            updateTally();
+            row.classList.remove("found"); row.classList.add("missing");
+            vmarkEl.textContent = "—";
+            items.remove();
+            row.appendChild(el("div", "vitals-none", "Not found in this collection."));
+          });
+        }
         (t.items || []).forEach(function (it) {
           var label = it.name || it.tag || "document";
           var itemRow = el("div", "vitals-item");
@@ -3233,28 +3288,41 @@
           } else {
             itemRow.appendChild(el("span", "vitals-noitem", esc(label)));
           }
+          var srcBox = null;   // set below (EXAMINER only) — declared early, onItemLeft closures read it
           if (EXAMINER) {
             // Examiner-only DECISIONS-OVERLAY actions (audited + reversible; the
             // pipeline index vital_doc_confirmed.json is never touched). The vital-doc
             // id contains a path — always pass it in the JSON BODY, never inline it.
+            // Grouped in one element so Confirm can swap it for the "✓ Confirmed"
+            // badge in place, and so the item stays put — no full render(), see
+            // onItemLeft above for why.
+            var actions = el("span", "vitals-item-actions");
+            var confirmSlot = el("span");   // holds either the Confirm button or the badge
+            actions.appendChild(confirmSlot);
+            function showConfirmed() {
+              confirmSlot.innerHTML = "";
+              confirmSlot.appendChild(el("span", "vitals-reviewed", "✓ Confirmed"));
+            }
             // Confirm — the affirmative "yes, this is the document" the release gate
             // requires (every vital item must be confirmed, dismissed, or reassigned).
             if (it.reviewed) {
-              itemRow.appendChild(el("span", "vitals-reviewed", "✓ Confirmed"));
+              showConfirmed();
             } else {
               var confirm = el("button", "vitals-act primary", "Confirm");
               confirm.onclick = function () {
                 doVerb("/api/vital/confirm", { id: it.id }, "Confirmed vital document")
-                  .then(function (x) { if (x) render(); });
+                  .then(function (x) { if (x) showConfirmed(); });
               };
-              itemRow.appendChild(confirm);
+              confirmSlot.appendChild(confirm);
             }
+            // Dismiss/Reassign stay available either way — confirming isn't the only
+            // way an item leaves this target.
             var dismiss = el("button", "vitals-act", "Not a vital document");
             dismiss.onclick = function () {
               doVerb("/api/vital/dismiss", { id: it.id }, "Dismissed vital match")
-                .then(function (x) { if (x) render(); });   // re-render Documents (fresh vital_docs)
+                .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
             };
-            itemRow.appendChild(dismiss);
+            actions.appendChild(dismiss);
             var reassign = el("button", "vitals-act", "Reassign…");
             reassign.onclick = function () {
               pickVitalTarget("Reassign this document", vd.all_targets, t.target, function (to) {
@@ -3265,14 +3333,15 @@
                 function send(scope) {
                   doVerb("/api/vital/reassign",
                     { id: it.id, to_target: to, scope: scope }, "Reassigned vital document")
-                    .then(function (x) { if (x) render(); });
+                    .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
                 }
                 if (cats.length > 1) { pickScope(cats.length, send); } else { send("single"); }
               });
             };
-            itemRow.appendChild(reassign);
+            actions.appendChild(reassign);
+            itemRow.appendChild(actions);
           }
-          var srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
+          srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
           items.appendChild(itemRow);
           if (srcBox) items.appendChild(srcBox);
         });
