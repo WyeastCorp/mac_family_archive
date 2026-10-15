@@ -3229,6 +3229,73 @@ def documents_index(rows):
     return out
 
 
+def email_category_counts(email_rows):
+    """{category: count} across every thread's `categories` list — a thread with
+    several categories (different messages classified differently) counts once
+    toward EACH, matching how documents_index tallies one document per category."""
+    counts = {}
+    for r in email_rows or []:
+        for c in r.get("categories") or []:
+            counts[c] = counts.get(c, 0) + 1
+    return counts
+
+
+def merge_email_category_counts(index, email_counts):
+    """Fold email-thread category counts onto an already-built documents_index()
+    tree, for the Documents view's "include emails" toggle. A category that had
+    no documents at all — only email-sourced matches — gets a new entry; email
+    counts never invent a subcategory split (only documents ever get one, and
+    only for 'financial'). Returns `index` UNCHANGED (same object) when there is
+    nothing to add, so the common "toggle off" path costs nothing."""
+    if not email_counts:
+        return index
+    by_cat = {c["category"]: dict(c) for c in index}
+    for cat, n in email_counts.items():
+        if not n:
+            continue
+        if cat in by_cat:
+            by_cat[cat]["count"] += n
+        else:
+            by_cat[cat] = {"category": cat, "count": n, "subcategories": []}
+    out = list(by_cat.values())
+    out.sort(key=lambda c: -c["count"])
+    return out
+
+
+def email_rows_for_category(email_rows, category):
+    """Email thread rows (as email_rows() shapes them) whose `categories` list
+    includes `category` — the email side of a Documents-view topic folder when
+    "include emails" is on. [] for no category (never dump every thread)."""
+    if not category:
+        return []
+    return [r for r in email_rows or [] if category in (r.get("categories") or [])]
+
+
+def _participant_address(p):
+    """The bare address out of a '<Name> <addr>' or bare-address participant
+    string (the shape _participants_full in gen_email_threads.py writes)."""
+    p = (p or "").strip()
+    if p.endswith(">") and "<" in p:
+        return p[p.rfind("<") + 1:-1].strip()
+    return p
+
+
+def thread_correspondent(participants, owner_addresses):
+    """The thread's primary non-owner participant — the first participant whose
+    address isn't one of the case's configured `owner_addresses` (the account
+    owner's own address(es), a user-supplied setting; see verb_set_owner_addresses
+    and the design note in STATE.md on why this can't be inferred from the
+    pipeline's existing data). None when no owner address is configured (we don't
+    guess) or every participant IS an owner address."""
+    owners = {a.strip().lower() for a in (owner_addresses or []) if a}
+    if not owners:
+        return None
+    for p in participants or []:
+        if _participant_address(p).lower() not in owners:
+            return p
+    return None
+
+
 def email_rows(threads_index, *, cap=None, decisions=None):
     """Thread-grain rows for the Emails section, from email_threads_index.json.
 
@@ -3243,15 +3310,20 @@ def email_rows(threads_index, *, cap=None, decisions=None):
     `demoted: True` so the UI can offer a Restore.
     """
     demoted = set((decisions or {}).get("email_demoted", {}) or {})
+    owner_addresses = (decisions or {}).get("owner_addresses") or []
     threads = (threads_index or {}).get("threads", []) or []
     rows = []
     for t in threads:
         tid = t.get("thread_id")
         is_demoted = str(tid) in demoted
+        participants = t.get("participants") or []
         rows.append({
             "thread_id": tid,
             "subject": (t.get("subject") or "(no subject)").replace("\n", " ").strip(),
-            "participants": t.get("participants") or [],
+            "participants": participants,
+            # "Sort by sender" needs to know which participant ISN'T the account
+            # owner; None (never a guess) until owner_addresses is configured.
+            "correspondent": thread_correspondent(participants, owner_addresses),
             "date_first": t.get("date_first"),
             "date_last": t.get("date_last"),
             "significance": 0 if is_demoted else t.get("significance"),
@@ -3552,6 +3624,32 @@ def _resolve_attachments(entry, attachment_index):
             "is_inline": bool(a.get("is_inline")),
             "file_id": fid,
         })
+    return out
+
+
+def thread_has_delivered_attachment(threads_index, email_by_file, attachment_index):
+    """{thread_id: True} for every thread carrying at least one NON-INLINE
+    attachment that resolves to a delivered item — the exact same G-4 resolution
+    `_resolve_attachments`/thread detail already use. "Has an attachment" here
+    means one that's actually in the pipeline results, not just a raw attachment
+    the .eml carried that was never delivered (inline signature images, junk,
+    quarantined originals) — those would be dead links if surfaced, so they don't
+    count. Threads with none are simply absent (additive, like every overlay
+    stamp in this module)."""
+    threads = (threads_index or {}).get("threads", []) or []
+    out = {}
+    for t in threads:
+        tid = t.get("thread_id")
+        if not tid or tid in out:
+            continue
+        for f in t.get("files") or []:
+            entry = (email_by_file or {}).get(f) or {}
+            for a in _resolve_attachments(entry, attachment_index):
+                if a.get("file_id") and not a.get("is_inline"):
+                    out[tid] = True
+                    break
+            if tid in out:
+                break
     return out
 
 

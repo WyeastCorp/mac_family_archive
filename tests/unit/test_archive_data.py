@@ -363,6 +363,39 @@ def test_doc_placements_overrides_document_rows_category():
     assert idx == {"legal": 1, "miscellaneous": 1}, "documents_index counts are DERIVED"
 
 
+def test_email_category_counts_tallies_every_category_on_a_thread():
+    rows = [{"thread_id": "t1", "categories": ["financial", "insurance"]},
+           {"thread_id": "t2", "categories": ["financial"]},
+           {"thread_id": "t3", "categories": []}]
+    assert ad.email_category_counts(rows) == {"financial": 2, "insurance": 1}
+
+
+def test_merge_email_category_counts_adds_and_creates_entries():
+    index = [{"category": "financial", "count": 3, "subcategories": [{"name": "banking", "count": 3}]},
+             {"category": "miscellaneous", "count": 1, "subcategories": []}]
+    merged = ad.merge_email_category_counts(index, {"financial": 2, "insurance": 5})
+    by = {c["category"]: c for c in merged}
+    assert by["financial"]["count"] == 5
+    assert by["financial"]["subcategories"] == [{"name": "banking", "count": 3}], \
+        "email counts never invent a subcategory split"
+    assert by["insurance"] == {"category": "insurance", "count": 5, "subcategories": []}
+    assert by["miscellaneous"]["count"] == 1, "untouched when no email matched it"
+    assert merged[0]["category"] in ("financial", "insurance")  # sorted desc by count
+    # Empty/absent email counts is a no-op (same object back, no accidental copy cost).
+    assert ad.merge_email_category_counts(index, None) is index
+    assert ad.merge_email_category_counts(index, {}) is index
+
+
+def test_email_rows_for_category_filters_by_membership():
+    rows = [{"thread_id": "t1", "categories": ["financial"]},
+           {"thread_id": "t2", "categories": ["financial", "insurance"]},
+           {"thread_id": "t3", "categories": ["insurance"]}]
+    assert [r["thread_id"] for r in ad.email_rows_for_category(rows, "financial")] == ["t1", "t2"]
+    assert [r["thread_id"] for r in ad.email_rows_for_category(rows, "insurance")] == ["t2", "t3"]
+    assert ad.email_rows_for_category(rows, "") == []
+    assert ad.email_rows_for_category(rows, "nonexistent") == []
+
+
 def test_doc_move_into_letter_category_appears_on_correspondence_and_leaves_documents():
     """§13.2: the Correspondence page filters document_rows by LETTER_CATEGORIES —
     the SAME (overlaid) builder — so a doc moved INTO personal_correspondence shows

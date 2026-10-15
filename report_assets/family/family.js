@@ -3417,10 +3417,26 @@
     // ── tree ──
     var open = prefGet("open", { vital: true, financial: true });
     var showSizes = prefGet("sizes", true);
+    // Documents-centric topic view CAN include emails (an email about the same
+    // topic, no attached file, shares the pipeline's category — see
+    // merge_email_category_counts). The Emails-centric view (?page=emails)
+    // never includes documents, by design — these are two separate views.
+    var includeEmails = prefGet("includeEmails", false);
     var maxCount = 1;
     index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
     var targets = vd.available ? (vd.targets || []) : [];
     var groups = vd.groups || [];
+
+    function refreshIndex() {
+      getJSON("/api/documents?limit=1" + (includeEmails ? "&include_emails=1" : "")).then(function (d) {
+        index = d.index || [];
+        total = 0; index.forEach(function (c) { total += c.count; });
+        maxCount = 1; index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
+        drawTree();
+        var leadEl = main.querySelector(".pagehead-title .lead");
+        if (leadEl) leadEl.textContent = num(total) + " documents" + (includeEmails ? " (including emails)" : "") + ".";
+      });
+    }
 
     function isCurrent(spec) {
       return (spec.docview || "") === view.docview && (spec.cat || "") === view.cat &&
@@ -3484,6 +3500,14 @@
       sz.setAttribute("aria-pressed", showSizes ? "true" : "false");
       sz.onclick = function () { showSizes = !showSizes; prefSet("sizes", showSizes); drawTree(); };
       tools.appendChild(sz);
+      var emChk = el("label", "chkflabel incemails");
+      var emBox = el("input"); emBox.type = "checkbox"; emBox.checked = includeEmails;
+      emBox.onchange = function () {
+        includeEmails = emBox.checked; prefSet("includeEmails", includeEmails);
+        refreshIndex(); drawPane(true);
+      };
+      emChk.appendChild(emBox); emChk.appendChild(document.createTextNode(" Include emails"));
+      tools.appendChild(emChk);
       tree.appendChild(tools);
       var ul = el("ul", "tlist");
       trow(ul, { label: "All documents", count: total, spec: {} });
@@ -3692,7 +3716,7 @@
       pg = pager("/api/documents", {
         getParams: function () {
           return { cat: view.cat, subcat: view.subcat, vital: view.vital, collection_curation: view.coll,
-                   sort: sort.by, dir: sort.dir };
+                   sort: sort.by, dir: sort.dir, include_emails: includeEmails ? "1" : "" };
         },
         render: function () { drawBody(); },
       });
@@ -3737,7 +3761,9 @@
     }
 
     function rowsInOrder() {
-      var rows = pg ? pg.rows : [];
+      // Email-topic rows (kind:"email", no file) render in their own list
+      // below — see emailTopicRows/drawBody — never through the file table.
+      var rows = (pg ? pg.rows : []).filter(function (r) { return r.kind !== "email"; });
       rows.forEach(function (r) { ROWS[r.file] = r; DOC_CAT[r.file] = r.category; });
       if (view.vital && view.vital !== "*" && !sort.by) {
         // Date order inside one vital kind (newest first; undated last).
@@ -3750,12 +3776,32 @@
       }
       return rows;
     }
+    function emailTopicRows() {
+      return (pg ? pg.rows : []).filter(function (r) { return r.kind === "email"; });
+    }
+    // The email side of "include emails" — a thread with no attached file, in
+    // this same topic, surfaced here but opened via the Emails thread view
+    // (go({page:"emails"}): a thread isn't a document, it has no lightbox.
+    function drawEmailTopicRows(container, rows) {
+      container.appendChild(el("h3", "docs-emails-head", "From the emails (" + rows.length + ")"));
+      var list = el("div", "docs-email-list");
+      rows.forEach(function (r) {
+        var row = el("div", "docs-email-row clickable");
+        row.innerHTML = "<span class='nm'>" + esc(r.name) + "</span>" + sig(r.significance);
+        row.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
+        keyable(row, null);   // F-12
+        list.appendChild(row);
+      });
+      container.appendChild(list);
+    }
     function drawBody() {
       if (!body) return;
       body.innerHTML = "";
       var rows = rowsInOrder();
-      if (!rows.length) { body.appendChild(el("p", "notice", "Nothing here.")); return; }
-      if (layout === "detail") detailView(rows); else listView(rows);
+      var emailRows = emailTopicRows();
+      if (!rows.length && !emailRows.length) { body.appendChild(el("p", "notice", "Nothing here.")); return; }
+      if (rows.length) { if (layout === "detail") detailView(rows); else listView(rows); }
+      if (emailRows.length) drawEmailTopicRows(body, emailRows);
     }
 
     function sortHead(label, key) {
@@ -4136,6 +4182,21 @@
     return b;
   }
 
+  // Unlike Demote/Star, flagging a thread important is NOT examiner-only — both
+  // roles see and can click this (verb_important_email has no require_examiner).
+  function emailImportantBtn(r, onToggled) {
+    var b = el("button", "btn small" + (r.important ? " primary" : ""), r.important ? "★ Important" : "☆ Important");
+    b.title = r.important ? "Unflag as important" : "Flag as important";
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      doVerb("/api/important/email", { thread_id: r.thread_id, on: !r.important },
+        r.important ? "Unflagged" : "Flagged important").then(function (x) {
+          if (x) { r.important = !r.important; onToggled ? onToggled() : render(); }
+        });
+    };
+    return b;
+  }
+
   // Redraw the significance-banded email list from the accumulated rows (rebuilt
   // on each Load-more page — the bands regroup the full loaded set).
   function drawEmailBands(container, rows) {
@@ -4150,15 +4211,18 @@
       if (!group.length) return;
       container.appendChild(el("h2", null, band[1] + " (" + group.length + ")"));
       var tbl = el("table");
-      tbl.innerHTML = "<tr><th>Subject</th><th>With</th><th>When</th><th>Msgs</th>" + (EXAMINER ? "<th></th>" : "") + "</tr>";
+      tbl.innerHTML = "<tr><th>Subject</th><th>With</th><th>When</th><th>Msgs</th><th></th></tr>";
       group.forEach(function (r) {
         var tr = el("tr", "clickable");
-        tr.innerHTML = "<td>" + esc(r.subject) + " " + sig(r.significance) +
+        tr.innerHTML = "<td>" + (r.important ? "★ " : "") + esc(r.subject) + " " + sig(r.significance) +
+          (r.has_attachment ? " <span title='Has a delivered attachment'>📎</span>" : "") +
           "</td><td class='preview clamp2'>" + recipients(r.participants) + "</td><td class='preview'>" +
-          esc((r.date_last || "").slice(0, 10)) + "</td><td>" + num(r.message_count) + "</td>" +
-          (EXAMINER ? "<td class='actcell'></td>" : "");
+          esc((r.date_last || "").slice(0, 10)) + "</td><td>" + num(r.message_count) +
+          "</td><td class='actcell'></td>";
         tr.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
         keyable(tr, null);   // F-12
+        // Important is NOT examiner-only; Demote stays examiner-only.
+        tr.lastChild.appendChild(emailImportantBtn(r));
         if (EXAMINER) tr.lastChild.appendChild(emailDemoteBtn(r));
         tbl.appendChild(tr);
       });
@@ -4254,6 +4318,9 @@
       var holder = el("div", "reading emthread"); main.appendChild(holder);
       getJSON("/api/email/thread?id=" + encodeURIComponent(Q.thread)).then(function (t) {
         var ctrls = head(holder, "Emails", t.subject || "(no subject)", (t.messages || []).length + " message(s).");
+        ctrls.appendChild(emailImportantBtn({ thread_id: Q.thread, important: t.important }, function () {
+          location.reload();
+        }));
         if (EXAMINER) ctrls.appendChild(emailDemoteBtn({ thread_id: Q.thread, subject: t.subject, demoted: t.demoted }));
         drawThreadMessages(holder, t);
       }).catch(function (e) { holder.appendChild(el("p", "notice", "Couldn't load thread: " + esc(e.message))); });
@@ -4285,14 +4352,51 @@
     if (Q.date_from) dFrom.value = Q.date_from;
     if (Q.date_to) dTo.value = Q.date_to;
     var sortSel = el("select"); sortSel.setAttribute("aria-label", "Sort emails");
-    [["", "Most significant"], ["recent", "Most recent"], ["subject", "Subject (A–Z)"]]
-      .forEach(function (o) { sortSel.appendChild(new Option(o[1], o[0])); });
+    [["", "Most significant"], ["recent", "Most recent"], ["subject", "Subject (A–Z)"],
+     ["sender", "Sender (A–Z)"]].forEach(function (o) { sortSel.appendChild(new Option(o[1], o[0])); });
     if (Q.sort) sortSel.value = Q.sort;
+    var impChk = el("label", "flabel chkflabel");
+    var impBox = el("input"); impBox.type = "checkbox";
+    if (Q.important === "1") impBox.checked = true;
+    impChk.appendChild(impBox); impChk.appendChild(document.createTextNode(" Important"));
+    var attChk = el("label", "flabel chkflabel");
+    var attBox = el("input"); attBox.type = "checkbox";
+    if (Q.has_attachment === "1") attBox.checked = true;
+    attChk.appendChild(attBox); attChk.appendChild(document.createTextNode(" Has attachment"));
     listctrls.appendChild(search);
     listctrls.appendChild(el("span", "flabel", "From")); listctrls.appendChild(dFrom);
     listctrls.appendChild(el("span", "flabel", "To")); listctrls.appendChild(dTo);
     listctrls.appendChild(sortSel);
-    var hasListFilter = !!(Q.q || Q.date_from || Q.date_to || Q.sort);
+    listctrls.appendChild(impChk);
+    listctrls.appendChild(attChk);
+    var hasListFilter = !!(Q.q || Q.date_from || Q.date_to || Q.sort ||
+                           Q.important === "1" || Q.has_attachment === "1");
+
+    // Owner-address settings (both roles — see verb_set_owner_addresses). First
+    // settings-style form in this app: a typed value saved for later, not a
+    // one-click verb on an existing item. Collapsed by default; the Sender sort
+    // is a no-op (every row's correspondent is null) until this is filled in.
+    var settingsWrap = el("details", "ownersettings");
+    var summary = el("summary", null, "Whose email is this? (for sender sorting)");
+    settingsWrap.appendChild(summary);
+    var ownerBox = el("div", "ownerbox");
+    ownerBox.appendChild(el("p", "docs-hint",
+      "Sender sorting needs to know which address was the account owner's own, so it " +
+      "can tell them apart from who they were writing to. One or more addresses, comma-separated."));
+    var ownerInput = el("input", "ownerinput");
+    ownerInput.type = "text"; ownerInput.placeholder = "e.g. alex.rendon@example.com";
+    ownerInput.value = (data && (data.owner_addresses || []).join(", ")) || "";
+    var ownerSave = el("button", "btn small", "Save");
+    ownerSave.onclick = function () {
+      var addrs = ownerInput.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      doVerb("/api/owner-addresses", { addresses: addrs }, "Saved").then(function (x) {
+        if (x) pg.load(true);
+      });
+    };
+    ownerBox.appendChild(ownerInput); ownerBox.appendChild(ownerSave);
+    settingsWrap.appendChild(ownerBox);
+    main.appendChild(settingsWrap);
+
     var body = el("div"); main.appendChild(body);
     // Load-more paginates the thread list (no more silent 5,000-of-17k cap). A
     // demoted thread is forced to significance 0 → the Unranked band → reachable on
@@ -4307,6 +4411,8 @@
         if (dFrom.value) p.date_from = dFrom.value;
         if (dTo.value) p.date_to = dTo.value;
         if (sortSel.value) p.sort = sortSel.value;
+        if (impBox.checked) p.important = "1";
+        if (attBox.checked) p.has_attachment = "1";
         return p;
       },
       render: function (all) { drawEmailBands(body, all); },
@@ -4330,6 +4436,8 @@
     function onDate() { setQ({ date_from: dFrom.value, date_to: dTo.value }); pg.load(true); }
     dFrom.onchange = onDate; dTo.onchange = onDate;
     sortSel.onchange = function () { setQ({ sort: sortSel.value }); pg.load(true); };
+    impBox.onchange = function () { setQ({ important: impBox.checked ? "1" : "" }); pg.load(true); };
+    attBox.onchange = function () { setQ({ has_attachment: attBox.checked ? "1" : "" }); pg.load(true); };
     // The router's seed payload is UNfiltered (/api/emails with no params); when a
     // participant/search/date/sort filter is active, refetch page 1 through it.
     if (participant || hasListFilter) pg.load(true); else pg.seed(data);

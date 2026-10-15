@@ -23,6 +23,61 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15 — Emails get their own view; Documents can include them by topic
+
+**What shipped (on branch `documents-view`, not yet committed — see Next action)**
+- Documents view: an "Include emails" checkbox folds email-sourced categories into the
+  topic tree (counts) and, inside one open folder, lists the matching threads in their own
+  "From the emails" section below the regular file table. Off by default; nothing changes
+  for anyone who doesn't touch the checkbox. `tools/_archive_data.py`:
+  `email_category_counts`/`merge_email_category_counts`/`email_rows_for_category`.
+- Emails view: a "Flag important" toggle, visible and usable by **both** family and
+  examiner (every other curation action — star, note, collection — is still examiner-only;
+  this is the first exception, on purpose — see `verb_important_email`'s docstring for why).
+  Plus a "Has attachment" filter (an attachment that actually resolved to something the
+  pipeline delivered, not just a raw .eml attachment) and a "Sender (A–Z)" sort, which needs
+  a new small settings form ("Whose email is this?") because nothing in the pipeline's
+  existing data says which address is the account owner's own — see the next item.
+- New case-level setting, `owner_addresses` (`family_decisions.json`), settable by either
+  role via the Emails page form. Without it, sender-sort is a no-op (every row's
+  `correspondent` is `None` — never a guess).
+
+**A real, pre-existing behavior this surfaced (not a new bug, not yet acted on)**
+Both new family-writable actions (important-flag, owner-addresses) write to
+`family_decisions.json` / `curation_layer.json`. Those two files are explicitly part of the
+release fingerprint (`wyeast/core/release.py` — "serve-gating metadata"), so **any** write to
+them — by either role — makes the next `release_status()` check see "changed since release"
+and pause family delivery until an examiner re-signs. This already applied to every
+examiner-only curation verb (star a photo after signing → same pause); flagging-by-family
+just gives a second way to trigger a pre-existing mechanism, not a new one. It doesn't affect
+today's actual usage — the desktop launcher (`oct7 Documents.command`) runs `--role examiner`
+with no `--role family` flag, and examiner is never subject to this gate (confirmed: the
+`do_GET` check is `if CASE.role == "family"`, and examiner sees an informational banner, not
+a block). Decided (2026-10-15): ship as built; revisit the fingerprint's scope only once an
+actual `--role family` session is in real use for real family members — there's no file or
+flag that records that, so the way to find out is to ask.
+
+**Verified in a browser** (a throwaway signed case, not `oct7_mf` — see
+`tests/unit/_case_fixture.py::make_case` for the pattern): Documents "Include emails" folder
+counts and the "From the emails" row list, both filters, the sort, the settings form, and
+the important toggle in both the list and thread-detail view, under both roles.
+
+**Blocked:** nothing.
+
+**Known issues not yet filed**
+- No per-person attribution on the important flag — only "family" or "examiner" is recorded
+  (decided: acceptable, see conversation; `curation_layer.json`'s `important` entries carry
+  `actor_role`, not a name).
+- The Documents-view email merge only applies to plain category browsing — the vital-doc
+  checklist and curation collections are untouched (those already have their own, separate
+  email linking via `_vital_thread_links`).
+
+**Next action:** `cd ~/mac_family_archive && git diff --stat` to see the full change (six
+files, all in `tools/`, `report_assets/family/`, and `tests/`), then decide whether to commit
+and open a PR — nothing has been committed yet.
+
+---
+
 ### 2026-10-14 — CI no longer fails on edits to carried files
 
 **What changed**

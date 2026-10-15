@@ -245,6 +245,15 @@ a { color: var(--accent); }
 /* #11: the Correspondents / Emails in-list search box (find-person-X / find-by-subject) */
 .listsearch { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
   color: inherit; font: inherit; min-width: 220px; flex: 1 1 220px; }
+.filterbar .chkflabel { font: inherit; color: inherit; text-transform: none; letter-spacing: normal;
+  display: inline-flex; align-items: center; gap: 4px; }
+
+/* Emails: owner-address settings (first typed-value settings form in the app) */
+.ownersettings { margin: 10px 0; }
+.ownersettings summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.ownerbox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.ownerinput { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  color: inherit; font: inherit; min-width: 280px; flex: 1 1 280px; }
 
 /* selectable file tables (Documents / Correspondence) */
 .filetable .rowpick { width: 16px; height: 16px; cursor: pointer; }
@@ -802,7 +811,14 @@ body.selecting .jgrid .jcard, body.selecting .jgrid .jcard img { cursor: crossha
   max-height: calc(100vh - 130px); overflow-y: auto; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; padding: 10px 8px; }
 .docs-pane { flex: 999 1 560px; min-width: 0; }
-.docs-treetools { display: flex; justify-content: flex-end; margin: 0 4px 6px; }
+.docs-treetools { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin: 0 4px 6px; }
+.docs-treetools .incemails { font-size: 12px; color: var(--muted); }
+.docs-emails-head { font-family: var(--serif); font-size: 15px; margin: 18px 0 6px; }
+.docs-email-list { display: flex; flex-direction: column; gap: 2px; }
+.docs-email-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--panel); }
+.docs-email-row:hover { background: var(--chip); }
+.docs-email-row .nm { flex: 1 1 auto; }
 .tlist { list-style: none; margin: 0; padding: 0; }
 .tsep { border-top: 1px solid var(--line); margin: 8px 4px; }
 .tcap { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 2px 8px 4px; }

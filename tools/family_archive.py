@@ -76,8 +76,10 @@ from tools._archive_data import (  # noqa: E402
     confirm_queue_data, conversation_detail, document_rows, documents_index,
     file_identity,
     email_rows, email_thread_detail, event_album_titles, event_albums_data,
+    thread_has_delivered_attachment, _participant_address,
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
+    email_category_counts, merge_email_category_counts, email_rows_for_category,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -360,11 +362,12 @@ def apply_curation(rows, curation, id_key="id"):
         return rows
     favs = curation.get("favorites") or {}
     notes = curation.get("notes") or {}
+    important = curation.get("important") or {}
     membership = {}
     for slug, coll in (curation.get("collections") or {}).items():
         for m in (coll.get("members") or []):
             membership.setdefault(str(m), []).append(slug)
-    if not favs and not notes and not membership:
+    if not favs and not notes and not membership and not important:
         return rows
     out = []
     for r in rows:
@@ -372,11 +375,14 @@ def apply_curation(rows, curation, id_key="id"):
         fav = iid in favs
         cols = membership.get(iid)
         note = (notes.get(iid) or {}).get("text") if iid in notes else None
-        if fav or cols or note:
+        imp = iid in important
+        if fav or cols or note or imp:
             r = dict(r)
             r["favorite_curation"] = fav
             r["collections"] = sorted(cols) if cols else []
             r["note"] = note
+            if imp:
+                r["important"] = True
         out.append(r)
     return out
 
@@ -580,11 +586,17 @@ def _filter_emails_search(rows, params):
         rows = [r for r in rows if (r.get("date_last") or "")[:10] >= df]
     if dt:
         rows = [r for r in rows if (r.get("date_last") or "")[:10] <= dt]
+    if _one(params, "important") == "1":
+        rows = [r for r in rows if r.get("important")]
+    if _one(params, "has_attachment") == "1":
+        rows = [r for r in rows if r.get("has_attachment")]
     sort = _one(params, "sort")
     if sort == "recent":
         rows = sorted(rows, key=lambda r: (r.get("date_last") or ""), reverse=True)
     elif sort == "subject":
         rows = sorted(rows, key=lambda r: (r.get("subject") or "").lower())
+    elif sort == "sender":
+        rows = sorted(rows, key=lambda r: (r.get("correspondent") or "").lower())
     return rows
 
 
@@ -1347,9 +1359,14 @@ class ArchiveCase:
             # so a correspondent card's filtered tail is reachable and total is true.
             # #11: ?q=/date_from/date_to/sort layer the in-list search box on top.
             rows = apply_curation(self.section("emails"), curation, "thread_id")
+            rows = self._attach_has_attachment(rows)
             rows = _filter_emails_by_participant(rows, params)
             rows = _filter_emails_search(rows, params)
-            return _paginate(rows, offset, limit)
+            page = _paginate(rows, offset, limit)
+            # So the Emails page's owner-address settings form can show what's
+            # currently configured without a second round-trip.
+            page["owner_addresses"] = self.decisions.get("owner_addresses") or []
+            return page
         if name == "messages":
             return _paginate(apply_curation(self.section("messages"), curation,
                                             "conversation_id"), offset, limit)
@@ -1366,9 +1383,32 @@ class ArchiveCase:
             data = self.section("documents")           # {index, rows(full), vital_docs}
             rows = apply_curation(data["rows"], curation, "file")
             rows = _attach_vital(rows, data["vital_docs"], self.vital_candidate_targets())
+            index = data["index"]
+            # Documents-view topic merge (?include_emails=1): email bodies share
+            # the SAME category taxonomy as documents (case_summary's pipeline
+            # classification, source=="email") but document_rows() routes them
+            # out to the Emails section by design — see its docstring. This flag
+            # folds them back in for browsing BY TOPIC only: folder counts always
+            # pick up email-only categories, but a thread's row is injected only
+            # when a specific, plain category folder is open (not the vital-doc
+            # checklist or a curation collection — those have their own,
+            # separate email linking already).
+            cat = _one(params, "cat")
+            if _one(params, "include_emails") == "1":
+                email_full = apply_curation(self.section("emails"), curation, "thread_id")
+                index = merge_email_category_counts(index, email_category_counts(email_full))
+                if cat and not _one(params, "vital") and not _one(params, "collection_curation"):
+                    rows = list(rows)
+                    for er in email_rows_for_category(email_full, cat):
+                        rows.append({
+                            "kind": "email", "thread_id": er["thread_id"], "file": None,
+                            "name": er["subject"], "category": cat, "subcategory": None,
+                            "text_kind": None, "significance": er.get("significance"),
+                            "summary": None, "preview": None,
+                        })
             rows = _filter_documents(rows, params)
             page = _paginate(rows, offset, limit)
-            page["index"] = data["index"]              # full index (all rows)
+            page["index"] = index                       # full index (all rows)
             page["vital_docs"] = data["vital_docs"]    # checklist panel (G-2)
             return page
         if name == "correspondence":
@@ -1477,6 +1517,30 @@ class ArchiveCase:
                                    f["offset"] if f["offset"] is not None else 0.0, f["id"]))
         return {"frames": frames}
 
+    def _email_attachment_index(self):
+        # Shared with thread_messages (same cache key → built once per generation).
+        return self._state_cached(
+            "email_attachment_index",
+            lambda st: delivered_basename_index(st["summary"], st["archive_map"], self.role))
+
+    def _attach_has_attachment(self, rows):
+        """Stamp has_attachment=True on Emails-list rows whose thread carries a
+        delivered (non-inline) attachment — see thread_has_delivered_attachment.
+        Computed live from the already-loaded indexes; no pipeline rerun."""
+        flags = self._state_cached(
+            "email_thread_has_attachment",
+            lambda st: thread_has_delivered_attachment(
+                st["email_threads"], self.email_by_file, self._email_attachment_index()))
+        if not flags:
+            return rows
+        out = []
+        for r in rows:
+            if flags.get(r.get("thread_id")):
+                r = dict(r)
+                r["has_attachment"] = True
+            out.append(r)
+        return out
+
     def thread_messages(self, thread_id):
         """Threaded conversation for one email thread, resolved server-side (#3)."""
         sig_by_file = {}
@@ -1500,6 +1564,7 @@ class ArchiveCase:
         if detail is None:
             raise VerbError(f"unknown thread {thread_id}", 404)
         detail["demoted"] = str(thread_id) in (self.decisions.get("email_demoted", {}) or {})
+        detail["important"] = str(thread_id) in (self.curation_layer.get("important", {}) or {})
         return detail
 
     def conversation_by_id(self, conversation_id):
@@ -3284,6 +3349,7 @@ def _load_curation(case):
     cur.setdefault("favorites", {})
     cur.setdefault("collections", {})
     cur.setdefault("notes", {})
+    cur.setdefault("important", {})
     return cur
 
 
@@ -3306,6 +3372,34 @@ def verb_favorite(case, payload):
             favs.pop(iid, None)
         atomic_write_json(_curation_path(case), cur)
     entry = append_action(case, "favorite", iid,
+                          {"entry": before}, {"on": on}, reversible=True)
+    return {"ok": True, "on": on, "undo_token": entry["undo_token"]}
+
+
+def verb_important_email(case, payload):
+    """Toggle an "important" flag on one email thread ({thread_id, on: true|false}).
+
+    DELIBERATELY NOT require_examiner(): every other curation verb is Phase 1
+    examiner-only (see the section header above), but flagging a thread important
+    is not a decision about what the other role may see — it's a personal marker
+    either side can set for themselves, so both roles may call this one. Same
+    storage/lock/audit shape as verb_favorite; `actor_role` records which role set
+    it (there is no per-person login to record more than that — see STATE.md)."""
+    tid = payload.get("thread_id")
+    if not tid:
+        raise VerbError("important/email needs thread_id")
+    tid = str(tid)
+    on = bool(payload.get("on"))
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        important = cur["important"]
+        before = important.get(tid)
+        if on:
+            important[tid] = {"ts": _now(), "actor_role": case.role}
+        else:
+            important.pop(tid, None)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "important_email", tid,
                           {"entry": before}, {"on": on}, reversible=True)
     return {"ok": True, "on": on, "undo_token": entry["undo_token"]}
 
@@ -3681,6 +3775,32 @@ def verb_demote_email(case, payload):
                           {"subject": payload.get("subject")},
                           {"demoted": not restore}, reversible=True)
     return {"ok": True, "demoted": not restore, "undo_token": entry["undo_token"]}
+
+
+def verb_set_owner_addresses(case, payload):
+    """Set `owner_addresses` — the account owner's own email address(es), the
+    one piece of information the pipeline's existing data cannot supply (see the
+    design note in STATE.md): without it, "sort the Emails list by sender" has no
+    way to tell the owner's own address apart from the other party on a thread
+    (thread_correspondent returns None for every row). Whoever already knows the
+    address — examiner or family — can set it, so DELIBERATELY NOT
+    require_examiner(), same reasoning as verb_important_email. Addresses are
+    normalized to their bare form (the <...> wrapper, if any, stripped) before
+    storage; this is real PII about the deceased, so it is written only into the
+    case's own output/metadata — never into anything this repo commits."""
+    addrs = payload.get("addresses")
+    if not isinstance(addrs, list):
+        raise VerbError("owner-addresses needs a list of addresses")
+    normalized = [a for a in (_participant_address(str(x)) for x in addrs) if a]
+    dpath = case.paths.metadata_dir / DECISIONS_FILE
+    with _doc_lock(case):  # cross-process RMW guard (R-4)
+        decisions = load_json(dpath, {}) or {}
+        before = decisions.get("owner_addresses")
+        decisions["owner_addresses"] = normalized
+        atomic_write_json(dpath, decisions)
+    entry = append_action(case, "set_owner_addresses", "owner_addresses",
+                          {"addresses": before}, {"addresses": normalized}, reversible=True)
+    return {"ok": True, "addresses": normalized, "undo_token": entry["undo_token"]}
 
 
 def verb_promote_vital(case, payload):
@@ -4114,6 +4234,17 @@ def _apply_inverse(case, entry):
                 rejected.remove(entry["target"])
             atomic_write_json(dpath, decisions)
         return {"restored": entry["target"]}
+    if action == "set_owner_addresses":
+        before = (entry.get("before") or {}).get("addresses")
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        with _doc_lock(case):  # cross-process RMW guard (R-4)
+            decisions = load_json(dpath, {}) or {}
+            if before is None:
+                decisions.pop("owner_addresses", None)
+            else:
+                decisions["owner_addresses"] = before
+            atomic_write_json(dpath, decisions)
+        return {"restored": before}
     if action in ("demote_email", "restore_email"):
         # Inverse of demote = restore (pop); inverse of restore = re-demote (add).
         dpath = case.paths.metadata_dir / DECISIONS_FILE
@@ -4224,7 +4355,7 @@ def _apply_inverse(case, entry):
             atomic_write_json(dpath, decisions)
         return {"restored": entry["target"]}
     # ── curation layer inverses (sidecar-only; no file moves) ──
-    if action in ("favorite", "collection_create", "collection_rename",
+    if action in ("favorite", "important_email", "collection_create", "collection_rename",
                   "collection_delete", "collection_add", "collection_remove",
                   "note_set", "note_clear"):
         target = entry["target"]
@@ -4237,6 +4368,12 @@ def _apply_inverse(case, entry):
                     cur["favorites"].pop(target, None)
                 else:
                     cur["favorites"][target] = prev
+            elif action == "important_email":
+                prev = before.get("entry")
+                if prev is None:
+                    cur["important"].pop(target, None)
+                else:
+                    cur["important"][target] = prev
             elif action == "collection_create":
                 cur["collections"].pop(target, None)
             elif action == "collection_rename":
@@ -4673,6 +4810,8 @@ VERBS = {
     "export/collection": verb_export_collection, "release": verb_release,
     "discard/quarantine": verb_discard_quarantine, "demote": verb_demote_ranked,
     "demote/email": verb_demote_email,
+    # Both roles (see verb_set_owner_addresses's docstring for why).
+    "owner-addresses": verb_set_owner_addresses,
     # ── vital-document checklist (examiner-only; DECISIONS OVERLAY, never mutates
     #    vital_doc_confirmed.json) ──
     "vital/dismiss": verb_dismiss_vital, "vital/reassign": verb_reassign_vital,
@@ -4687,6 +4826,8 @@ VERBS = {
     "move": verb_move,
     # ── curation layer (examiner-first) ──
     "favorite": verb_favorite,
+    # Both roles (see verb_important_email's docstring for why).
+    "important/email": verb_important_email,
     "collection/create": verb_collection_create,
     "collection/rename": verb_collection_rename,
     "collection/delete": verb_collection_delete,
