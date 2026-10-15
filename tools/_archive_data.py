@@ -2520,6 +2520,34 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     }
 
 
+def report_data(index, vital_docs):
+    """The Report page's Section 1 ("what's here") and Section 2 ("what wasn't
+    found") — see the front-end brainstorm's three-kept-apart-statements
+    principle. Section 3 ("where the archive isn't sure, and why it matters")
+    is deliberately NOT built: it needs an AI-question-generation feature that
+    doesn't exist anywhere in the real pipeline yet (the mockup that proposed
+    it used invented example documents) — this function never fabricates one.
+
+    `index` is documents_index()'s folder-count tree; `vital_docs` is
+    vital_docs_data()'s output. Both are already-built, pure structures —
+    report_data only reshapes them, so it stays cheap to call from every GET.
+    """
+    glabel = {g.get("group"): g.get("label") for g in vital_docs.get("groups") or []}
+    targets = vital_docs.get("targets") or []
+    here_vital = [{"name": t.get("label"), "count": len(t.get("items") or [])}
+                  for t in targets if t.get("found")]
+    not_found = [{"area": glabel.get(t.get("group")) or "Other", "what": t.get("label")}
+                 for t in targets if not t.get("found")]
+    return {
+        "available": bool(vital_docs.get("available")),
+        "here_folders": [{"name": c.get("category"), "count": c.get("count")} for c in index or []],
+        "here_vital": here_vital,
+        "not_found": not_found,
+        "found_count": vital_docs.get("found_count", 0),
+        "total_count": vital_docs.get("total_count", 0),
+    }
+
+
 def review_data(paths, summary):
     """EXAMINER-ONLY review surfaces. Read directly from the case (never family)."""
     md = paths.metadata_dir
@@ -3240,6 +3268,23 @@ def email_category_counts(email_rows):
     return counts
 
 
+def significance_threshold_counts(rows):
+    """{N: count} for N in 1..5 — how many `rows` have significance >= N, i.e.
+    exactly what `?min_significance=N` would keep. CUMULATIVE on purpose (the
+    Emails page's threshold dropdown reads "this level and up", not "exactly
+    this level"), so the count meter next to it matches each option 1:1. Call
+    on whatever rows already survived the OTHER filters (search/date/
+    direction/...) but before the significance threshold itself narrows them,
+    so the meter reflects "what you'd get at each level, given everything else
+    you've already filtered by"."""
+    counts = {n: 0 for n in range(1, 6)}
+    for r in rows or []:
+        sig = r.get("significance") or 0
+        for n in range(1, min(sig, 5) + 1):
+            counts[n] += 1
+    return counts
+
+
 def merge_email_category_counts(index, email_counts):
     """Fold email-thread category counts onto an already-built documents_index()
     tree, for the Documents view's "include emails" toggle. A category that had
@@ -3650,6 +3695,38 @@ def thread_has_delivered_attachment(threads_index, email_by_file, attachment_ind
                     break
             if tid in out:
                 break
+    return out
+
+
+def thread_direction_flags(threads_index, email_by_file, owner_addresses):
+    """{thread_id: {"sent": True?, "received": True?}} from each message's
+    `email_from`, same owner_addresses setting thread_correspondent uses. A
+    thread gets `sent` if ANY message came from an owner address, `received` if
+    ANY came from someone else — a real back-and-forth carries BOTH, matching
+    how Gmail shows one conversation under both Inbox and Sent. A thread no
+    configured owner address ever touches gets neither key (additive; never a
+    guess) — including every thread when owner_addresses is empty."""
+    owners = {a.strip().lower() for a in (owner_addresses or []) if a}
+    if not owners:
+        return {}
+    threads = (threads_index or {}).get("threads", []) or []
+    out = {}
+    for t in threads:
+        tid = t.get("thread_id")
+        if not tid:
+            continue
+        flags = out.setdefault(tid, {})
+        for f in t.get("files") or []:
+            entry = (email_by_file or {}).get(f) or {}
+            addr = _participant_address(entry.get("email_from")).lower()
+            if not addr:
+                continue
+            if addr in owners:
+                flags["sent"] = True
+            else:
+                flags["received"] = True
+        if not flags:
+            del out[tid]
     return out
 
 

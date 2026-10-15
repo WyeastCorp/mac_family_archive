@@ -1826,6 +1826,23 @@ def test_api_section_paginates_documents_true_total_and_index(tmp_path):
     assert sum(c["count"] for c in fin["index"]) == 51, "index still spans all categories"
 
 
+def test_report_page_combines_folder_counts_and_vital_checklist(tmp_path):
+    case, paths = setup_case(tmp_path)
+    _seed_vitals(paths)
+    case.load()
+    r = case.section("report")
+    assert r["available"] is True
+    # make_case's own fixture seeds one financial document (invoice.pdf).
+    assert {f["name"]: f["count"] for f in r["here_folders"]}.get("financial") == 1
+    found_names = {v["name"] for v in r["here_vital"]}
+    assert found_names == {"Will / testament", "Property deed / title", "Vehicle title"}
+    not_found_names = {m["what"] for m in r["not_found"]}
+    assert "Life insurance" in not_found_names
+    assert "Will / testament" not in not_found_names
+    # Reachable through the normal API path too, not just the pure builder.
+    assert case.api_section("report", {}) == r
+
+
 def test_api_section_documents_include_emails_adds_counts_and_rows(tmp_path):
     case, paths = setup_case(tmp_path)
     summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
@@ -2132,6 +2149,24 @@ def test_api_section_emails_search_date_and_sort(tmp_path):
     # ?q= composes with the existing ?participant= click-through filter.
     combined = case.api_section("emails", {"participant": "dawn@x", "q": "re:"})
     assert combined["total"] == 1 and combined["rows"][0]["thread_id"] == "t3"
+    # ?min_significance=N keeps only threads at or above that pipeline score —
+    # a THRESHOLD, not grouping/sorting (which stay independent of it).
+    top_only = case.api_section("emails", {"min_significance": "5"})
+    assert {r["thread_id"] for r in top_only["rows"]} == {"t2"}
+    top_two = case.api_section("emails", {"min_significance": "2"})
+    assert {r["thread_id"] for r in top_two["rows"]} == {"t1", "t2"}
+    everything = case.api_section("emails", {"min_significance": "0"})
+    assert everything["total"] == 3, "0 is a no-op — every score is >= 0"
+    # significance_counts rides on every envelope — the count meter next to the
+    # threshold dropdown — and reflects the OTHER active filters (q= here),
+    # not the significance filter itself.
+    assert default["significance_counts"] == {1: 3, 2: 2, 3: 1, 4: 1, 5: 1}
+    assert by_subject["significance_counts"] == {1: 2, 2: 1, 3: 0, 4: 0, 5: 0}
+    # ?dir= toggles direction per column, "usual email browser" header-click style.
+    recent_asc = case.api_section("emails", {"sort": "recent", "dir": "asc"})
+    assert [r["thread_id"] for r in recent_asc["rows"]] == ["t3", "t1", "t2"]
+    subject_desc = case.api_section("emails", {"sort": "subject", "dir": "desc"})
+    assert [r["thread_id"] for r in subject_desc["rows"]] == ["t2", "t3", "t1"]
 
 
 def test_thread_messages_attaches_resolved_attachments(tmp_path):
@@ -2209,6 +2244,41 @@ def test_emails_list_flags_and_filters_by_delivered_attachment(tmp_path):
     assert "has_attachment" not in by["t3"]
     filtered = case.api_section("emails", {"has_attachment": "1"})
     assert filtered["total"] == 1 and filtered["rows"][0]["thread_id"] == "t1"
+
+
+def test_emails_list_flags_and_filters_by_direction(tmp_path):
+    # t1: owner wrote out, no reply — sent-only, must NOT show under Received
+    # (this is the exact case the user flagged: a note with no reply showing up
+    # under "From <them>" when it was never from them at all).
+    # t2: owner received a note, never answered — received-only, not under Sent.
+    # t3: a real back-and-forth — belongs under BOTH tabs, like Gmail does it.
+    case, paths = setup_case(tmp_path)
+    (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": [
+        {"thread_id": "t1", "subject": "Out, no reply", "files": ["/work/mail/1.eml"]},
+        {"thread_id": "t2", "subject": "In, no reply", "files": ["/work/mail/2.eml"]},
+        {"thread_id": "t3", "subject": "Back and forth", "files": ["/work/mail/3.eml", "/work/mail/3b.eml"]},
+    ]}))
+    (paths.metadata_dir / "email_index.json").write_text(json.dumps([
+        {"file": "/work/mail/1.eml", "email_from": "Owner <owner@x>", "email_subject": "Out, no reply"},
+        {"file": "/work/mail/2.eml", "email_from": "Dawn <dawn@x>", "email_subject": "In, no reply"},
+        {"file": "/work/mail/3.eml", "email_from": "Dawn <dawn@x>", "email_subject": "Back and forth"},
+        {"file": "/work/mail/3b.eml", "email_from": "Owner <owner@x>", "email_subject": "Re: Back and forth"},
+    ]))
+    case.load()
+    # Before owner_addresses is configured, nobody can be classified — no guess.
+    bare = {r["thread_id"]: r for r in case.api_section("emails", {})["rows"]}
+    assert all("sent" not in r and "received" not in r for r in bare.values())
+
+    fa.verb_set_owner_addresses(case, {"addresses": ["owner@x"]})
+    rows = {r["thread_id"]: r for r in case.api_section("emails", {})["rows"]}
+    assert rows["t1"]["sent"] is True and "received" not in rows["t1"]
+    assert rows["t2"]["received"] is True and "sent" not in rows["t2"]
+    assert rows["t3"]["sent"] is True and rows["t3"]["received"] is True
+
+    received = case.api_section("emails", {"direction": "received"})
+    assert {r["thread_id"] for r in received["rows"]} == {"t2", "t3"}
+    sent = case.api_section("emails", {"direction": "sent"})
+    assert {r["thread_id"] for r in sent["rows"]} == {"t1", "t3"}
 
 
 def test_api_section_wraps_videos_and_correspondence_scanned(tmp_path):

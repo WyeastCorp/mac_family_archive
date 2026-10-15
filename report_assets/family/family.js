@@ -529,15 +529,30 @@
   }
 
   // ── shell ──
+  // Top nav (2026-10-15 decision): a slim bar, not the old full-PAGES sidebar —
+  // scoped to the 4 areas the archive is now organized around.
+  var TOP_NAV = [["documents", "Documents"], ["emails", "Emails"], ["messages", "Messages"],
+                 ["report", "Report"]];
   function shell() {
     var app = document.getElementById("app");
     app.innerHTML = "";
     if (CTX.solo) return soloShell(app);
-    var sh = el("div", "shell");
-    var rail = el("nav", "rail");
-    rail.setAttribute("role", "navigation");
-    rail.setAttribute("aria-label", "Archive sections");
-    rail.innerHTML = '<div class="brand"><span class="mark">Wyeast</span><span class="sub">Family Archive</span></div>';
+    var sh = el("div", "shell topnav");
+    var bar = el("nav", "topbar");
+    bar.setAttribute("role", "navigation");
+    bar.setAttribute("aria-label", "Archive sections");
+    bar.appendChild(el("div", "brand",
+      '<span class="mark">Wyeast</span><span class="sub">Family Archive</span>'));
+    var links = el("div", "topbar-links");
+    TOP_NAV.forEach(function (item) {
+      var key = item[0], label = item[1];
+      var active = key === CTX.page;
+      var a = el("a", "navlink" + (active ? " active" : ""), esc(label));
+      a.href = "/" + key;
+      if (active) a.setAttribute("aria-current", "page");
+      links.appendChild(a);
+    });
+    bar.appendChild(links);
     // Full-text search box — present on every page (family-archive-full-text-search.md).
     // CSP-safe: no inline handlers, submit navigates to the /search results page.
     var railForm = el("form", "railsearch");
@@ -554,18 +569,10 @@
       var v = railInput.value.trim();
       location.href = v ? "/search?q=" + encodeURIComponent(v) : "/search";
     });
-    rail.appendChild(railForm);
-    (CTX.nav || []).forEach(function (item) {
-      var active = item.key === CTX.page;
-      var a = el("a", "navlink" + (active ? " active" : ""), esc(item.label));
-      a.href = "/" + item.key;
-      if (active) a.setAttribute("aria-current", "page");
-      rail.appendChild(a);
-    });
-    rail.appendChild(el("div", "spacer"));
-    rail.appendChild(el("div", "casemeta", esc(CTX.case_id) + '<br><span class="role-pill">' + esc(CTX.role) + '</span>'));
+    bar.appendChild(railForm);
+    bar.appendChild(el("div", "casemeta", esc(CTX.case_id) + ' <span class="role-pill">' + esc(CTX.role) + '</span>'));
     var main = el("main", "main"); main.id = "main"; main.setAttribute("role", "main");
-    sh.appendChild(rail); sh.appendChild(main); app.appendChild(sh);
+    sh.appendChild(bar); sh.appendChild(main); app.appendChild(sh);
     return main;
   }
 
@@ -3396,6 +3403,64 @@
     });
   }
 
+  // Report (2026-10-15): Sections 1-2 only ("what's here" / "what wasn't
+  // found") — see report_data's docstring for why Section 3 ("where the
+  // archive isn't sure") isn't built: no real question-generation feature
+  // exists yet, and this never fabricates one. A key/value "sheet" row,
+  // matching the mockup's plain summary-row style (not the ruled/numbered
+  // document-list style, which is a different, not-yet-applied piece).
+  // `k` is raw text (goes through txt()/textContent, so never pre-escape it);
+  // `vHtml` is already-safe HTML (goes into innerHTML — esc() it yourself first).
+  function reportRow(k, vHtml) {
+    var row = el("div", "rr");
+    row.appendChild(txt("span", "k", k));
+    var v = el("span", "v"); v.innerHTML = vHtml;
+    row.appendChild(v);
+    return row;
+  }
+  P.report = function (main, data) {
+    head(main, "Report", "Report", "Three kept-apart statements: what the archive holds, " +
+        "what it could not find, and — later — where it is unsure. Nothing here is a to-do.");
+    if (!data.available) {
+      main.appendChild(el("p", "notice",
+        "The vital-document checklist hasn't run for this case yet, so Section 2 (what wasn't " +
+        "found) has nothing to report. Section 1 still shows what's here."));
+    }
+
+    main.appendChild(el("h2", "sec", "1 · What's here"));
+    var total = 0; (data.here_folders || []).forEach(function (f) { total += f.count; });
+    main.appendChild(el("p", "lede", num(total) + " documents, filed into " +
+      (data.here_folders || []).length + " folders."));
+    var sheet1 = el("div", "sheet"); main.appendChild(sheet1);
+    (data.here_folders || []).forEach(function (f) {
+      sheet1.appendChild(reportRow(pretty(f.name),
+        "<a href='/documents?cat=" + encodeURIComponent(f.name) + "'>" + num(f.count) + "</a>"));
+    });
+    if (!(data.here_folders || []).length) sheet1.appendChild(el("p", "notice", "No documents yet."));
+
+    if (data.available) {
+      main.appendChild(el("h3", "sec3", "Vital documents found"));
+      main.appendChild(el("p", "lede", num(data.found_count) + " of " + num(data.total_count) +
+        " kinds searched for were found."));
+      var sheet2 = el("div", "sheet"); main.appendChild(sheet2);
+      (data.here_vital || []).forEach(function (v) {
+        sheet2.appendChild(reportRow(v.name, num(v.count)));
+      });
+      if (!(data.here_vital || []).length) sheet2.appendChild(el("p", "notice", "None found yet."));
+
+      main.appendChild(el("h2", "sec", "2 · What wasn't found"));
+      main.appendChild(el("p", "lede",
+        "“Not found” means not in the archive, within what was searched. " +
+        "It never means the thing doesn't exist."));
+      var sheet3 = el("div", "sheet"); main.appendChild(sheet3);
+      (data.not_found || []).forEach(function (m) {
+        sheet3.appendChild(reportRow(m.area, esc(m.what)));
+      });
+      if (!(data.not_found || []).length) sheet3.appendChild(el("p", "notice",
+        "Every kind the archive searches for was found."));
+    }
+  };
+
   P.documents = function (main, data) {
     var index = data.index || [];
     var vd = data.vital_docs || {};
@@ -4197,37 +4262,97 @@
     return b;
   }
 
-  // Redraw the significance-banded email list from the accumulated rows (rebuilt
-  // on each Load-more page — the bands regroup the full loaded set).
-  function drawEmailBands(container, rows) {
+  // "Name <addr>" → just the name (or the bare address/string when there's no
+  // name) — an inbox row shows who, not their raw header.
+  function _nameOnly(p) {
+    p = (p || "").trim();
+    var i = p.indexOf("<");
+    return (i > 0 ? p.slice(0, i).trim() : p) || p;
+  }
+  // Inbox-style compact date: "Sep 23" this calendar year, "Sep 23, 2024" not.
+  function _inboxDate(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d)) return esc(String(iso).slice(0, 10));
+    var opts = { month: "short", day: "numeric" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return esc(d.toLocaleDateString(undefined, opts));
+  }
+  // The row's "From" line: the actual correspondent when owner-addresses makes
+  // that knowable (see thread_correspondent); otherwise the other participants'
+  // names, since a thread has no single sender without that setting.
+  function _fromLine(r) {
+    if (r.correspondent) return esc(_nameOnly(r.correspondent));
+    var names = (r.participants || []).map(_nameOnly);
+    if (!names.length) return "(no participants)";
+    var shown = names.slice(0, 2).map(esc).join(", ");
+    return names.length > 2 ? shown + " +" + (names.length - 2) : shown;
+  }
+
+  // A clickable From/Subject/Date column header, "usual email browser" style
+  // (2026-10-15) — replaces the old Sort dropdown. `sort` is {by, dir}; a
+  // click on the active column flips direction, a click on another column
+  // switches to it at that column's own natural default (newest-first for
+  // Date, A-Z for From/Subject — same off→asc/desc→reverse convention
+  // sortHead already uses for Documents, just without the third "off" state,
+  // since the Emails list always has SOME order).
+  function _emailColHead(label, key, defaultDesc, sort, onChange) {
+    var b = el("button", "sorth", "");
+    b.type = "button";
+    var on = sort.by === key;
+    // An explicit dir wins; otherwise (including the untouched initial state,
+    // where sort.by already equals key but dir is "") fall back to this
+    // column's own default — "recent" starts descending even before anyone
+    // has clicked it, matching what the backend actually returns by default.
+    var desc = (on && sort.dir) ? sort.dir === "desc" : defaultDesc;
+    b.appendChild(document.createTextNode(label + (on ? (desc ? " ▼" : " ▲") : "")));
+    b.setAttribute("aria-sort", on ? (desc ? "descending" : "ascending") : "none");
+    b.onclick = function () {
+      onChange(!on ? { by: key, dir: defaultDesc ? "desc" : "asc" }
+                   : { by: key, dir: desc ? "asc" : "desc" });
+    };
+    return b;
+  }
+
+  // Redraw the email list from the accumulated rows (rebuilt on each Load-more
+  // page) as a compact, single-line-per-thread inbox — from / subject / date,
+  // the layout a typical mail client uses (2026-10-15 decision). Flat, in
+  // whatever order the server returned (sort/dir control that) — the
+  // pipeline's per-message significance score is unverified for now, so it
+  // drives no grouping or marker here (it DOES drive a separate threshold
+  // filter — see the significance dropdown).
+  function drawEmailBands(container, rows, sort, onSortChange) {
     container.innerHTML = "";
-    // Group into significance bands so the (already significance-sorted) list reads
-    // as organized by importance, not a flat date jumble (#D).
-    var BANDS = [[5, "Major life events"], [4, "Emotionally resonant"], [3, "Personal"],
-                 [2, "Everyday"], [1, "Routine"], [0, "Unranked"]];
-    BANDS.forEach(function (band) {
-      var n = band[0];
-      var group = rows.filter(function (r) { return (parseInt(r.significance, 10) || 0) === n; });
-      if (!group.length) return;
-      container.appendChild(el("h2", null, band[1] + " (" + group.length + ")"));
-      var tbl = el("table");
-      tbl.innerHTML = "<tr><th>Subject</th><th>With</th><th>When</th><th>Msgs</th><th></th></tr>";
-      group.forEach(function (r) {
-        var tr = el("tr", "clickable");
-        tr.innerHTML = "<td>" + (r.important ? "★ " : "") + esc(r.subject) + " " + sig(r.significance) +
-          (r.has_attachment ? " <span title='Has a delivered attachment'>📎</span>" : "") +
-          "</td><td class='preview clamp2'>" + recipients(r.participants) + "</td><td class='preview'>" +
-          esc((r.date_last || "").slice(0, 10)) + "</td><td>" + num(r.message_count) +
-          "</td><td class='actcell'></td>";
-        tr.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
-        keyable(tr, null);   // F-12
-        // Important is NOT examiner-only; Demote stays examiner-only.
-        tr.lastChild.appendChild(emailImportantBtn(r));
-        if (EXAMINER) tr.lastChild.appendChild(emailDemoteBtn(r));
-        tbl.appendChild(tr);
-      });
-      container.appendChild(tbl);
+    var list = el("div", "inbox");
+    var head = el("div", "inbox-row inbox-head");
+    var fromHead = el("span", "inbox-from");
+    fromHead.appendChild(_emailColHead("From", "sender", false, sort, onSortChange));
+    var subjHead = el("span", "inbox-subj");
+    subjHead.appendChild(_emailColHead("Subject", "subject", false, sort, onSortChange));
+    var dateHead = el("span", "inbox-date");
+    dateHead.appendChild(_emailColHead("Date", "recent", true, sort, onSortChange));
+    head.appendChild(fromHead); head.appendChild(subjHead); head.appendChild(dateHead);
+    head.appendChild(el("span", "inbox-acts"));
+    list.appendChild(head);
+    if (!rows.length) list.appendChild(el("p", "notice", "Nothing here."));
+    rows.forEach(function (r) {
+      var row = el("div", "inbox-row clickable");
+      row.innerHTML =
+        "<span class='inbox-from'>" + _fromLine(r) + "</span>" +
+        "<span class='inbox-subj'>" + (r.important ? "★ " : "") + esc(r.subject) +
+          (r.message_count > 1 ? " <span class='inbox-count'>(" + num(r.message_count) + ")</span>" : "") +
+          (r.has_attachment ? " <span title='Has a delivered attachment'>📎</span>" : "") + "</span>" +
+        "<span class='inbox-date'>" + _inboxDate(r.date_last) + "</span>" +
+        "<span class='inbox-acts'></span>";
+      row.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
+      keyable(row, null);   // F-12
+      var acts = row.querySelector(".inbox-acts");
+      // Important is NOT examiner-only; Demote stays examiner-only.
+      acts.appendChild(emailImportantBtn(r));
+      if (EXAMINER) acts.appendChild(emailDemoteBtn(r));
+      list.appendChild(row);
     });
+    container.appendChild(list);
   }
 
   // G-4: attachment chips under one email message. Inline cid-embedded images
@@ -4332,12 +4457,37 @@
     var participant = Q.participant || "";
     var lead = participant
       ? "Emails with " + participant + " — " + num((data && data.total) || 0) + " conversations."
-      : num((data && data.total) || 0) + " conversations, grouped by significance.";
+      : num((data && data.total) || 0) + " conversations.";
     var controls = head(main, "Emails", "Emails", lead);
     if (participant) {
       var clr = el("button", "btn chip", "✕ Clear filter");
       clr.onclick = function () { location.href = "/emails"; };
       controls.appendChild(clr);
+    }
+    // Received/Sent (2026-10-15): a thread can carry BOTH flags (a real back-
+    // and-forth appears under both tabs, same as Gmail) — direction needs
+    // owner_addresses to mean anything (see thread_direction_flags), so the
+    // tabs only render once that's configured; otherwise every thread would
+    // just vanish from both, which looks broken rather than merely unset.
+    var ownerConfigured = !!(data && data.owner_addresses && data.owner_addresses.length);
+    var direction = ownerConfigured ? (Q.direction === "sent" ? "sent" : "received") : "";
+    if (ownerConfigured) {
+      var dirSeg = el("div", "seg");
+      var dirBtns = {};
+      [["received", "Received"], ["sent", "Sent"]].forEach(function (o) {
+        var b = el("button", null, o[1]); b.type = "button";
+        b.setAttribute("aria-pressed", direction === o[0] ? "true" : "false");
+        b.onclick = function () {
+          direction = o[0];
+          dirBtns.received.setAttribute("aria-pressed", direction === "received" ? "true" : "false");
+          dirBtns.sent.setAttribute("aria-pressed", direction === "sent" ? "true" : "false");
+          setQ({ direction: direction === "received" ? "" : direction });
+          pg.load(true);
+        };
+        dirBtns[o[0]] = b;
+        dirSeg.appendChild(b);
+      });
+      main.appendChild(dirSeg);
     }
     // #11: in-list search (subject/participant) + date range + sort — tens of
     // thousands of threads with no way to narrow beyond "Load more" batches was
@@ -4351,10 +4501,23 @@
     var dTo = el("input"); dTo.type = "date"; dTo.title = "To date";
     if (Q.date_from) dFrom.value = Q.date_from;
     if (Q.date_to) dTo.value = Q.date_to;
-    var sortSel = el("select"); sortSel.setAttribute("aria-label", "Sort emails");
-    [["", "Most significant"], ["recent", "Most recent"], ["subject", "Subject (A–Z)"],
-     ["sender", "Sender (A–Z)"]].forEach(function (o) { sortSel.appendChild(new Option(o[1], o[0])); });
-    if (Q.sort) sortSel.value = Q.sort;
+    // Sort is now From/Subject/Date column headers on the list itself (2026-
+    // 10-15, "usual email browser" style) — no dropdown here any more.
+    var sort = { by: Q.sort || "recent", dir: Q.dir || "" };
+    // A THRESHOLD ("this level and everything above it"), not independent
+    // per-level checkboxes — the levels are nested, so a plain select reads
+    // more honestly than 6 checkboxes that could be set inconsistently.
+    // Labels reuse the same band names the old grouped view used, highest
+    // first, so "highest only" / "highest + second" read in order. Filtering
+    // BY the pipeline score is a deliberate, separate decision from sort/
+    // grouping (which stay off it) — kept independent of the hand-set
+    // Important flag's own filter below.
+    var sigSel = el("select"); sigSel.setAttribute("aria-label", "Minimum significance");
+    [["", "Any significance"], ["5", "Major life events only"],
+     ["4", "Emotionally resonant and up"], ["3", "Personal and up"],
+     ["2", "Everyday and up"], ["1", "Routine and up"]]
+      .forEach(function (o) { sigSel.appendChild(new Option(o[1], o[0])); });
+    sigSel.value = Q.min_significance || "";
     var impChk = el("label", "flabel chkflabel");
     var impBox = el("input"); impBox.type = "checkbox";
     if (Q.important === "1") impBox.checked = true;
@@ -4366,11 +4529,38 @@
     listctrls.appendChild(search);
     listctrls.appendChild(el("span", "flabel", "From")); listctrls.appendChild(dFrom);
     listctrls.appendChild(el("span", "flabel", "To")); listctrls.appendChild(dTo);
-    listctrls.appendChild(sortSel);
+    listctrls.appendChild(sigSel);
     listctrls.appendChild(impChk);
     listctrls.appendChild(attChk);
-    var hasListFilter = !!(Q.q || Q.date_from || Q.date_to || Q.sort ||
-                           Q.important === "1" || Q.has_attachment === "1");
+
+    // Significance count meter: how many threads each threshold option would
+    // keep, GIVEN the other active filters (search/date/direction/...) — so it
+    // answers "what would I get if I picked this?" before you pick it. One bar
+    // per level, highest first, clicking a bar jumps straight to that
+    // threshold (same destination as picking it from the dropdown above).
+    var sigMeter = el("div", "sigmeter"); main.appendChild(sigMeter);
+    var SIG_LABELS = { 5: "Major life events", 4: "Emotionally resonant",
+                       3: "Personal", 2: "Everyday", 1: "Routine" };
+    function drawSigMeter(counts) {
+      sigMeter.innerHTML = "";
+      counts = counts || {};
+      var max = 1;
+      [5, 4, 3, 2, 1].forEach(function (n) { if ((counts[n] || 0) > max) max = counts[n]; });
+      [5, 4, 3, 2, 1].forEach(function (n) {
+        var c = counts[n] || 0;
+        var row = el("button", "sigmeter-row" + (sigSel.value === String(n) ? " active" : ""));
+        row.type = "button";
+        row.innerHTML = "<span class='nm'>" + SIG_LABELS[n] + "</span>" +
+          "<span class='bar'><span style='width:" + Math.max(2, Math.round(100 * c / max)) + "%'></span></span>" +
+          "<span class='ct'>" + num(c) + "</span>";
+        row.onclick = function () {
+          sigSel.value = String(n);
+          setQ({ min_significance: String(n) });
+          pg.load(true);
+        };
+        sigMeter.appendChild(row);
+      });
+    }
 
     // Owner-address settings (both roles — see verb_set_owner_addresses). First
     // settings-style form in this app: a typed value saved for later, not a
@@ -4398,11 +4588,10 @@
     main.appendChild(settingsWrap);
 
     var body = el("div"); main.appendChild(body);
-    // Load-more paginates the thread list (no more silent 5,000-of-17k cap). A
-    // demoted thread is forced to significance 0 → the Unranked band → reachable on
-    // a later page and flagged demoted:true for its Restore button (no thread
-    // vanishes). Demote/Restore re-render (refetch page 1); the toggled thread
-    // resurfaces in its new band via Load-more.
+    // Load-more paginates the thread list (no more silent 5,000-of-17k cap).
+    // Demote still writes email_demoted and still flags demoted:true for the
+    // Restore button, but since no sort here is significance-based any more
+    // (2026-10-15), it no longer visibly moves anything — see the handoff note.
     var pg = pager("/api/emails", {
       getParams: function () {
         var p = {};
@@ -4410,24 +4599,36 @@
         if (search.value) p.q = search.value;
         if (dFrom.value) p.date_from = dFrom.value;
         if (dTo.value) p.date_to = dTo.value;
-        if (sortSel.value) p.sort = sortSel.value;
+        p.sort = sort.by;
+        if (sort.dir) p.dir = sort.dir;
+        if (sigSel.value) p.min_significance = sigSel.value;
         if (impBox.checked) p.important = "1";
         if (attBox.checked) p.has_attachment = "1";
+        if (direction) p.direction = direction;
         return p;
       },
-      render: function (all) { drawEmailBands(body, all); },
-      // The router's seed `data` above is the UNfiltered total (fetched before we
-      // know a participant/search/date filter is even active) — `lead` was built
-      // from it and is wrong until this fires with the real, server-filtered
-      // total. Without this, "Emails with X" (or a plain search) sits next to the
-      // global count — the exact thing that makes a filter look broken even
-      // though it isn't.
+      render: function (all) {
+        drawEmailBands(body, all, sort, function (next) {
+          sort = next;
+          setQ({ sort: sort.by, dir: sort.dir });
+          pg.load(true);
+        });
+      },
+      // The router's seed `data` above is the UNfiltered total (fetched before
+      // any filter — direction included — is known to be active); we always
+      // pg.load(true) now (see below), so `lead` is wrong until this fires with
+      // the real, server-filtered total. Without this, "Emails with X" (or a
+      // plain search) sits next to the global count — the exact thing that
+      // makes a filter look broken even though it isn't. Same reasoning for the
+      // significance count meter: it needs the real, server-filtered counts.
       onData: function (raw) {
-        if (!participant) return;
         var leadEl = main.querySelector(".pagehead-title .lead");
-        if (!leadEl) return;
-        leadEl.innerHTML = esc("Emails with " + participant + " — " +
-          num((raw && raw.total) || 0) + " conversations.");
+        if (leadEl) {
+          var n = num((raw && raw.total) || 0);
+          leadEl.innerHTML = esc(participant ? "Emails with " + participant + " — " + n + " conversations."
+                                             : n + " conversations.");
+        }
+        drawSigMeter(raw && raw.significance_counts);
       },
     });
     main.appendChild(pg.footer);
@@ -4435,12 +4636,13 @@
     search.oninput = reload;
     function onDate() { setQ({ date_from: dFrom.value, date_to: dTo.value }); pg.load(true); }
     dFrom.onchange = onDate; dTo.onchange = onDate;
-    sortSel.onchange = function () { setQ({ sort: sortSel.value }); pg.load(true); };
+    sigSel.onchange = function () { setQ({ min_significance: sigSel.value }); pg.load(true); };
     impBox.onchange = function () { setQ({ important: impBox.checked ? "1" : "" }); pg.load(true); };
     attBox.onchange = function () { setQ({ has_attachment: attBox.checked ? "1" : "" }); pg.load(true); };
-    // The router's seed payload is UNfiltered (/api/emails with no params); when a
-    // participant/search/date/sort filter is active, refetch page 1 through it.
-    if (participant || hasListFilter) pg.load(true); else pg.seed(data);
+    // The router's seed payload is unsorted (/api/emails with no params, which
+    // server-side still falls back to the unused significance order) — always
+    // fetch explicitly so the default "recent" sort is what actually renders.
+    pg.load(true);
   };
 
   // ── correspondents / relationships (G-6) ──

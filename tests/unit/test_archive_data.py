@@ -363,6 +363,47 @@ def test_doc_placements_overrides_document_rows_category():
     assert idx == {"legal": 1, "miscellaneous": 1}, "documents_index counts are DERIVED"
 
 
+def test_report_data_splits_found_and_not_found_vital_targets():
+    # Section 1 ("what's here") gets folder counts + the FOUND vital kinds;
+    # Section 2 ("what wasn't found") gets everything else, grouped by the
+    # same group label the Documents tree already uses. Deliberately no
+    # Section 3 ("where the archive isn't sure") — no real question-generation
+    # feature exists yet; report_data never fabricates one.
+    index = [{"category": "financial", "count": 10, "subcategories": []},
+             {"category": "legal", "count": 3, "subcategories": []}]
+    vital_docs = {
+        "available": True, "found_count": 1, "total_count": 2,
+        "groups": [{"group": "estate_legal", "label": "Estate & legal"}],
+        "targets": [
+            {"target": "will_testament", "label": "Will / testament", "group": "estate_legal",
+             "found": True, "items": [{"id": "a"}, {"id": "b"}]},
+            {"target": "trust_instrument", "label": "Trust agreement", "group": "estate_legal",
+             "found": False, "items": []},
+        ],
+    }
+    r = ad.report_data(index, vital_docs)
+    assert r["available"] is True
+    assert r["here_folders"] == [{"name": "financial", "count": 10}, {"name": "legal", "count": 3}]
+    assert r["here_vital"] == [{"name": "Will / testament", "count": 2}]
+    assert r["not_found"] == [{"area": "Estate & legal", "what": "Trust agreement"}]
+    assert r["found_count"] == 1 and r["total_count"] == 2
+
+
+def test_report_data_unavailable_when_vital_doc_stage_never_ran():
+    r = ad.report_data([], {"available": False, "targets": [], "found_count": 0, "total_count": 0})
+    assert r["available"] is False
+    assert r["here_vital"] == [] and r["not_found"] == []
+
+
+def test_significance_threshold_counts_matches_each_filter_option():
+    # Each key N is "how many rows ?min_significance=N would keep" — a
+    # CUMULATIVE count, matching the dropdown's "X and up" semantics exactly,
+    # not a per-bucket tally.
+    rows = [{"significance": 5}, {"significance": 5}, {"significance": 3},
+           {"significance": 1}, {"significance": 0}, {}]
+    assert ad.significance_threshold_counts(rows) == {5: 2, 4: 2, 3: 3, 2: 3, 1: 4}
+
+
 def test_email_category_counts_tallies_every_category_on_a_thread():
     rows = [{"thread_id": "t1", "categories": ["financial", "insurance"]},
            {"thread_id": "t2", "categories": ["financial"]},

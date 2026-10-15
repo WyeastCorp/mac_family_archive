@@ -76,10 +76,11 @@ from tools._archive_data import (  # noqa: E402
     confirm_queue_data, conversation_detail, document_rows, documents_index,
     file_identity,
     email_rows, email_thread_detail, event_album_titles, event_albums_data,
-    thread_has_delivered_attachment, _participant_address,
+    thread_has_delivered_attachment, thread_direction_flags, _participant_address,
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
     email_category_counts, merge_email_category_counts, email_rows_for_category,
+    significance_threshold_counts, report_data,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -213,6 +214,8 @@ PAGES = [
     ("timeline", "Timeline", "heirloom"),
     ("places", "Places", "heirloom"),
     ("documents", "Documents", "heirloom"),
+    # 2026-10-15: the top-nav Report tab — see report_data in _archive_data.py.
+    ("report", "Report", "heirloom"),
     ("correspondence", "Correspondence", "heirloom"),
     ("emails", "Emails", "heirloom"),
     ("correspondents", "Correspondents", "heirloom"),
@@ -568,14 +571,19 @@ def _filter_correspondents(rows, params):
 
 
 def _filter_emails_search(rows, params):
-    """Server-side ?q= / date range / ?sort= for the Emails list search box
-    (#11: tens of thousands of threads with no in-list search/sort/date filter
-    was close to unusable for 'find X' without falling back to full-text
-    search first). Applied BEFORE the page slice, alongside (not instead of)
-    the existing ?participant= click-through filter. `q` matches a
-    case-insensitive substring of the subject OR any participant; the date
-    range narrows by the thread's last activity date. `sort` re-orders
-    (default stays email_rows' own significance-desc order)."""
+    """Server-side ?q= / date range / ?important= / ?has_attachment= /
+    ?direction= for the Emails list search box (#11: tens of thousands of
+    threads with no in-list search/date filter was close to unusable for
+    'find X' without falling back to full-text search first). Applied BEFORE
+    the page slice, alongside (not instead of) the existing ?participant=
+    click-through filter. `q` matches a case-insensitive substring of the
+    subject OR any participant; the date range narrows by the thread's last
+    activity date.
+
+    Deliberately NOT min_significance or sort — see _filter_emails_min_significance
+    / _sort_emails. The significance threshold is split out so the caller can
+    compute significance_threshold_counts (the count meter) on these results
+    BEFORE narrowing to one threshold."""
     q = _one(params, "q").strip().lower()
     if q:
         rows = [r for r in rows
@@ -590,13 +598,41 @@ def _filter_emails_search(rows, params):
         rows = [r for r in rows if r.get("important")]
     if _one(params, "has_attachment") == "1":
         rows = [r for r in rows if r.get("has_attachment")]
+    direction = _one(params, "direction")
+    if direction in ("received", "sent"):
+        rows = [r for r in rows if r.get(direction)]
+    return rows
+
+
+def _filter_emails_min_significance(rows, params):
+    """A THRESHOLD on the pipeline's significance score (2026-10-15: the score
+    drives this filter on purpose, unlike sort, which stays off it — see the
+    Important flag for the independent, examiner/family-set signal)."""
+    min_sig = _one(params, "min_significance")
+    if not min_sig:
+        return rows
+    try:
+        floor = int(min_sig)
+    except ValueError:
+        return rows
+    return [r for r in rows if (r.get("significance") or 0) >= floor]
+
+
+def _sort_emails(rows, params):
+    """?sort=recent|subject|sender with ?dir=asc|desc — clickable From/Subject/
+    Date column headers, like a usual mail client (2026-10-15), replacing the
+    old dropdown. Each column has its own natural default direction (newest
+    first for Date, A-Z for the others) the first time it's clicked; a second
+    click on the same column reverses it — same convention _DOC_SORTS/sortHead
+    already use for Documents."""
     sort = _one(params, "sort")
+    d = _one(params, "dir")
     if sort == "recent":
-        rows = sorted(rows, key=lambda r: (r.get("date_last") or ""), reverse=True)
+        rows = sorted(rows, key=lambda r: (r.get("date_last") or ""), reverse=(d != "asc"))
     elif sort == "subject":
-        rows = sorted(rows, key=lambda r: (r.get("subject") or "").lower())
+        rows = sorted(rows, key=lambda r: (r.get("subject") or "").lower(), reverse=(d == "desc"))
     elif sort == "sender":
-        rows = sorted(rows, key=lambda r: (r.get("correspondent") or "").lower())
+        rows = sorted(rows, key=lambda r: (r.get("correspondent") or "").lower(), reverse=(d == "desc"))
     return rows
 
 
@@ -1207,6 +1243,9 @@ class ArchiveCase:
                                                   threads_index=self.email_threads,
                                                   per_target_k=self.vital_per_target_k(),
                                                   recordings_delivered=self.recordings_delivered())}
+        if page == "report":
+            docs = self.section("documents")      # reuses the same index + vital_docs
+            return report_data(docs["index"], docs["vital_docs"])
         if page == "correspondence":
             # Real (non-email) correspondence docs, grouped by writing medium,
             # plus scanned document/letter IMAGES (not in document_classifications).
@@ -1360,12 +1399,20 @@ class ArchiveCase:
             # #11: ?q=/date_from/date_to/sort layer the in-list search box on top.
             rows = apply_curation(self.section("emails"), curation, "thread_id")
             rows = self._attach_has_attachment(rows)
+            rows = self._attach_direction(rows)
             rows = _filter_emails_by_participant(rows, params)
             rows = _filter_emails_search(rows, params)
+            # Counts BEFORE the significance threshold narrows the list — the
+            # count meter next to the dropdown shows what every option would
+            # yield given the OTHER active filters, not just the chosen one.
+            sig_counts = significance_threshold_counts(rows)
+            rows = _filter_emails_min_significance(rows, params)
+            rows = _sort_emails(rows, params)
             page = _paginate(rows, offset, limit)
             # So the Emails page's owner-address settings form can show what's
             # currently configured without a second round-trip.
             page["owner_addresses"] = self.decisions.get("owner_addresses") or []
+            page["significance_counts"] = sig_counts
             return page
         if name == "messages":
             return _paginate(apply_curation(self.section("messages"), curation,
@@ -1538,6 +1585,26 @@ class ArchiveCase:
             if flags.get(r.get("thread_id")):
                 r = dict(r)
                 r["has_attachment"] = True
+            out.append(r)
+        return out
+
+    def _attach_direction(self, rows):
+        """Stamp sent/received onto Emails-list rows — see thread_direction_flags.
+        NOT _state_cached: it depends on owner_addresses, which verb_set_owner_
+        addresses changes without a case.load() (same as every other decision
+        read in this class), so a cached value could go stale within one
+        generation. The underlying scan is the same cost class as
+        _attach_has_attachment's, just not reused across requests."""
+        flags = thread_direction_flags(
+            self.email_threads, self.email_by_file, self.decisions.get("owner_addresses"))
+        if not flags:
+            return rows
+        out = []
+        for r in rows:
+            f = flags.get(r.get("thread_id"))
+            if f:
+                r = dict(r)
+                r.update(f)
             out.append(r)
         return out
 

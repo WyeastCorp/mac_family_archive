@@ -23,6 +23,70 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15, later — Top nav, inbox redesign, Report page, "law office navy" look
+
+**What shipped (on branch `documents-view`, not yet committed — see Next action)**
+- Left sidebar replaced with a top nav bar, scoped to **Documents · Emails · Messages · Report**
+  — matching the 2026-10-09/14 front-end brainstorm's decided design exactly (see
+  `memory/wyeast-frontend-brainstorm.md` and the mockup canvas it links,
+  `claude.ai/artifact/TavXkZ66bs5hJ3cXYj2gA1`). Every other existing page (Photos, People,
+  Collections, Review queue, ...) is still fully functional at its own URL — only the *nav*
+  changed, nothing was removed.
+- Emails list rebuilt as a compact single-line inbox (from / subject / date), matching a
+  typical mail client. Dropped the old significance-banded grouping and "Most significant"
+  sort — decided unreliable for now (see below) — replaced with clickable From/Subject/Date
+  column headers (`?sort=&dir=`, toggles like Mail.app/Outlook).
+- **Received / Sent tabs**: a thread shows under Received if any message came from someone
+  else, Sent if any came from the owner — both, for a real back-and-forth (Gmail's model).
+  Needs `owner_addresses` set via the page's own settings form; the tabs don't render until
+  it is (no silent wrong split).
+- **Significance threshold filter + count meter**: decided to keep using the pipeline's score
+  for *filtering* (a "this level and up" dropdown) even though it's been pulled from
+  sort/grouping as unverified — these are independent decisions, not a contradiction. A bar
+  per level shows the count each option would yield, given whatever else is filtered.
+- **Report page** (top-nav tab), Sections 1-2 only: "what's here" (folder counts + vital
+  documents found) and "what wasn't found" (the vital-doc checklist's misses, grouped the
+  same way the Documents tree already groups them). Section 3 ("where the archive isn't
+  sure") is NOT built — it needs an AI-question-generation feature that doesn't exist in the
+  real pipeline; the mockup that proposed it used invented example documents. Don't build it
+  from vibes if asked for "the rest of the Report" — it needs a real design decision first.
+- **"Law office navy" look** applied app-wide: Source Serif 4 (headings) + Source Sans 3
+  (body), vendored locally (see `report_assets/fonts/source-serif-4/`,
+  `source-sans-3/` — same no-CDN pattern as the existing Fraunces/Inter/IBM Plex Mono, air-
+  gapped-safe), navy `#1f3a5f` as the one accent, double-ruled top bar. The "ruled numbered
+  sheet" document-row treatment from the mockup (pink margin line + numbered rows, legal-pad
+  style) was **not** applied — only the typography/color/top-bar pieces. Still the SAME
+  `data-theme="heirloom"` key every page uses; only the palette under that key changed
+  (atlas/gallery themes untouched, still unused by any page).
+
+**A real bug caught and fixed during this session, worth knowing about:** the Python backend
+(`tools/family_archive.py`, `tools/_archive_data.py`) only loads once when the preview server
+starts — editing those files does NOT hot-reload into a running process, unlike the JS/CSS,
+which ARE re-read from disk on every request. Twice this session a backend change looked like
+it "did nothing" in the browser until the server was restarted. **If a backend change doesn't
+seem to take effect, restart the preview server before assuming it's a bug.**
+
+**Blocked:** nothing.
+
+**Known issues not yet filed**
+- Demote (examiner's "remove from top of the sort") still writes `email_demoted` and the
+  Restore button still works, but since no remaining Emails sort is significance-based, it no
+  longer visibly moves anything. Not fixed — flagged to the user, no decision made yet on
+  whether to remove the button or leave it as a quiet audit action.
+- To-do raised by the user, not yet investigated: **why do ordinary (non-vital) documents —
+  e.g. the "recipe" folder — carry no dates at all?** As of the 2026-10-13 brainstorm's check
+  against upstream main, only vital documents, photos, emails and texts get dates from the
+  pipeline; this wasn't re-verified against current main. To check freshly: look at what
+  `wyeast/core/` or the pipeline's date_index actually covers today, not what this note says.
+- The Report page's folder-count links (`/documents?cat=X`) assume the raw category key
+  reads fine through `pretty()` for display; not checked against every category name that
+  exists across real cases, only `oct7_mf`'s.
+
+**Next action:** `cd ~/mac_family_archive && git diff --stat` to see the full change, then
+decide whether to commit — nothing from this round is committed yet.
+
+---
+
 ### 2026-10-15 — Emails get their own view; Documents can include them by topic
 
 **What shipped (on branch `documents-view`, not yet committed — see Next action)**
