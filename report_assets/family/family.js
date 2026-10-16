@@ -3106,11 +3106,15 @@
     if (du.basis === "email_sent_no_later_than") return "Existed by " + when + " (email sent)";
     if (du.basis === "form_date") return "Form dated " + when + " (looks unfilled)";
     if (du.basis === "period_end") return "Period ended " + when;
+    // as_of_date (2026-10-16 date_index contract, PR #11): a statement that
+    // states a single "as of" date rather than a period start/end.
+    if (du.basis === "as_of_date") return "As of " + when;
     return "Dated " + when;
   }
   var VITAL_DATE_TIP = {
     execution_date: "The date written in the document.",
     period_end: "The end of the statement period written in the document.",
+    as_of_date: "The document states a single date (“as of…”) rather than a period with a start and end.",
     form_date: "The document has blanks where names belong, so it looks like an unfilled form or draft. " +
       "This is the month or year printed on it: when the form was prepared, not when it was signed.",
     email_sent_no_later_than: "The document has no date of its own that could be read. " +
