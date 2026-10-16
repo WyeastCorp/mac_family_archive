@@ -2485,6 +2485,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
             doc = by_file.get(item_row["file_id"]) if item_row["file_id"] else None
             if doc:
                 item_row["category"] = doc.get("category")
+                item_row["subcategory"] = doc.get("subcategory")
                 item_row["summary"] = doc.get("summary")
                 item_row["significance"] = doc.get("significance")
                 item_row["favorite_curation"] = doc.get("favorite_curation", False)

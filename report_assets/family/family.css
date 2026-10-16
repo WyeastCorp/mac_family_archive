@@ -583,6 +583,14 @@ body.lb-open { overflow: hidden; }
 .vitals-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .vitals-item-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .vitals-item.missing { color: var(--muted); }
+/* 2026-10-16 Checklist redesign: a browsable item ("-rich" — see the JS
+   comment at its class) carries the same summary/meta/note/toolbar a Detail
+   card does, so IT is a stacked mini-card, not the one-line flex row an
+   email/message/recording-linked or stub item still uses (plain
+   .vitals-item, untouched above) — these overrides apply only to it. */
+.vitals-item.vitals-item-rich { display: block; padding: 8px 0; }
+.vitals-item-rich .vitals-item-actions { display: flex; flex-wrap: wrap; margin-left: 0; margin-top: 8px; }
+.vitals-toolbar { margin-top: 6px; }
 .vitals-rows { display: flex; flex-direction: column; gap: 10px; }
 .vitals-row { border-top: 1px solid var(--line); padding-top: 10px; }
 .vitals-row:first-child { border-top: 0; padding-top: 0; }

@@ -3181,222 +3181,6 @@
     return box;
   }
 
-  // G-2: full vital-documents checklist — one row per searched-for document type,
-  // ✓ found (deep-links to the doc[s]) or "not found in this collection". All
-  // estate-derived text (labels, item names, tags) is escaped via esc().
-  function vitalDocsPanel(main, vd) {
-    // #17: a promote/dismiss (single or batched) triggers a full render(), which
-    // rebuilds this panel from scratch — drop any selection state and floating
-    // bar left over from the PREVIOUS build so a stale #vselbar (bound to rows
-    // that no longer exist) never leaks into the new one.
-    VITAL_SEL = {};
-    var staleVBar = document.getElementById("vselbar"); if (staleVBar) staleVBar.remove();
-    if (!vd) return;
-    if (vd.available === false) {
-      main.appendChild(el("p", "notice", "Vital-document scan not available for this case."));
-      return;
-    }
-    if (!vd.available) return;
-    var panel = el("section", "vitals-panel");
-    panel.appendChild(el("h2", null, "Vital documents"));
-    // A found→missing transition (last item of a target dismissed/reassigned
-    // away) needs to decrement this in place — track it locally instead of
-    // re-reading vd.found_count, which goes stale the moment that happens.
-    var foundCount = vd.found_count;
-    var tallyEl = el("p", "vitals-tally",
-      esc(num(foundCount) + " of " + num(vd.total_count) +
-          " key document types found in this collection."));
-    panel.appendChild(tallyEl);
-    function updateTally() {
-      tallyEl.textContent = num(foundCount) + " of " + num(vd.total_count) +
-        " key document types found in this collection.";
-    }
-    var rows = el("div", "vitals-rows");
-    (vd.targets || []).forEach(function (t) {
-      var row = el("div", "vitals-row " + (t.found ? "found" : "missing"));
-      var rhead = el("div", "vitals-row-head");
-      rhead.innerHTML = '<span class="vmark">' + (t.found ? "✓" : "—") + '</span>' +
-        '<span class="vlabel">' + esc(t.label) + '</span>';
-      var vmarkEl = rhead.querySelector(".vmark");
-      if (EXAMINER && t.near_miss_count) {  // near-miss hits, examiner-only
-        // Was a dead span: it stated a number and gave no way to look at it, so
-        // reviewing a near-miss meant opening vital_doc_candidates.json on the
-        // workstation by hand. Now it opens the list inline.
-        var drawer = el("div", "vcand-drawer");
-        drawer.hidden = true;
-        var toggle = el("button", "vcand",
-          num(t.near_miss_count) + " near-miss" + (t.near_miss_count === 1 ? "" : "es"));
-        toggle.setAttribute("aria-expanded", "false");
-        toggle.onclick = (function (tgt, btn, box, vdoc) {
-          return function () {
-            if (!box.hidden) {                       // collapse
-              box.hidden = true;
-              btn.setAttribute("aria-expanded", "false");
-              delete NEARMISS_OPEN[tgt];             // stay closed across renders
-              return;
-            }
-            box.hidden = false;
-            btn.setAttribute("aria-expanded", "true");
-            NEARMISS_OPEN[tgt] = NEARMISS_OPEN[tgt] || 0;
-            // vd carries all_targets, which the row's Reassign picker needs.
-            if (!box.dataset.loaded) nearMissLoad(tgt, box, 0, vdoc);
-          };
-        })(t.target, toggle, drawer, vd);
-        rhead.appendChild(toggle);
-        if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
-        row.appendChild(rhead);
-        row.appendChild(drawer);
-        // Re-open a drawer the examiner had open before this render, as deep as
-        // they had paged it. One request for `want` rows, not one per page — the
-        // server clamps to MAX_PAGE_LIMIT, past which the "Show more" button is
-        // still there to carry on.
-        if (NEARMISS_OPEN[t.target] != null) {
-          drawer.hidden = false;
-          toggle.setAttribute("aria-expanded", "true");
-          nearMissLoad(t.target, drawer, 0, vd, NEARMISS_OPEN[t.target]);
-          // The panel is rebuilt from the top, so the row they were working in
-          // may be off-screen now. Put it back in front of them.
-          scrollBackTo(row);
-        }
-      } else {
-        // Retrieval can hit the cap even with no near-misses left to review (every
-        // hit already confirmed/dismissed) — the truncation still means more
-        // candidates may exist unretrieved, so flag it whether or not a drawer opened.
-        if (EXAMINER && t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
-        row.appendChild(rhead);
-      }
-      if (t.found) {
-        var items = el("div", "vitals-items");
-        // An item leaving this target (dismissed, or reassigned elsewhere) —
-        // smooth collapse in place (fadeOutAndRemove), never a full render(),
-        // so the page doesn't jump to the top. If it was the last item, this
-        // target itself flips to "missing" and the tally updates to match.
-        function onItemLeft(itemRow, srcBox) {
-          if (srcBox) srcBox.remove();
-          fadeOutAndRemove(itemRow, function () {
-            if (items.children.length) return;
-            t.found = false;
-            foundCount -= 1;
-            updateTally();
-            row.classList.remove("found"); row.classList.add("missing");
-            vmarkEl.textContent = "—";
-            items.remove();
-            row.appendChild(el("div", "vitals-none", "Not found in this collection."));
-          });
-        }
-        (t.items || []).forEach(function (it) {
-          var label = it.name || it.tag || "document";
-          var itemRow = el("div", "vitals-item");
-          if (it.file_id) {
-            var a = el("a", "vitals-link", esc(label));
-            a.href = "#";
-            a.onclick = function (e) { e.preventDefault(); go({ open: true, file: it.file_id }); };
-            itemRow.appendChild(a);
-          } else if (it.thread_id) {
-            // Email-sourced vital doc: it lives in the Emails section, not the
-            // documents view, so deep-link into its conversation rather than
-            // printing a dead `message_43267.eml`. Prefer the conversation
-            // SUBJECT as the label — the .eml basename is meaningless to a family.
-            // "(no subject)" matches how the Emails list labels this same thread,
-            // so the row and its destination read alike.
-            var ta = el("a", "vitals-link", esc(it.thread_subject || "(no subject)"));
-            ta.href = "#";
-            ta.onclick = (function (tid) {
-              return function (e) { e.preventDefault(); go({ page: "emails", thread: tid }); };
-            })(it.thread_id);
-            itemRow.appendChild(ta);
-            itemRow.appendChild(el("span", "vitals-inemails", "in Emails"));
-          } else if (it.conversation_id) {
-            // Messages-equivalent of the email deep link above (#26): a vital doc
-            // sourced from a chat/SMS database chunk deep-links into Messages
-            // instead of printing a dead `chat.db#chunk=...` stub.
-            var ca = el("a", "vitals-link", esc(it.conversation_subject || "(conversation)"));
-            ca.href = "#";
-            ca.onclick = (function (cid) {
-              return function (e) { e.preventDefault(); go({ page: "messages", conversation: cid }); };
-            })(it.conversation_id);
-            itemRow.appendChild(ca);
-            itemRow.appendChild(el("span", "vitals-inemails", "in Messages"));
-          } else if (it.recording_id) {
-            // A vital doc evidenced by a voicemail/recording transcript (#32)
-            // opens the recording detail (player + transcript).
-            var ra = el("a", "vitals-link", esc(it.recording_name || label));
-            ra.href = "#";
-            ra.onclick = (function (rid) {
-              return function (e) { e.preventDefault(); go({ page: "recordings", rec: rid }); };
-            })(it.recording_id);
-            itemRow.appendChild(ra);
-            itemRow.appendChild(el("span", "vitals-inemails", "in Recordings"));
-          } else {
-            itemRow.appendChild(el("span", "vitals-noitem", esc(label)));
-          }
-          var srcBox = null;   // set below (EXAMINER only) — declared early, onItemLeft closures read it
-          if (EXAMINER) {
-            // Examiner-only DECISIONS-OVERLAY actions (audited + reversible; the
-            // pipeline index vital_doc_confirmed.json is never touched). The vital-doc
-            // id contains a path — always pass it in the JSON BODY, never inline it.
-            // Grouped in one element so Confirm can swap it for the "✓ Confirmed"
-            // badge in place, and so the item stays put — no full render(), see
-            // onItemLeft above for why.
-            var actions = el("span", "vitals-item-actions");
-            var confirmSlot = el("span");   // holds either the Confirm button or the badge
-            actions.appendChild(confirmSlot);
-            function showConfirmed() {
-              confirmSlot.innerHTML = "";
-              confirmSlot.appendChild(el("span", "vitals-reviewed", "✓ Confirmed"));
-            }
-            // Confirm — the affirmative "yes, this is the document" the release gate
-            // requires (every vital item must be confirmed, dismissed, or reassigned).
-            if (it.reviewed) {
-              showConfirmed();
-            } else {
-              var confirm = el("button", "vitals-act primary", "Confirm");
-              confirm.onclick = function () {
-                doVerb("/api/vital/confirm", { id: it.id }, "Confirmed vital document")
-                  .then(function (x) { if (x) showConfirmed(); });
-              };
-              confirmSlot.appendChild(confirm);
-            }
-            // Dismiss/Reassign stay available either way — confirming isn't the only
-            // way an item leaves this target.
-            var dismiss = el("button", "vitals-act", "Not a vital document");
-            dismiss.onclick = function () {
-              doVerb("/api/vital/dismiss", { id: it.id }, "Dismissed vital match")
-                .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
-            };
-            actions.appendChild(dismiss);
-            var reassign = el("button", "vitals-act", "Reassign…");
-            reassign.onclick = function () {
-              pickVitalTarget("Reassign this document", vd.all_targets, t.target, function (to) {
-                // If the doc matches >1 vital category, ask whether to move all of
-                // them (global) or just this one (single); a single-category doc
-                // needs no prompt — the two scopes are identical.
-                var cats = vitalPathTargets(vd, it.path);
-                function send(scope) {
-                  doVerb("/api/vital/reassign",
-                    { id: it.id, to_target: to, scope: scope }, "Reassigned vital document")
-                    .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
-                }
-                if (cats.length > 1) { pickScope(cats.length, send); } else { send("single"); }
-              });
-            };
-            actions.appendChild(reassign);
-            itemRow.appendChild(actions);
-          }
-          srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
-          items.appendChild(itemRow);
-          if (srcBox) items.appendChild(srcBox);
-        });
-        row.appendChild(items);
-      } else {
-        row.appendChild(el("div", "vitals-none", "Not found in this collection."));
-      }
-      rows.appendChild(row);
-    });
-    panel.appendChild(rows);
-    main.appendChild(panel);
-  }
-
   // ── Documents: folder tree + list/detail browser ──
   // Left: a tree of every way into the documents (all, the vital kinds grouped,
   // the vital checklist, the categories with their financial sub-categories, and
@@ -4263,6 +4047,13 @@
       container.appendChild(list);
     }
     function drawBody() {
+      // Checklist isn't drawn through `body` at all (see drawPane's early
+      // return) — panelBtn/noteEditor's Cancel and empty-save-no-op paths
+      // call drawBody() unconditionally (correct for every Detail card,
+      // which they were built for), so redirect here rather than teaching
+      // three shared, Detail-authored functions about a page mode they
+      // otherwise have no reason to know exists.
+      if (view.docview === "checklist") { drawPane(false); return; }
       if (!body) return;
       body.innerHTML = "";
       var rows = rowsInOrder();
@@ -4368,6 +4159,318 @@
     }
 
     var OPEN_PANEL = {};    // file → "move" | "note" (one inline panel per card)
+
+    // G-2, redesigned 2026-10-16: full vital-documents checklist — one row per
+    // searched-for document type, ✓ found (deep-links to the doc[s]) or "not
+    // found in this collection". A browsable item now shows the same
+    // date/category/summary/note a Detail card shows for the same document
+    // (vital_docs_data's doc_rows join — see its docstring) and the same
+    // general-purpose toolbar (Star/Note/Move/Gather for/Take out), reusing
+    // panelBtn/noteEditor/movePanel/docsAct/addToCollection/addToGather
+    // directly — this is why the function moved inside P.documents instead of
+    // staying a top-level sibling: those are this page's own closures, built
+    // once for Detail, never meant to be re-implemented a second time here.
+    // The classification actions (Confirm/Not a vital document/Reassign…) and
+    // the grouping-by-kind are unchanged from before the redesign. All
+    // estate-derived text (labels, item names, tags, summaries) is escaped.
+    function vitalDocsPanel(main, vd) {
+      // #17: a promote/dismiss (single or batched) triggers a full render(),
+      // which rebuilds this panel from scratch — drop any selection state and
+      // floating bar left over from the PREVIOUS build so a stale #vselbar
+      // (bound to rows that no longer exist) never leaks into the new one.
+      VITAL_SEL = {};
+      var staleVBar = document.getElementById("vselbar"); if (staleVBar) staleVBar.remove();
+      if (!vd) return;
+      if (vd.available === false) {
+        main.appendChild(el("p", "notice", "Vital-document scan not available for this case."));
+        return;
+      }
+      if (!vd.available) return;
+      var panel = el("section", "vitals-panel");
+      panel.appendChild(el("h2", null, "Vital documents"));
+      // A found→missing transition (last item of a target dismissed/reassigned
+      // away) needs to decrement this in place — track it locally instead of
+      // re-reading vd.found_count, which goes stale the moment that happens.
+      var foundCount = vd.found_count;
+      var tallyEl = el("p", "vitals-tally",
+        esc(num(foundCount) + " of " + num(vd.total_count) +
+            " key document types found in this collection."));
+      panel.appendChild(tallyEl);
+      function updateTally() {
+        tallyEl.textContent = num(foundCount) + " of " + num(vd.total_count) +
+          " key document types found in this collection.";
+      }
+      var rows = el("div", "vitals-rows");
+      (vd.targets || []).forEach(function (t) {
+        var row = el("div", "vitals-row " + (t.found ? "found" : "missing"));
+        var rhead = el("div", "vitals-row-head");
+        rhead.innerHTML = '<span class="vmark">' + (t.found ? "✓" : "—") + '</span>' +
+          '<span class="vlabel">' + esc(t.label) + '</span>';
+        var vmarkEl = rhead.querySelector(".vmark");
+        if (EXAMINER && t.near_miss_count) {  // near-miss hits, examiner-only
+          // Was a dead span: it stated a number and gave no way to look at it,
+          // so reviewing a near-miss meant opening vital_doc_candidates.json
+          // on the workstation by hand. Now it opens the list inline.
+          var drawer = el("div", "vcand-drawer");
+          drawer.hidden = true;
+          var toggle = el("button", "vcand",
+            num(t.near_miss_count) + " near-miss" + (t.near_miss_count === 1 ? "" : "es"));
+          toggle.setAttribute("aria-expanded", "false");
+          toggle.onclick = (function (tgt, btn, box, vdoc) {
+            return function () {
+              if (!box.hidden) {                       // collapse
+                box.hidden = true;
+                btn.setAttribute("aria-expanded", "false");
+                delete NEARMISS_OPEN[tgt];             // stay closed across renders
+                return;
+              }
+              box.hidden = false;
+              btn.setAttribute("aria-expanded", "true");
+              NEARMISS_OPEN[tgt] = NEARMISS_OPEN[tgt] || 0;
+              // vd carries all_targets, which the row's Reassign picker needs.
+              if (!box.dataset.loaded) nearMissLoad(tgt, box, 0, vdoc);
+            };
+          })(t.target, toggle, drawer, vd);
+          rhead.appendChild(toggle);
+          if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
+          row.appendChild(rhead);
+          row.appendChild(drawer);
+          // Re-open a drawer the examiner had open before this render, as deep
+          // as they had paged it. One request for `want` rows, not one per
+          // page — the server clamps to MAX_PAGE_LIMIT, past which the "Show
+          // more" button is still there to carry on.
+          if (NEARMISS_OPEN[t.target] != null) {
+            drawer.hidden = false;
+            toggle.setAttribute("aria-expanded", "true");
+            nearMissLoad(t.target, drawer, 0, vd, NEARMISS_OPEN[t.target]);
+            // The panel is rebuilt from the top, so the row they were working
+            // in may be off-screen now. Put it back in front of them.
+            scrollBackTo(row);
+          }
+        } else {
+          // Retrieval can hit the cap even with no near-misses left to review
+          // (every hit already confirmed/dismissed) — the truncation still
+          // means more candidates may exist unretrieved, so flag it whether
+          // or not a drawer opened.
+          if (EXAMINER && t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
+          row.appendChild(rhead);
+        }
+        if (t.found) {
+          var items = el("div", "vitals-items");
+          // An item leaving this target (dismissed, or reassigned elsewhere) —
+          // smooth collapse in place (fadeOutAndRemove), never a full
+          // render(), so the page doesn't jump to the top. If it was the last
+          // item, this target itself flips to "missing" and the tally updates
+          // to match.
+          function onItemLeft(itemRow, srcBox) {
+            if (srcBox) srcBox.remove();
+            fadeOutAndRemove(itemRow, function () {
+              if (items.children.length) return;
+              t.found = false;
+              foundCount -= 1;
+              updateTally();
+              row.classList.remove("found"); row.classList.add("missing");
+              vmarkEl.textContent = "—";
+              items.remove();
+              row.appendChild(el("div", "vitals-none", "Not found in this collection."));
+            });
+          }
+          (t.items || []).forEach(function (it) {
+            var label = it.name || it.tag || "document";
+            // "-rich" only for a real browsable document: it gets the extra
+            // meta/summary/note/toolbar blocks below, so it needs the
+            // stacked-card layout, not the compact one-line row an email/
+            // message/recording-linked (or stub) item still uses.
+            var itemRow = el("div", "vitals-item" + (it.file_id ? " vitals-item-rich" : ""));
+            if (it.file_id) {
+              var a = el("a", "vitals-link", esc(label));
+              a.href = "#";
+              a.onclick = function (e) { e.preventDefault(); go({ open: true, file: it.file_id }); };
+              itemRow.appendChild(a);
+            } else if (it.thread_id) {
+              // Email-sourced vital doc: it lives in the Emails section, not
+              // the documents view, so deep-link into its conversation rather
+              // than printing a dead `message_43267.eml`. Prefer the
+              // conversation SUBJECT as the label — the .eml basename is
+              // meaningless to a family. "(no subject)" matches how the
+              // Emails list labels this same thread, so the row and its
+              // destination read alike.
+              var ta = el("a", "vitals-link", esc(it.thread_subject || "(no subject)"));
+              ta.href = "#";
+              ta.onclick = (function (tid) {
+                return function (e) { e.preventDefault(); go({ page: "emails", thread: tid }); };
+              })(it.thread_id);
+              itemRow.appendChild(ta);
+              itemRow.appendChild(el("span", "vitals-inemails", "in Emails"));
+            } else if (it.conversation_id) {
+              // Messages-equivalent of the email deep link above (#26): a
+              // vital doc sourced from a chat/SMS database chunk deep-links
+              // into Messages instead of printing a dead
+              // `chat.db#chunk=...` stub.
+              var ca = el("a", "vitals-link", esc(it.conversation_subject || "(conversation)"));
+              ca.href = "#";
+              ca.onclick = (function (cid) {
+                return function (e) { e.preventDefault(); go({ page: "messages", conversation: cid }); };
+              })(it.conversation_id);
+              itemRow.appendChild(ca);
+              itemRow.appendChild(el("span", "vitals-inemails", "in Messages"));
+            } else if (it.recording_id) {
+              // A vital doc evidenced by a voicemail/recording transcript
+              // (#32) opens the recording detail (player + transcript).
+              var ra = el("a", "vitals-link", esc(it.recording_name || label));
+              ra.href = "#";
+              ra.onclick = (function (rid) {
+                return function (e) { e.preventDefault(); go({ page: "recordings", rec: rid }); };
+              })(it.recording_id);
+              itemRow.appendChild(ra);
+              itemRow.appendChild(el("span", "vitals-inemails", "in Recordings"));
+            } else {
+              itemRow.appendChild(el("span", "vitals-noitem", esc(label)));
+            }
+            // The Detail-equivalent info for a browsable item: date (already
+            // examiner-only, from vital_docs_data's own provenance), category,
+            // significance, collection chips, the AI summary, and any note —
+            // exactly what a Detail card shows, joined server-side by path so
+            // nothing here re-derives it.
+            if (it.file_id) {
+              // Each piece is its own safely-built node — sig() returns a
+              // literal <span> (needs innerHTML), everything else is plain
+              // text (needs textContent) — never joined into one string, or
+              // sig()'s markup shows up as literal text and anything else
+              // escapes wrong the other way.
+              var meta = el("span", "docs-hint inline");
+              var metaFirst = true;
+              function addMeta(node) {
+                if (!metaFirst) meta.appendChild(document.createTextNode(" · "));
+                meta.appendChild(node);
+                metaFirst = false;
+              }
+              if (it.date_used) addMeta(document.createTextNode(vitalDateLabel(it.date_used)));
+              if (it.category) addMeta(document.createTextNode(pretty(it.category)));
+              if (it.significance) addMeta(el("span", null, sig(it.significance)));
+              if ((it.collections || []).length)
+                addMeta(document.createTextNode("In " + it.collections.join(", ")));
+              if (!metaFirst) itemRow.appendChild(meta);
+              if (it.summary) itemRow.appendChild(txt("div", "docs-summary", it.summary));
+              if (it.note && OPEN_PANEL[it.file_id] !== "note") {
+                var nb = el("div", "docs-notebox");
+                nb.appendChild(txt("span", "ic", "✎")); nb.appendChild(txt("span", "t", it.note));
+                itemRow.appendChild(nb);
+              }
+            }
+            var srcBox = null;   // set below (EXAMINER only) — declared early, onItemLeft closures read it
+            if (EXAMINER) {
+              // Examiner-only DECISIONS-OVERLAY actions (audited + reversible;
+              // the pipeline index vital_doc_confirmed.json is never touched).
+              // The vital-doc id contains a path — always pass it in the JSON
+              // BODY, never inline it. Grouped in one element so Confirm can
+              // swap it for the "✓ Confirmed" badge in place, and so the item
+              // stays put — no full render(), see onItemLeft above for why.
+              var actions = el("span", "vitals-item-actions");
+              var confirmSlot = el("span");   // holds either the Confirm button or the badge
+              actions.appendChild(confirmSlot);
+              function showConfirmed() {
+                confirmSlot.innerHTML = "";
+                confirmSlot.appendChild(el("span", "vitals-reviewed", "✓ Confirmed"));
+              }
+              // Confirm — the affirmative "yes, this is the document" the
+              // release gate requires (every vital item must be confirmed,
+              // dismissed, or reassigned).
+              if (it.reviewed) {
+                showConfirmed();
+              } else {
+                var confirm = el("button", "vitals-act primary", "Confirm");
+                confirm.onclick = function () {
+                  doVerb("/api/vital/confirm", { id: it.id }, "Confirmed vital document")
+                    .then(function (x) { if (x) showConfirmed(); });
+                };
+                confirmSlot.appendChild(confirm);
+              }
+              // Dismiss/Reassign stay available either way — confirming isn't
+              // the only way an item leaves this target.
+              var dismiss = el("button", "vitals-act", "Not a vital document");
+              dismiss.onclick = function () {
+                doVerb("/api/vital/dismiss", { id: it.id }, "Dismissed vital match")
+                  .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
+              };
+              actions.appendChild(dismiss);
+              var reassign = el("button", "vitals-act", "Reassign…");
+              reassign.onclick = function () {
+                pickVitalTarget("Reassign this document", vd.all_targets, t.target, function (to) {
+                  // If the doc matches >1 vital category, ask whether to move
+                  // all of them (global) or just this one (single); a
+                  // single-category doc needs no prompt — the two scopes are
+                  // identical.
+                  var cats = vitalPathTargets(vd, it.path);
+                  function send(scope) {
+                    doVerb("/api/vital/reassign",
+                      { id: it.id, to_target: to, scope: scope }, "Reassigned vital document")
+                      .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
+                  }
+                  if (cats.length > 1) { pickScope(cats.length, send); } else { send("single"); }
+                });
+              };
+              actions.appendChild(reassign);
+              itemRow.appendChild(actions);
+
+              // The SAME general-purpose toolbar a Detail card shows for this
+              // document — Star/Note/Move/Gather for/Take out. Only for a
+              // REAL browsable document (file_id set): an email/message/
+              // recording-sourced item has no document to star/note/move, and
+              // a synthetic row with file: undefined would silently call
+              // every verb with id/file "undefined".
+              if (it.file_id) {
+                // A minimal synthetic row (just the fields these shared
+                // helpers actually read) stands in for a real
+                // document_rows() row; `file_id` IS the document's path, same
+                // id space panelBtn/noteEditor/movePanel/docsAct already key on.
+                var synRow = { file: it.file_id, name: it.name || label,
+                              category: it.category, subcategory: it.subcategory,
+                              note: it.note, favorite_curation: it.favorite_curation };
+                var toolbar = el("div", "docs-acts vitals-toolbar");
+                var star = el("button", "btn small", synRow.favorite_curation ? "★ Starred" : "☆ Star");
+                star.setAttribute("aria-pressed", synRow.favorite_curation ? "true" : "false");
+                star.onclick = function () {
+                  var on = !synRow.favorite_curation;
+                  docsAct("/api/favorite", { id: synRow.file, on: on }, (on ? "Starred " : "Unstarred ") + synRow.name);
+                };
+                toolbar.appendChild(star);
+                toolbar.appendChild(panelBtn(synRow, "note", synRow.note ? "Edit note" : "Add note"));
+                toolbar.appendChild(panelBtn(synRow, "move", "Move to…"));
+                var ac = el("button", "btn small", "Add to collection…");
+                ac.onclick = function () { addToCollection([synRow.file]); };
+                toolbar.appendChild(ac);
+                var gt = el("button", "btn small", "Gather for…");
+                gt.onclick = function () { addToGather([synRow.file]); };
+                toolbar.appendChild(gt);
+                var tk = el("button", "btn small danger", "Take out…");
+                tk.onclick = function () {
+                  textPrompt("Why is it coming out? (Optional. Nothing is deleted — " +
+                             "reversible from History.)", "", function (reason) {
+                    docsAct("/api/take-out", { file: synRow.file, reason: reason },
+                      "Took out " + synRow.name);
+                  });
+                };
+                toolbar.appendChild(tk);
+                itemRow.appendChild(toolbar);
+                if (OPEN_PANEL[synRow.file] === "note") itemRow.appendChild(noteEditor(synRow));
+                if (OPEN_PANEL[synRow.file] === "move") itemRow.appendChild(movePanel(synRow));
+              }
+            }
+            srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
+            items.appendChild(itemRow);
+            if (srcBox) items.appendChild(srcBox);
+          });
+          row.appendChild(items);
+        } else {
+          row.appendChild(el("div", "vitals-none", "Not found in this collection."));
+        }
+        rows.appendChild(row);
+      });
+      panel.appendChild(rows);
+      main.appendChild(panel);
+    }
+
     function detailView(rows) {
       var list = el("div", "docs-cards");
       rows.forEach(function (r, i) { list.appendChild(card(r, rows, i)); });
