@@ -381,18 +381,34 @@ def test_report_data_splits_found_and_not_found_vital_targets():
              "found": False, "items": []},
         ],
     }
-    r = ad.report_data(index, vital_docs)
+    r = ad.report_data(index, vital_docs, counts={"documents": 13, "emails": 4})
     assert r["available"] is True
-    assert r["here_folders"] == [{"name": "financial", "count": 10}, {"name": "legal", "count": 3}]
+    # pct is each folder's share of ALL documents (10 + 3 = 13), not of some
+    # other total — financial 10/13 rounds to 77%, legal 3/13 to 23%.
+    assert r["here_folders"] == [{"name": "financial", "count": 10, "pct": 77},
+                                 {"name": "legal", "count": 3, "pct": 23}]
     assert r["here_vital"] == [{"name": "Will / testament", "count": 2}]
     assert r["not_found"] == [{"area": "Estate & legal", "what": "Trust agreement"}]
     assert r["found_count"] == 1 and r["total_count"] == 2
+    assert r["found_pct"] == 50
+    # "processed" is passed straight through — report_data never recomputes
+    # a tab's own totals, it only reuses what the caller already built.
+    assert r["processed"] == {"documents": 13, "emails": 4}
 
 
 def test_report_data_unavailable_when_vital_doc_stage_never_ran():
     r = ad.report_data([], {"available": False, "targets": [], "found_count": 0, "total_count": 0})
     assert r["available"] is False
     assert r["here_vital"] == [] and r["not_found"] == []
+    # 0 of 0 is not an honest 0% — no denominator means no percentage, ever.
+    assert r["found_pct"] is None
+    assert r["processed"] == {}
+
+
+def test_report_data_here_folders_pct_is_none_when_no_documents():
+    index = [{"category": "miscellaneous", "count": 0, "subcategories": []}]
+    r = ad.report_data(index, {"available": False, "targets": [], "found_count": 0, "total_count": 0})
+    assert r["here_folders"] == [{"name": "miscellaneous", "count": 0, "pct": None}]
 
 
 def test_significance_threshold_counts_matches_each_filter_option():

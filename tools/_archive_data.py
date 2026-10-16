@@ -2520,7 +2520,15 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     }
 
 
-def report_data(index, vital_docs):
+def _pct(part, whole):
+    """Whole-number percentage, or None when there's no honest denominator
+    (0 of 0) — the front end must render that as nothing, never "0%"."""
+    if not whole:
+        return None
+    return round(100 * part / whole)
+
+
+def report_data(index, vital_docs, counts=None):
     """The Report page's Section 1 ("what's here") and Section 2 ("what wasn't
     found") — see the front-end brainstorm's three-kept-apart-statements
     principle. Section 3 ("where the archive isn't sure, and why it matters")
@@ -2529,8 +2537,19 @@ def report_data(index, vital_docs):
     it used invented example documents) — this function never fabricates one.
 
     `index` is documents_index()'s folder-count tree; `vital_docs` is
-    vital_docs_data()'s output. Both are already-built, pure structures —
-    report_data only reshapes them, so it stays cheap to call from every GET.
+    vital_docs_data()'s output. `counts` is the SAME dict the Overview tiles
+    use (photos/people/places/documents/audio/videos/messages/emails, built
+    once in family_archive.py's "overview" section) — passed in rather than
+    recomputed, so the Report's totals can never drift from what each tab
+    itself shows. All three are already-built, pure structures — report_data
+    only reshapes them, so it stays cheap to call from every GET.
+
+    2026-10-15: added percentages (document categories as a share of all
+    documents; vital kinds found as a share of all tracked kinds) and a
+    "processed" totals block, raised by the user as the evidence base for a
+    separate numbers-backed feedback report to Richard (see memory
+    richard-feedback-report) — every number here must already be real
+    (reused from counts/document_counts), never invented for the occasion.
     """
     glabel = {g.get("group"): g.get("label") for g in vital_docs.get("groups") or []}
     targets = vital_docs.get("targets") or []
@@ -2538,13 +2557,20 @@ def report_data(index, vital_docs):
                   for t in targets if t.get("found")]
     not_found = [{"area": glabel.get(t.get("group")) or "Other", "what": t.get("label")}
                  for t in targets if not t.get("found")]
+    total_docs = sum((c.get("count") or 0) for c in (index or []))
+    here_folders = [{"name": c.get("category"), "count": c.get("count"),
+                     "pct": _pct(c.get("count") or 0, total_docs)} for c in index or []]
+    found_count = vital_docs.get("found_count", 0)
+    total_count = vital_docs.get("total_count", 0)
     return {
         "available": bool(vital_docs.get("available")),
-        "here_folders": [{"name": c.get("category"), "count": c.get("count")} for c in index or []],
+        "here_folders": here_folders,
         "here_vital": here_vital,
         "not_found": not_found,
-        "found_count": vital_docs.get("found_count", 0),
-        "total_count": vital_docs.get("total_count", 0),
+        "found_count": found_count,
+        "total_count": total_count,
+        "found_pct": _pct(found_count, total_count),
+        "processed": dict(counts or {}),
     }
 
 

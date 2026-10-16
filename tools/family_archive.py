@@ -1154,38 +1154,48 @@ class ArchiveCase:
                  "ref": r.get("h"), "kind": r.get("k")} for r in page]
         return {"hits": hits, "total": total, "building": True}
 
+    def _tab_counts(self, decisions):
+        """The one true per-tab totals dict — Overview's tiles, and (2026-10-15)
+        the Report's "Processed" block, both read this so the two can never
+        show different numbers for the same thing. Each key is scoped to match
+        what that tab itself lists, not a raw pipeline count (see each
+        comment) — a user handing these numbers to Richard as feedback needs
+        them to be the real, filtered totals, not the pre-filter corpus size."""
+        eff_fc = self.effective_face_clustering(decisions)  # G-15 merges folded
+        removed = set((decisions.get("removed_persons", {}) or {}).keys())
+        return {
+            "photos": len(self.universe),
+            "people": len([p for p in (eff_fc.get("person_clusters", {}) or {})
+                           if p not in removed]),
+            "places": len(places_data(self._photo_rows())["trips"]),
+            # Filtered to match the Documents section exactly (excludes
+            # email-sourced classifications and, for family, credentials —
+            # see document_rows). It used to be the raw document_classifications
+            # length, which counted every email as a document too (~66k vs. the
+            # ~1.5k the Documents page actually shows).
+            "documents": len(document_rows(self.summary, self.ocr_index, self.role,
+                                           doc_placements=decisions.get("doc_placements"))),
+            "audio": len(self.summary.get("audio_classifications", []) or []),
+            "videos": self.summary.get("video_delivered", self.summary.get("total_videos", 0)),
+            # Conversations THIS ROLE may see (matches the Messages section
+            # exactly — it used to count every non-discard conversation, so
+            # the family's count included platform traffic and estate-rescued
+            # conversations the list itself withholds); 0 when message_triage
+            # hasn't run.
+            "messages": sum(1 for c in (self.conversation_index or [])
+                            if can_see_conversation(c, self.role)),
+            # Thread-grain, matching the Emails section exactly (see email_rows) —
+            # emails were excluded from "documents" above but had no Overview
+            # tile of their own at all.
+            "emails": len(email_rows(self.email_threads, decisions=decisions)),
+        }
+
     # ── data sections (thumbs/media are served live, so builders get no thumbs) ──
     def section(self, page):
         if page == "overview":
             decisions = self.decisions
-            removed = set((decisions.get("removed_persons", {}) or {}).keys())
-            eff_fc = self.effective_face_clustering(decisions)  # G-15 merges folded
-            counts = {
-                "photos": len(self.universe),
-                "people": len([p for p in (eff_fc.get("person_clusters", {}) or {})
-                               if p not in removed]),
-                "places": len(places_data(self._photo_rows())["trips"]),
-                # Filtered to match the Documents section exactly (excludes
-                # email-sourced classifications and, for family, credentials —
-                # see document_rows). It used to be the raw document_classifications
-                # length, which counted every email as a document too (~66k vs. the
-                # ~1.5k the Documents page actually shows).
-                "documents": len(document_rows(self.summary, self.ocr_index, self.role,
-                                               doc_placements=decisions.get("doc_placements"))),
-                "audio": len(self.summary.get("audio_classifications", []) or []),
-                "videos": self.summary.get("video_delivered", self.summary.get("total_videos", 0)),
-                # Conversations THIS ROLE may see (matches the Messages section
-                # exactly — it used to count every non-discard conversation, so
-                # the family's count included platform traffic and estate-rescued
-                # conversations the list itself withholds); 0 when message_triage
-                # hasn't run.
-                "messages": sum(1 for c in (self.conversation_index or [])
-                                if can_see_conversation(c, self.role)),
-                # Thread-grain, matching the Emails section exactly (see email_rows) —
-                # emails were excluded from "documents" above but had no Overview
-                # tile of their own at all.
-                "emails": len(email_rows(self.email_threads, decisions=decisions)),
-            }
+            counts = self._tab_counts(decisions)
+            eff_fc = self.effective_face_clustering(decisions)  # G-15 merges folded; needed below too
             # R-7: for the family role, a legitimately ABSENT archive_map.json (the
             # optional build_archive stage was skipped, or no media) leaves the
             # family universe empty — surface a prominent warning in the payload so
@@ -1245,7 +1255,7 @@ class ArchiveCase:
                                                   recordings_delivered=self.recordings_delivered())}
         if page == "report":
             docs = self.section("documents")      # reuses the same index + vital_docs
-            return report_data(docs["index"], docs["vital_docs"])
+            return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions))
         if page == "correspondence":
             # Real (non-email) correspondence docs, grouped by writing medium,
             # plus scanned document/letter IMAGES (not in document_classifications).

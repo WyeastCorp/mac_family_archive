@@ -3496,21 +3496,36 @@
         "found) has nothing to report. Section 1 still shows what's here."));
     }
 
+    // Processed (2026-10-15): the same totals the Overview tiles show, one
+    // sheet — the evidence base for a numbers-backed report, not a new count.
+    var procOrder = [["documents", "Documents"], ["emails", "Emails"], ["messages", "Messages"],
+                      ["photos", "Photos"], ["audio", "Audio"], ["videos", "Videos"]];
+    var proc = data.processed || {};
+    var sheetP = el("div", "sheet"); main.appendChild(el("h2", "sec", "Processed"));
+    main.appendChild(sheetP);
+    procOrder.forEach(function (o) {
+      var n = proc[o[0]];
+      if (n == null) return;
+      sheetP.appendChild(reportRow(o[1], num(n)));
+    });
+
     main.appendChild(el("h2", "sec", "1 · What's here"));
     var total = 0; (data.here_folders || []).forEach(function (f) { total += f.count; });
     main.appendChild(el("p", "lede", num(total) + " documents, filed into " +
       (data.here_folders || []).length + " folders."));
     var sheet1 = el("div", "sheet"); main.appendChild(sheet1);
     (data.here_folders || []).forEach(function (f) {
+      var pctTxt = (f.pct != null) ? " <span class='pct'>(" + f.pct + "%)</span>" : "";
       sheet1.appendChild(reportRow(pretty(f.name),
-        "<a href='/documents?cat=" + encodeURIComponent(f.name) + "'>" + num(f.count) + "</a>"));
+        "<a href='/documents?cat=" + encodeURIComponent(f.name) + "'>" + num(f.count) + "</a>" + pctTxt));
     });
     if (!(data.here_folders || []).length) sheet1.appendChild(el("p", "notice", "No documents yet."));
 
     if (data.available) {
       main.appendChild(el("h3", "sec3", "Vital documents found"));
+      var foundPctTxt = (data.found_pct != null) ? " (" + data.found_pct + "%)" : "";
       main.appendChild(el("p", "lede", num(data.found_count) + " of " + num(data.total_count) +
-        " kinds searched for were found."));
+        " kinds searched for were found" + foundPctTxt + "."));
       var sheet2 = el("div", "sheet"); main.appendChild(sheet2);
       (data.here_vital || []).forEach(function (v) {
         sheet2.appendChild(reportRow(v.name, num(v.count)));
