@@ -80,7 +80,7 @@ from tools._archive_data import (  # noqa: E402
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
     email_category_counts, merge_email_category_counts, email_rows_for_category,
-    significance_bucket_counts, report_data, gathers_data,
+    significance_bucket_counts, report_data, gathers_data, _documents_found_count,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -671,6 +671,20 @@ def _sort_emails(rows, params):
     elif sort == "sender":
         rows = sorted(rows, key=lambda r: (r.get("correspondent") or "").lower(), reverse=(d == "desc"))
     return rows
+
+
+def _filter_emails_visibility(rows):
+    """Hide a demoted thread from the default Emails list (2026-10-16, the
+    user's own call): demote used to leave the row in place — intended to sink
+    it to the bottom of a significance-ordered list, but since the list's
+    default sort moved to Date/From/Subject (2026-10-15) nothing ranks on
+    significance any more, so a demoted thread just sat there unchanged,
+    looking like demote did nothing. Hiding it is the fix; it's still reachable
+    by thread_id directly (search, or the thread's own URL) and reversible via
+    Undo/History, same as a taken-out document. Applied BEFORE the page slice
+    so a hidden thread never eats a page slot, and before significance_bucket_
+    counts so the meter matches what's actually in the list."""
+    return [r for r in rows if not r.get("demoted")]
 
 
 def _filter_emails_by_participant(rows, params):
@@ -1304,7 +1318,8 @@ class ArchiveCase:
                                                   doc_rows=rows)}
         if page == "report":
             docs = self.section("documents")      # reuses the same index + vital_docs
-            return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions))
+            return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions),
+                               docs_found=_documents_found_count(self.paths.metadata_dir))
         if page == "gather":
             # Gather-for-someone (2026-10-15): examiner-only (EXAMINER_ONLY), so
             # document_rows's role branch here is always "examiner" in practice —
@@ -1403,7 +1418,10 @@ class ArchiveCase:
                               doc_placements=self.decisions.get("doc_placements"),
                               taken_out=self.decisions.get("doc_taken_out")),
                 audio_rows(st["summary"], st["transcription_index"], self.role, self.cfg),
-                email_rows(st["email_threads"]),
+                # decisions=self.decisions: a DELETED thread must stay out of
+                # search too (a true removal, like a taken-out document above),
+                # not just out of the Emails list itself.
+                email_rows(st["email_threads"], decisions=self.decisions),
                 conversations=message_rows(st["conversation_index"], self.role)))
         raise VerbError(f"unknown section {page}", 404)
 
@@ -1470,6 +1488,7 @@ class ArchiveCase:
             rows = apply_curation(self.section("emails"), curation, "thread_id")
             rows = self._attach_has_attachment(rows)
             rows = self._attach_direction(rows)
+            rows = _filter_emails_visibility(rows)
             rows = _filter_emails_by_participant(rows, params)
             rows = _filter_emails_search(rows, params)
             # Counts BEFORE the significance filter narrows the list — the
@@ -1703,6 +1722,7 @@ class ArchiveCase:
         if detail is None:
             raise VerbError(f"unknown thread {thread_id}", 404)
         detail["demoted"] = str(thread_id) in (self.decisions.get("email_demoted", {}) or {})
+        detail["deleted"] = str(thread_id) in (self.decisions.get("email_deleted", {}) or {})
         detail["important"] = str(thread_id) in (self.curation_layer.get("important", {}) or {})
         return detail
 
@@ -4357,6 +4377,44 @@ def verb_demote_email(case, payload):
     return {"ok": True, "demoted": not restore, "undo_token": entry["undo_token"]}
 
 
+def verb_delete_email(case, payload):
+    """The "delete" the user asked for on the Emails side, mirroring
+    verb_take_out_document's: a real removal from every family-facing view
+    (list, search, folder-merge, Overview/Report counts — see email_rows'
+    deleted exclusion), never literally destroying anything, fully reversible.
+
+    Unlike Take-out there is no file to physically move: the raw .eml lives
+    under original_files/, which email_rows' own docstring already says never
+    to expose or move (leaks paths + bloats every other payload that touches
+    it). So this is a pure decisions-overlay hide, same mechanism Demote
+    already uses — toggle via `restore: true` (or deleting an already-deleted
+    thread), reversible + audited. The thread's own detail page (by thread_id
+    — search, or Undo/History) is unaffected, since thread_messages() never
+    calls email_rows()."""
+    require_examiner(case)
+    tid = payload.get("thread_id")
+    if not tid:
+        raise VerbError("delete/email needs thread_id")
+    tid = str(tid)
+    reason = str(payload.get("reason") or "").strip()[:MAX_NOTE_LEN] or None
+    dpath = case.paths.metadata_dir / DECISIONS_FILE
+    with _doc_lock(case):  # cross-process RMW guard (R-4)
+        decisions = load_json(dpath, {}) or {}
+        deleted = decisions.setdefault("email_deleted", {})
+        restore = bool(payload.get("restore")) or tid in deleted
+        if restore:
+            deleted.pop(tid, None)
+        else:
+            deleted[tid] = {"ts": _now(), "actor": case.role, "subject": payload.get("subject"),
+                           "reason": reason}
+        atomic_write_json(dpath, decisions)
+    action = "undelete_email" if restore else "delete_email"
+    entry = append_action(case, action, tid,
+                          {"subject": payload.get("subject")},
+                          {"deleted": not restore, "reason": reason}, reversible=True)
+    return {"ok": True, "deleted": not restore, "undo_token": entry["undo_token"]}
+
+
 def verb_set_owner_addresses(case, payload):
     """Set `owner_addresses` — the account owner's own email address(es), the
     one piece of information the pipeline's existing data cannot supply (see the
@@ -4861,6 +4919,21 @@ def _apply_inverse(case, entry):
             else:
                 demoted[tid] = {"ts": _now(), "actor": case.role,
                                 "subject": (entry.get("before") or {}).get("subject")}
+            atomic_write_json(dpath, decisions)
+        return {"restored": tid}
+    if action in ("delete_email", "undelete_email"):
+        # Inverse of delete = undelete (pop); inverse of undelete = re-delete (add).
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        with _doc_lock(case):  # cross-process RMW guard (R-4)
+            decisions = load_json(dpath, {}) or {}
+            deleted = decisions.setdefault("email_deleted", {})
+            tid = str(entry["target"])
+            if action == "delete_email":
+                deleted.pop(tid, None)
+            else:
+                before = entry.get("before") or {}
+                deleted[tid] = {"ts": _now(), "actor": case.role,
+                               "subject": before.get("subject"), "reason": None}
             atomic_write_json(dpath, decisions)
         return {"restored": tid}
     if action == "discard_quarantine":
@@ -5480,6 +5553,9 @@ VERBS = {
     "export/collection": verb_export_collection, "release": verb_release,
     "discard/quarantine": verb_discard_quarantine, "demote": verb_demote_ranked,
     "demote/email": verb_demote_email,
+    # Email "delete" (2026-10-16; examiner-only), mirroring take-out: see
+    # verb_delete_email's docstring for why it's a pure overlay, no file move.
+    "delete/email": verb_delete_email,
     # Both roles (see verb_set_owner_addresses's docstring for why).
     "owner-addresses": verb_set_owner_addresses,
     # ── vital-document checklist (examiner-only; DECISIONS OVERLAY, never mutates

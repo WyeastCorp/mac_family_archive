@@ -381,6 +381,17 @@ def test_doc_placements_overrides_document_rows_category():
     assert idx == {"legal": 1, "miscellaneous": 1}, "documents_index counts are DERIVED"
 
 
+def test_documents_found_count_reads_collect_dedup_summary(tmp_path):
+    md = tmp_path / "md"; md.mkdir()
+    (md / "collect_dedup_summary.json").write_text(json.dumps({"source_docs_found": 6418}))
+    assert ad._documents_found_count(md) == 6418
+
+
+def test_documents_found_count_none_when_stage_never_ran(tmp_path):
+    md = tmp_path / "md"; md.mkdir()  # no collect_dedup_summary.json at all — older case
+    assert ad._documents_found_count(md) is None
+
+
 def test_report_data_splits_found_and_not_found_vital_targets():
     # Section 1 ("what's here") gets folder counts + the FOUND vital kinds;
     # Section 2 ("what wasn't found") gets everything else, grouped by the
@@ -401,10 +412,10 @@ def test_report_data_splits_found_and_not_found_vital_targets():
     }
     r = ad.report_data(index, vital_docs, counts={"documents": 13, "emails": 4})
     assert r["available"] is True
-    # pct is each folder's share of ALL documents (10 + 3 = 13), not of some
-    # other total — financial 10/13 rounds to 77%, legal 3/13 to 23%.
-    assert r["here_folders"] == [{"name": "financial", "count": 10, "pct": 77},
-                                 {"name": "legal", "count": 3, "pct": 23}]
+    # 2026-10-16: dropped the per-category percentage (the user doesn't need
+    # it) — a folder row is just its count now.
+    assert r["here_folders"] == [{"name": "financial", "count": 10},
+                                 {"name": "legal", "count": 3}]
     assert r["here_vital"] == [{"name": "Will / testament", "count": 2}]
     assert r["not_found"] == [{"area": "Estate & legal", "what": "Trust agreement"}]
     assert r["found_count"] == 1 and r["total_count"] == 2
@@ -423,10 +434,71 @@ def test_report_data_unavailable_when_vital_doc_stage_never_ran():
     assert r["processed"] == {}
 
 
-def test_report_data_here_folders_pct_is_none_when_no_documents():
+def test_report_data_here_folders_no_pct_field_at_all():
     index = [{"category": "miscellaneous", "count": 0, "subcategories": []}]
     r = ad.report_data(index, {"available": False, "targets": [], "found_count": 0, "total_count": 0})
-    assert r["here_folders"] == [{"name": "miscellaneous", "count": 0, "pct": None}]
+    assert r["here_folders"] == [{"name": "miscellaneous", "count": 0}]
+
+
+def test_report_data_doc_overview_partitions_total_docs():
+    """2026-10-16: "x documents scanned, y vital, z near-miss, a neither" —
+    the user's own phrasing. vital_document_count/near_miss_document_count
+    are vital_docs_data's job to compute honestly; report_data just
+    partitions total_docs with them."""
+    index = [{"category": "financial", "count": 7, "subcategories": []},
+             {"category": "legal", "count": 3, "subcategories": []}]  # total_docs = 10
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 2, "near_miss_document_count": 3,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs)
+    assert r["doc_overview"] == {
+        "found": None,
+        "total": 10,
+        "vital": 2, "vital_pct": 20,
+        "near_miss": 3, "near_miss_pct": 30,
+        "neither": 5, "neither_pct": 50,
+    }
+
+
+def test_report_data_doc_overview_family_absorbs_near_miss_into_neither():
+    """near_miss_document_count is None for family (examiner-only data) —
+    family's "neither" bucket absorbs those documents rather than the report
+    claiming a near-miss count family can't actually see."""
+    index = [{"category": "financial", "count": 10, "subcategories": []}]
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 4, "near_miss_document_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs)
+    assert r["doc_overview"] == {
+        "found": None,
+        "total": 10, "vital": 4, "vital_pct": 40,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": 6, "neither_pct": 60,
+    }
+
+
+def test_report_data_doc_overview_no_documents_has_no_percentages():
+    r = ad.report_data([], {"available": False, "targets": [], "found_count": 0, "total_count": 0})
+    assert r["doc_overview"] == {
+        "found": None,
+        "total": 0, "vital": 0, "vital_pct": None,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": 0, "neither_pct": None,
+    }
+
+
+def test_report_data_doc_overview_found_passed_through_when_given():
+    """docs_found (2026-10-16): the pipeline's pre-filing document count —
+    the user asked directly whether every scanned document is kept, and the
+    answer (checked against a real case) was no. Always >= total; report_data
+    just passes it through, never recomputes or validates it against total —
+    that honesty check belongs to whoever reads it, not this function."""
+    index = [{"category": "financial", "count": 10, "subcategories": []}]
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 0, "near_miss_document_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs, docs_found=14)
+    assert r["doc_overview"]["found"] == 14
 
 
 def test_report_data_unsure_section_from_real_unconfirmed_and_near_miss_counts():
@@ -1627,6 +1699,67 @@ def test_vital_docs_near_miss_count_examiner_only(tmp_path):
     assert exam["passport_id"]["near_miss_count"] == 2   # near-miss hits surfaced
     assert exam["will_testament"]["near_miss_count"] == 1
     assert exam["deed_title"]["near_miss_count"] == 0
+
+
+def test_vital_docs_operative_views_sanitized_and_examiner_only(tmp_path):
+    """operative_views (2026-10-16, date_index_contract.md §2): the pipeline's
+    own ranking for wills/POAs/trusts/beneficiary forms, passed through
+    sanitized — `copies` reduced to a count (never the other files' paths),
+    `instruments` order untouched (never re-sorted here), examiner-only."""
+    paths, summary = _vital_case(tmp_path)
+    (paths.metadata_dir / "date_index.json").write_text(json.dumps({
+        "operative_views": [{
+            "target": "will_testament",
+            "label": "latest by date, not governing",
+            "latest_by_date": "/d/codicil.pdf",
+            "order_uncertain": False,
+            "instruments": [
+                {"file": "/d/codicil.pdf",
+                 "date_used": {"value": "2021-06-02", "precision": "day",
+                               "basis": "execution_date", "confidence": "high"},
+                 "refers_to": ["2019-03-14"], "copies": []},
+                {"file": "/d/will.pdf",
+                 "date_used": {"value": "2019-03-14", "precision": "day",
+                               "basis": "execution_date", "confidence": "high"},
+                 "refers_to": [], "copies": ["/d/will_copy2.pdf", "/d/will_copy3.pdf"]},
+            ],
+        }],
+    }))
+    exam = ad.vital_docs_data(paths, summary, "examiner")
+    ov = exam["operative_views"]["will_testament"]
+    assert ov["label"] == "latest by date, not governing"
+    assert ov["latest_by_date"] == "/d/codicil.pdf"
+    assert ov["order_uncertain"] is False
+    # order preserved exactly as the pipeline wrote it, not re-sorted
+    assert [i["file"] for i in ov["instruments"]] == ["/d/codicil.pdf", "/d/will.pdf"]
+    assert ov["instruments"][0]["refers_to"] == ["2019-03-14"]
+    assert ov["instruments"][1]["copies"] == 2, "copies is a COUNT, not the raw path list"
+    assert "copies" not in str(ov["instruments"][1]) or isinstance(ov["instruments"][1]["copies"], int)
+
+    fam = ad.vital_docs_data(paths, summary, "family")
+    assert fam["operative_views"] is None, "operative views are examiner-only for now"
+
+
+def test_vital_docs_operative_views_empty_when_date_index_absent(tmp_path):
+    paths, summary = _vital_case(tmp_path)
+    assert ad.vital_docs_data(paths, summary, "examiner")["operative_views"] == {}
+
+
+def test_vital_docs_document_level_counts_for_report(tmp_path):
+    """vital_document_count/near_miss_document_count (2026-10-16, feeds the
+    Report's x/y/z/a partition): document-grain, not target-grain — and
+    scoped to BROWSABLE (document-backed) paths only, so an email-sourced
+    near-miss (msg1.eml) doesn't inflate a count that's supposed to partition
+    total_docs. Uses _near_miss_case's default k=4: will.pdf confirmed
+    (browsable); near-misses are msg1.eml (email, excluded), blank.pdf and
+    pad0.pdf (both browsable documents, counted)."""
+    paths, summary = _near_miss_case(tmp_path)
+    exam = ad.vital_docs_data(paths, summary, "examiner")
+    assert exam["vital_document_count"] == 1
+    assert exam["near_miss_document_count"] == 2
+    fam = ad.vital_docs_data(paths, summary, "family")
+    assert fam["vital_document_count"] == 1, "document-level vital count is not examiner-only"
+    assert fam["near_miss_document_count"] is None, "near-miss stays examiner-only"
 
 
 def _near_miss_case(tmp_path, *, k=4, rejections=True):

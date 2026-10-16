@@ -205,7 +205,8 @@
     var url = "/" + (target.page || "overview"), q = [];
     ["person", "scene", "place", "event", "thread", "conversation", "venue", "tab",
      "media", "vperson", "vscene", "favorite_curation", "collection_curation", "people",
-     "rec", "gslug"].forEach(function (k) {
+     "rec", "gslug", "sort", "dir", "q", "significance", "important", "has_attachment",
+     "direction", "date_from", "date_to", "participant"].forEach(function (k) {
       var v = target[k] != null ? target[k] : target[k + "_id"];
       if (v != null && v !== "") q.push(k + "=" + encodeURIComponent(v));
     });
@@ -245,7 +246,7 @@
      "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
      "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug",
-     "year", "arrange"]
+     "year", "arrange", "q", "significance", "important", "has_attachment", "direction"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
     return location.pathname + (q.length ? "?" + q.join("&") : "");
   }
@@ -3336,15 +3337,48 @@
       sheetP.appendChild(reportRow(o[1], num(n)));
     });
 
+    // Documents at a glance (2026-10-16, the user's own phrasing): of every
+    // document the archive holds, how many are vital / an unresolved near-miss
+    // candidate / neither — see report_data's doc_overview docstring for how
+    // this stays an honest partition of the SAME total the folder breakdown
+    // below sums to. near_miss is examiner-only (null for family).
+    //
+    // "In this archive" is NOT the same as "found" — found (ov.found,
+    // collect_dedup's own pre-filing count) is always >= it. The user asked
+    // directly whether every scanned document is kept; checked this case and
+    // found a real gap, so both numbers are shown rather than letting "in
+    // this archive" imply it's the whole scan. ov.found is null for an older
+    // case (the stage didn't write that field) — the found/in-archive line is
+    // then just omitted, never shown as a guess.
+    var ov = data.doc_overview || {};
+    if (ov.total) {
+      main.appendChild(el("h2", "sec", "Documents at a glance"));
+      var sheetOv = el("div", "sheet"); main.appendChild(sheetOv);
+      if (ov.found != null) {
+        sheetOv.appendChild(reportRow("Found by the pipeline", num(ov.found)));
+        main.appendChild(el("p", "docs-hint",
+          "Before any filing — the rest of this section is about what actually made it " +
+          "into the archive, not every file the pipeline looked at."));
+      }
+      sheetOv.appendChild(reportRow("In this archive", num(ov.total)));
+      sheetOv.appendChild(reportRow("Vital",
+        num(ov.vital) + (ov.vital_pct != null ? " <span class='pct'>(" + ov.vital_pct + "%)</span>" : "")));
+      if (ov.near_miss != null) {
+        sheetOv.appendChild(reportRow("Near-miss (unresolved)",
+          num(ov.near_miss) + (ov.near_miss_pct != null ? " <span class='pct'>(" + ov.near_miss_pct + "%)</span>" : "")));
+      }
+      sheetOv.appendChild(reportRow(ov.near_miss != null ? "Neither" : "Not yet confirmed vital",
+        num(ov.neither) + (ov.neither_pct != null ? " <span class='pct'>(" + ov.neither_pct + "%)</span>" : "")));
+    }
+
     main.appendChild(el("h2", "sec", "1 · What's here"));
     var total = 0; (data.here_folders || []).forEach(function (f) { total += f.count; });
     main.appendChild(el("p", "lede", num(total) + " documents, filed into " +
       (data.here_folders || []).length + " folders."));
     var sheet1 = el("div", "sheet"); main.appendChild(sheet1);
     (data.here_folders || []).forEach(function (f) {
-      var pctTxt = (f.pct != null) ? " <span class='pct'>(" + f.pct + "%)</span>" : "";
       sheet1.appendChild(reportRow(pretty(f.name),
-        "<a href='/documents?cat=" + encodeURIComponent(f.name) + "'>" + num(f.count) + "</a>" + pctTxt));
+        "<a href='/documents?cat=" + encodeURIComponent(f.name) + "'>" + num(f.count) + "</a>"));
     });
     if (!(data.here_folders || []).length) sheet1.appendChild(el("p", "notice", "No documents yet."));
 
@@ -3387,8 +3421,13 @@
         data.unsure.forEach(function (u) {
           var bits = [];
           if (u.unconfirmed) bits.push(num(u.unconfirmed) + " not yet confirmed");
-          if (u.near_miss) bits.push(num(u.near_miss) + " near-miss" + (u.near_miss === 1 ? "" : "es"));
-          sheet4.appendChild(reportRow(u.what, esc(bits.join(" · "))));
+          // Clickable (the user's own example: "death certificate, 27 near
+          // misses") — opens the Checklist with this target's near-miss
+          // drawer already expanded and scrolled into view.
+          if (u.near_miss) bits.push("<a href='/documents?docview=checklist&open_nearmiss=" +
+            encodeURIComponent(u.target) + "'>" + num(u.near_miss) + " near-miss" +
+            (u.near_miss === 1 ? "" : "es") + "</a>");
+          sheet4.appendChild(reportRow(u.what, bits.join(" · ")));
         });
       }
     }
@@ -3696,6 +3735,17 @@
     index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
     var targets = vd.available ? (vd.targets || []) : [];
     var groups = vd.groups || [];
+    // Operative view (2026-10-16): the pipeline's OWN ranking for this vital
+    // kind (date_index_contract.md §2), replacing the naive client-side
+    // "newest date first" sort below for wills/POAs/trusts/beneficiary forms
+    // — see rowsInOrder and nameCell's operative-badge code. null whenever
+    // this case/role/target has none (older case, tier-0 date_index, or
+    // family role — examiner-only for now per the contract's own note), in
+    // which case everything falls back to the exact prior behavior.
+    var opView = (EXAMINER && view.vital && view.vital !== "*" && vd.operative_views &&
+                  vd.operative_views[view.vital]) || null;
+    var opByFile = {};
+    if (opView) (opView.instruments || []).forEach(function (i) { opByFile[i.file] = i; });
 
     function refreshIndex() {
       getJSON("/api/documents?limit=1" + (includeEmails ? "&include_emails=1" : "")).then(function (d) {
@@ -3981,6 +4031,18 @@
       pane.appendChild(hrow);
 
       if (view.docview === "checklist") {
+        // Click-through from the Report's per-target near-miss count (the
+        // user's own example: "death certificate, 27 near misses") — expand
+        // and scroll to that target's drawer, reusing the same NEARMISS_OPEN
+        // mechanism a re-render already uses to keep a drawer open. Clearing
+        // the param immediately (not waiting on the user to act) means a
+        // LATER re-render in this same page visit — e.g. after promoting a
+        // near-miss — won't keep forcing the drawer open if they'd since
+        // collapsed it themselves.
+        if (Q.open_nearmiss) {
+          NEARMISS_OPEN[Q.open_nearmiss] = NEARMISS_OPEN[Q.open_nearmiss] || 0;
+          setQ({ open_nearmiss: "" });
+        }
         vitalDocsPanel(pane, vd);
         return;
       }
@@ -4019,7 +4081,22 @@
       }
       pane.appendChild(ctl);
 
-      if (view.vital && view.vital !== "*" && DOC_OPERATIVE[view.vital]) {
+      if (opView) {
+        // Show the pipeline's own label VERBATIM as the heading (date_index_
+        // contract.md §2: "never write 'current', 'operative' or
+        // 'superseded'") — it already says exactly this ("latest by date,
+        // not governing").
+        var opNote = "<strong>" + esc(opView.label) + ".</strong> The archive never says one replaces " +
+          "another; which one governs is the attorney's call.";
+        if (opView.order_uncertain) {
+          opNote += " The top two are from the same period and can't be told apart at this precision — " +
+            "<em>order unclear.</em>";
+        }
+        pane.appendChild(el("div", "docs-rank", opNote));
+      } else if (view.vital && view.vital !== "*" && DOC_OPERATIVE[view.vital]) {
+        // No operative_views data for this case/target yet (older case, or
+        // date_index hasn't been refreshed) — the prior naive-sort banner,
+        // unchanged, so nothing regresses where the richer data isn't there.
         pane.appendChild(el("div", "docs-rank",
           "<strong>Newest date first, not the governing one.</strong> Where a date could be read, these are " +
           "ordered by it. The archive never says one replaces another; which one governs is the attorney's call."));
@@ -4081,7 +4158,26 @@
       // below — see emailTopicRows/drawBody — never through the file table.
       var rows = (pg ? pg.rows : []).filter(function (r) { return r.kind !== "email"; });
       rows.forEach(function (r) { ROWS[r.file] = r; DOC_CAT[r.file] = r.category; });
-      if (view.vital && view.vital !== "*" && !sort.by) {
+      if (opView && !sort.by) {
+        // Trust the pipeline's own order — it's already final (dated
+        // instruments first, latest first by precision-aware comparison;
+        // undated after, by email sighting then path) and already collapses
+        // identical-text copies onto one instrument, which a client-side
+        // string sort on docDateOf can't do (and can get wrong across mixed
+        // precisions, e.g. a bare "2014" vs "2014-08-01"). Never re-sort it —
+        // date_index_contract.md §2 is explicit on this. A row this view
+        // doesn't mention (no date_index coverage, e.g. the case hasn't been
+        // refreshed since this document arrived) is appended after, in
+        // whatever order it already had — fail-open, never silently dropped.
+        var order = (opView.instruments || []).map(function (i) { return i.file; });
+        rows = rows.slice().sort(function (a, b) {
+          var ia = order.indexOf(a.file), ib = order.indexOf(b.file);
+          if (ia === -1 && ib === -1) return 0;
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return ia - ib;
+        });
+      } else if (view.vital && view.vital !== "*" && !sort.by) {
         // Date order inside one vital kind (newest first; undated last).
         rows = rows.slice().sort(function (a, b) {
           var da = docDateOf(a), db = docDateOf(b);
@@ -4167,7 +4263,34 @@
       }
       if (r.note) { var nt = el("span", "nt", "✎"); nt.title = "Has a note"; nt.setAttribute("aria-label", "Has a note"); cell.appendChild(nt); }
       if (r.favorite_curation) { var st = el("span", "st", "★"); st.title = "Starred"; st.setAttribute("aria-label", "Starred"); cell.appendChild(st); }
+      // Operative-view lead badge (date_index_contract.md §2) — compact, like
+      // the other single-glyph badges above; the fuller refers-to/copies
+      // detail goes on the Detail card's meta row instead (opRow below),
+      // which has the room for actual text. Only ever set when opView
+      // matched this row's own target (see rowsInOrder).
+      if (opView && opView.latest_by_date === r.file) {
+        var lead = el("span", "op-lead", "Lead");
+        lead.title = "Latest by date in this view — not a statement that it governs.";
+        cell.appendChild(lead);
+      }
       return cell;
+    }
+    // Operative-view detail for the Detail card's meta row (date_index_
+    // contract.md §2) — refers-to is never a link (instruments aren't matched
+    // to each other); copies is a count chip. null when this row isn't part
+    // of the current opView, so callers can just `if (opRow(r))`.
+    function opRow(r) {
+      var inst = opView && opByFile[r.file];
+      if (!inst) return null;
+      var span = el("span", "op-detail");
+      if ((inst.refers_to || []).length) {
+        span.appendChild(txt("span", null, "Refers to an instrument dated " + inst.refers_to.join(", ")));
+      }
+      if (inst.copies) {
+        if (span.childNodes.length) span.appendChild(document.createTextNode(" · "));
+        span.appendChild(txt("span", null, num(inst.copies) + " cop" + (inst.copies === 1 ? "y" : "ies")));
+      }
+      return span.childNodes.length ? span : null;
     }
     function pickBox(r, onToggle) {
       var cb = el("input", "rowpick"); cb.type = "checkbox"; cb.checked = !!SEL[r.file];
@@ -4557,6 +4680,11 @@
       var nm = el("button", "docs-cardname", ""); nm.type = "button"; nm.textContent = r.name;
       nm.onclick = function () { openDocs(rows, i); };
       b.appendChild(nm);
+      if (opView && opView.latest_by_date === r.file) {
+        var leadCard = el("span", "op-lead", "Lead");
+        leadCard.title = "Latest by date in this view — not a statement that it governs.";
+        b.appendChild(leadCard);
+      }
       if (r.summary) b.appendChild(txt("div", "docs-summary", r.summary));
       var meta = el("div", "docs-meta");
       var du = docDateOf(r);
@@ -4564,6 +4692,8 @@
       meta.appendChild(txt("span", null, docKindName(r)));
       if (r.significance) meta.appendChild(el("span", null, sig(r.significance)));
       if ((r.collections || []).length) meta.appendChild(txt("span", "inc", "In " + r.collections.join(", ")));
+      var opDetail = opRow(r);
+      if (opDetail) meta.appendChild(opDetail);
       b.appendChild(meta);
 
       vitalControls(b, r);
@@ -4820,11 +4950,36 @@
   // if the row's demoted flag is briefly stale.
   function emailDemoteBtn(r) {
     var b = el("button", "btn small" + (r.demoted ? " primary" : ""), r.demoted ? "Restore" : "Demote");
-    b.title = r.demoted ? "Restore to its ranked position" : "Remove from top of the sort";
+    b.title = r.demoted ? "Restore to the list" : "Hide from the list (still reachable by search or History)";
     b.onclick = function (ev) {
       ev.stopPropagation();
       doVerb("/api/demote/email", { thread_id: r.thread_id, subject: r.subject, restore: !!r.demoted },
         r.demoted ? "Restored email" : "Demoted email").then(function (x) { if (x) render(); });
+    };
+    return b;
+  }
+
+  // Examiner "delete" for a thread (2026-10-16), mirroring Documents' Take-out:
+  // a real removal from every list (not just a sink to the bottom, like
+  // Demote) — see verb_delete_email's docstring for why nothing is physically
+  // moved. Reversible from History; a single item needs no confirm beyond the
+  // optional reason prompt.
+  function emailDeleteBtn(r) {
+    var b = el("button", "btn small danger", r.deleted ? "Undelete" : "Delete…");
+    b.title = r.deleted ? "Put this thread back in the list"
+                        : "Remove this thread from every list (reversible from History)";
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      if (r.deleted) {
+        doVerb("/api/delete/email", { thread_id: r.thread_id, subject: r.subject, restore: true },
+          "Undeleted email").then(function (x) { if (x) render(); });
+        return;
+      }
+      textPrompt("Why is it being deleted? (Optional. Nothing is destroyed — reversible from History.)", "",
+        function (reason) {
+          doVerb("/api/delete/email", { thread_id: r.thread_id, subject: r.subject, reason: reason },
+            "Deleted email").then(function (x) { if (x) render(); });
+        });
     };
     return b;
   }
@@ -4851,14 +5006,15 @@
     var i = p.indexOf("<");
     return (i > 0 ? p.slice(0, i).trim() : p) || p;
   }
-  // Inbox-style compact date: "Sep 23" this calendar year, "Sep 23, 2024" not.
+  // Inbox-style compact date, always with the year — this is an archive, not a
+  // live inbox, so "Sep 23" with the year silently dropped (the old rule: omit
+  // it in the current calendar year) left every thread from "this year" looking
+  // undated relative to older ones.
   function _inboxDate(iso) {
     if (!iso) return "";
     var d = new Date(iso);
     if (isNaN(d)) return esc(String(iso).slice(0, 10));
-    var opts = { month: "short", day: "numeric" };
-    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
-    return esc(d.toLocaleDateString(undefined, opts));
+    return esc(d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }));
   }
   // The row's "From" line: the actual correspondent when owner-addresses makes
   // that knowable (see thread_correspondent); otherwise the other participants'
@@ -4926,12 +5082,22 @@
           (r.has_attachment ? " <span title='Has a delivered attachment'>📎</span>" : "") + "</span>" +
         "<span class='inbox-date'>" + _inboxDate(r.date_last) + "</span>" +
         "<span class='inbox-acts'></span>";
-      row.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
+      // Carry the list's own filter/sort state onto the thread URL (read from Q,
+      // which every control here keeps current via setQ) so the "All emails"
+      // back-link on the thread page — built from THAT URL's Q — returns to the
+      // same view instead of the bare default (exiting a message used to revert
+      // the list to Date/no-filter no matter what was active).
+      row.onclick = function () {
+        go({ page: "emails", thread: r.thread_id, sort: Q.sort, dir: Q.dir, q: Q.q,
+             significance: Q.significance, important: Q.important,
+             has_attachment: Q.has_attachment, direction: Q.direction,
+             date_from: Q.date_from, date_to: Q.date_to, participant: Q.participant });
+      };
       keyable(row, null);   // F-12
       var acts = row.querySelector(".inbox-acts");
-      // Important is NOT examiner-only; Demote stays examiner-only.
+      // Important is NOT examiner-only; Demote/Delete stay examiner-only.
       acts.appendChild(emailImportantBtn(r));
-      if (EXAMINER) acts.appendChild(emailDemoteBtn(r));
+      if (EXAMINER) { acts.appendChild(emailDemoteBtn(r)); acts.appendChild(emailDeleteBtn(r)); }
       list.appendChild(row);
     });
     container.appendChild(list);
@@ -5021,14 +5187,24 @@
   P.emails = function (main, data) {
     // Thread detail when ?thread=ID is present.
     if (Q.thread) {
-      backLink(main, "All emails", { page: "emails" });
+      // Q already carries the list's filter/sort state here — the row click
+      // that opened this thread put it on the URL (see drawEmailBands) — so
+      // reflecting it back is enough to return to the same view, not the
+      // bare default.
+      backLink(main, "All emails", { page: "emails", sort: Q.sort, dir: Q.dir, q: Q.q,
+        significance: Q.significance, important: Q.important, has_attachment: Q.has_attachment,
+        direction: Q.direction, date_from: Q.date_from, date_to: Q.date_to,
+        participant: Q.participant });
       var holder = el("div", "reading emthread"); main.appendChild(holder);
       getJSON("/api/email/thread?id=" + encodeURIComponent(Q.thread)).then(function (t) {
         var ctrls = head(holder, "Emails", t.subject || "(no subject)", (t.messages || []).length + " message(s).");
         ctrls.appendChild(emailImportantBtn({ thread_id: Q.thread, important: t.important }, function () {
           location.reload();
         }));
-        if (EXAMINER) ctrls.appendChild(emailDemoteBtn({ thread_id: Q.thread, subject: t.subject, demoted: t.demoted }));
+        if (EXAMINER) {
+          ctrls.appendChild(emailDemoteBtn({ thread_id: Q.thread, subject: t.subject, demoted: t.demoted }));
+          ctrls.appendChild(emailDeleteBtn({ thread_id: Q.thread, subject: t.subject, deleted: t.deleted }));
+        }
         drawThreadMessages(holder, t);
       }).catch(function (e) { holder.appendChild(el("p", "notice", "Couldn't load thread: " + esc(e.message))); });
       return;
@@ -6609,7 +6785,7 @@
   // ── History: descriptive label + item type + click-through (#12) ──
   function histType(e) {
     var a = (e.action || "").replace(/_undo$/, "");
-    if (a === "demote_email" || a === "restore_email") return "Email";
+    if (a === "demote_email" || a === "restore_email" || a === "delete_email" || a === "undelete_email") return "Email";
     if (a === "rename_person" || a === "rename_folder" || a === "remove_person"
         || a === "merge_persons" || a === "assign_face") return "Person";
     if (a === "confirm") {
@@ -6638,6 +6814,7 @@
     else if (a === "merge_persons") base = "Merged " + e.target + " → " + (af.winner || "");
     else if (a === "assign_face") base = "Assigned face to " + (af.person_id || "");
     else if (a === "demote_email" || a === "restore_email") base = (a === "demote_email" ? "Demoted" : "Restored") + " email" + (b.subject ? " '" + b.subject + "'" : "");
+    else if (a === "delete_email" || a === "undelete_email") base = (a === "delete_email" ? "Deleted" : "Undeleted") + " email" + (b.subject ? " '" + b.subject + "'" : "");
     else if (a === "reset") base = "Reset all changes (" + ((af.reversed != null ? af.reversed : b.reversed) || 0) + " reversed)";
     else base = pretty(a) + " " + basename(e.target);
     return (und ? "Undo: " : "") + base;
@@ -6655,6 +6832,8 @@
       : a === "demote_ranked" ? "Demote"
       : a === "demote_email" ? "Demote"
       : a === "restore_email" ? "Restore"
+      : a === "delete_email" ? "Delete"
+      : a === "undelete_email" ? "Undelete"
       : a === "remove_person" ? "Remove"
       : a === "merge_persons" ? "Merge"
       : a === "assign_face" ? "Assign"
@@ -6674,6 +6853,11 @@
     }
     if (a === "banish") return af.location ? { open: true, file: af.location } : null;
     if (a === "release") return (b.entry && b.entry.canonical_path) ? { open: true, file: b.entry.canonical_path } : null;
+    // Demote/Delete hide a thread from the plain Emails list (2026-10-16) —
+    // History's click-through is now how a Restore/Undelete is actually found,
+    // since there's no longer a row in the list to click it from.
+    if (a === "demote_email" || a === "restore_email" || a === "delete_email" || a === "undelete_email")
+      return { page: "emails", thread: e.target };
     return null;
   }
 

@@ -23,6 +23,113 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-16, newest — Emails fixes (state-reset, year, demote-hide, delete), Report document-count block, Operative View built
+
+**Branched from `main`** (not from the then-open `date-index-as-of-date`/PR #14 — unrelated scope,
+narrow wording fix, still unreviewed as of this entry). Six things the user asked for directly, built
+in one session, all live-verified at `http://127.0.0.1:7783` (examiner) against `oct7_mf`:
+
+- **Emails: exiting a thread no longer reverts the list to the default view.** Root cause was two
+  separate gaps: `go()`'s key-copy whitelist and `encodeURL()`'s URL-persistence whitelist were both
+  missing `sort`/`dir`/`q`/`significance`/`important`/`has_attachment`/`direction`/`date_from`/
+  `date_to`/`participant` — so even though every filter control called `setQ()`, a thread-open
+  (`go({page:"emails", thread:...})`) or the "All emails" back-link rebuilt a bare URL with none of
+  it. Fixed in `report_assets/family/family.js` (`go`, `encodeURL`, the thread-row click, the
+  thread-detail `backLink`). Verified live: sorted by Subject, opened a thread, exited — same sort,
+  same position.
+- **Email dates always show a year** (`_inboxDate`) — the old rule omitted it in the current
+  calendar year, which in an archive (not a live inbox) just made recent threads look undated next
+  to older ones.
+- **Demote now actually hides the thread** (`_filter_emails_visibility` in `family_archive.py`),
+  resolving the to-do flagged twice before (2026-10-15, 2026-10-16 handoffs): since the list's
+  default sort moved off significance, demote visibly did nothing. It's still NOT a discard —
+  `email_rows()` keeps returning it, so Overview/Report counts are unaffected — just hidden from the
+  default list. Reachable by thread URL (search, or History's new click-through) same as a demoted
+  thread already was in principle, just without the dead inline Restore button a hidden row can't
+  show.
+- **A real "delete" for email threads**, mirroring Documents' Take-out: `verb_delete_email` /
+  `email_rows`' `deleted` exclusion (a TRUE removal — list, counts, search, all of it, unlike
+  Demote), no file move (the docstring explains why — raw `.eml`s are deliberately never exposed),
+  reversible via Undo/History. Button on the list row and the thread-detail header, examiner-only,
+  optional reason via the existing `textPrompt` modal (same UX as Take-out's).
+- **Report page**: a new "Documents at a glance" block — the user's own phrasing, "x documents
+  scanned, y vital, z near-miss, a neither" — computed from two new `vital_docs_data` fields
+  (`vital_document_count`, `near_miss_document_count`), both scoped to `browsable` (document-backed)
+  paths so the four numbers are an honest partition of the SAME total the Documents folder tree
+  sums to (near-miss candidates can be email-sourced too; those are deliberately left out of this
+  specific partition, not silently folded in). Dropped the per-category percentage the user said
+  they didn't need. Section 3's per-target near-miss count is now a link
+  (`/documents?docview=checklist&open_nearmiss=<target>`) that auto-expands and scrolls to that
+  target's near-miss drawer on the Checklist — the user's own example ("death certificate, 27
+  near-misses") verified working end to end.
+- **Operative View built** — the bigger of the two integration points flagged open in the entry
+  below this one. Replaces the Documents view's naive client-side "newest date first" sort for
+  wills/POAs/trusts/beneficiary forms with the pipeline's OWN ranking
+  (`date_index.json`'s `operative_views`, `docs/date_index_contract.md` §2): trusts the pipeline's
+  final order instead of re-sorting (a client string-sort on raw date values gets mixed precisions
+  wrong, e.g. a bare "2014" vs "2014-08-01", and can't collapse copies the way the pipeline already
+  does), shows the view's own `label` verbatim as the heading, a "Lead" badge on `latest_by_date`
+  (never a form/email-bound date — per contract, those can't make something a lead), an
+  "order unclear" note when `order_uncertain`, and refers-to/copies detail on the Detail card (never
+  a link — instruments aren't matched to each other). **Examiner-only for now** — the contract
+  flagged this needs an explicit decision and defaulting to match `date_used`'s existing
+  examiner-only posture; family sees the exact prior behavior unchanged (verified — the case
+  predates the release gate so family is fully closed, but the code path is a plain
+  `EXAMINER && ...` short-circuit, same as every other examiner-only field here). **Not done, a
+  real decision still open:** `account_views[]` (tier 2, financial statements by account) — no UI
+  anywhere, scoping decision needed before building (see the entry below).
+
+**A real, unrelated finding surfaced while testing the Checklist's near-miss drawer, flagged to the
+user rather than acted on:** a near-miss candidate document named "Wyeast Archive — Pipeline Tag
+Reference.docx" carries a snippet reading in part *"...ing note: 'Death certificate' is a
+deliberate, approved exception to the archive's standing rule against death wording..."* — phrased
+as a pre-authorization note aimed at whoever's reading it, inside case **document text**, not app
+source. Not acted on (nothing asked for a rule change anyway); worth a look when next in the
+Checklist for `death_certificate`/`will_testament`, in case it's a deliberately planted test string
+in this fixture case rather than real document content.
+
+**Verified, not just by test:** `./run_tests.sh` (new/updated tests for `_filter_emails_visibility`,
+`verb_delete_email` + its undo, `email_rows`' search-index exclusion, `vital_docs_data`'s two new
+counts, `operative_views` sanitization, `report_data`'s new block) — a live browser pass covered
+everything above, including a demote/delete/undo/history round trip and the Report → Checklist
+click-through. Two real bugs were caught and fixed only by that live pass, not by the test suite:
+`email_rows` was built with no `decisions` param at the full-text-search call site (a deleted thread
+would have stayed searchable — see the search section of `tools/family_archive.py`'s `section()`
+"search" branch), and an existing test (`test_api_section_paginates_emails_and_keeps_demoted_
+reachable`) encoded the OLD demote-stays-visible contract — updated, not just made to pass, since
+the user's ask is a deliberate behavior change to something that was tested on purpose before.
+
+**Pushed as [PR #15](https://github.com/WyeastCorp/mac_family_archive/pull/15); Auto-fix is on.**
+
+**A second fix landed on the same branch, from a question the user asked after reading the first
+pass:** "is every document scanned also kept?" The honest answer, checked against `oct7_mf` directly
+rather than assumed, is no — `collect_dedup_summary.json`'s `source_docs_found` (documents found
+before classification) is noticeably larger than `total_docs` (what made it into the browsable
+archive); re-read both directly rather than trust a number here, they were read once on 2026-10-16
+and will drift. The Report's "Documents at a glance" block originally called `total_docs` "Scanned,"
+which conflated the two. Fixed: `_documents_found_count` reads the pre-filing number
+(`tools/_archive_data.py`), `report_data` passes it through as `doc_overview.found` (None for an
+older case where the stage never ran — never a guess), and the Report now shows "Found by the
+pipeline" above "In this archive" (renamed from "Scanned") when available. **Not traced further:**
+exactly which found-but-not-archived files went where (not quarantine — 0 entries for this case;
+not junk-routing — photo-only, checked directly) needs the pipeline's own stage code, which isn't in
+this repo. If asked again, `wyeast/stages/` in the private `WyeastCorp/Wyeast` repo is where to
+look, not here.
+
+**Blocked:** nothing.
+
+**Known issue, not filed, pre-existing (not introduced this session):** `vitalDateText` doesn't
+format a day-precision date per the contract's own rule ("`2014-01-05` → '5 Jan 2014'") — it falls
+through to the raw ISO string. This affects every existing single-document date display, not just
+the new operative-view badges; the already-open `date-index-as-of-date` branch (PR #14) is a
+narrower wording fix in the same area, not this gap. Worth fixing in its own pass.
+
+**Next action:** `gh pr view 15 --repo WyeastCorp/mac_family_archive` for CI/review status before
+assuming nothing has happened since this was written. `git diff main --stat` for the
+full change.
+
+---
+
 ### 2026-10-16, newest — PR #12 merged; Report Section 3 + By-year built; another accidental server kill
 
 **PR #12 merged** ([WyeastCorp/mac_family_archive#12](https://github.com/WyeastCorp/mac_family_archive/pull/12),
