@@ -23,6 +23,37 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15, later still — List/Detail highlight fixed; a gotcha about port 7766
+
+**What shipped:** the List/Detail toggle buttons on the Documents page now show which one is
+active, live, with no reload needed. Root cause (found last session, fixed this one): the
+buttons' "active" attribute was only set once when they were first built; clicking just redrew
+the content below them. Fix is in `report_assets/family/family.js`, in the segment-button code
+right after the vital-docs checklist branch (search for `segButtons`) — the click handler now
+updates both buttons' state, not just the layout variable. Verified by hand in a browser: clicked
+each button both directions, confirmed the highlight moves immediately and matches the rendered
+view (table rows for List, cards for Detail).
+
+**A gotcha worth knowing before trusting anything on port 7766:** whatever is already listening
+there (`lsof -nP -iTCP:7766 -sTCP:LISTEN`) may not be running this checkout's code at all. The
+Desktop launcher (`~/Desktop/oct7 Documents.command`, described at the top of this project's
+global instructions) starts a *pinned copy* of the archive in `~/wyeast_documents_only` — a
+separate checkout, not this repo. Edits here do not reach it, and it will not show your changes
+no matter how many times you restart it — because you're not restarting it, someone else's copy
+is already running. If a fix doesn't show up in the browser after confirming the test server has
+the new code (`fetch` the asset and grep it, as done this session), check which checkout the
+listening process actually launched from (`ps -p <pid> -o command` on the pid `lsof` names) before
+assuming the bug is still there. To test safely without disturbing that pinned instance, run this
+repo's own server on a different port: `./family_archive.sh oct7_mf --cases-root
+/Volumes/oct7_mf_case --documents-only --port <other>`.
+
+**Blocked:** nothing.
+
+**Next action:** the undated-ordinary-documents question below is still open and untouched this
+round — pick that up next.
+
+---
+
 ### 2026-10-15, end of session — handoff: dates on ordinary documents, a List/Detail bug, demo work to reference
 
 **Where this session's work landed:** three commits on `documents-view`, nothing pushed, no PR

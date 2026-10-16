@@ -3816,13 +3816,18 @@
 
       var ctl = el("div", "docs-ctl");
       var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "View");
+      var segButtons = [];
       [["list", "List"], ["detail", "Detail"]].forEach(function (o) {
         var b = el("button", null, o[1]); b.type = "button";
         b.setAttribute("aria-pressed", layout === o[0] ? "true" : "false");
         b.onclick = function () {
           layout = o[0]; prefSet("layout", layout); setQ({ layout: layout === "list" ? "" : layout });
+          segButtons.forEach(function (pair) {
+            pair.b.setAttribute("aria-pressed", layout === pair.key ? "true" : "false");
+          });
           drawBody();
         };
+        segButtons.push({ b: b, key: o[0] });
         seg.appendChild(b);
       });
       ctl.appendChild(seg);
