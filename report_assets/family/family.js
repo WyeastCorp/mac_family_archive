@@ -3342,11 +3342,25 @@
     // candidate / neither — see report_data's doc_overview docstring for how
     // this stays an honest partition of the SAME total the folder breakdown
     // below sums to. near_miss is examiner-only (null for family).
+    //
+    // "In this archive" is NOT the same as "found" — found (ov.found,
+    // collect_dedup's own pre-filing count) is always >= it. The user asked
+    // directly whether every scanned document is kept; checked this case and
+    // found a real gap, so both numbers are shown rather than letting "in
+    // this archive" imply it's the whole scan. ov.found is null for an older
+    // case (the stage didn't write that field) — the found/in-archive line is
+    // then just omitted, never shown as a guess.
     var ov = data.doc_overview || {};
     if (ov.total) {
       main.appendChild(el("h2", "sec", "Documents at a glance"));
       var sheetOv = el("div", "sheet"); main.appendChild(sheetOv);
-      sheetOv.appendChild(reportRow("Scanned", num(ov.total)));
+      if (ov.found != null) {
+        sheetOv.appendChild(reportRow("Found by the pipeline", num(ov.found)));
+        main.appendChild(el("p", "docs-hint",
+          "Before any filing — the rest of this section is about what actually made it " +
+          "into the archive, not every file the pipeline looked at."));
+      }
+      sheetOv.appendChild(reportRow("In this archive", num(ov.total)));
       sheetOv.appendChild(reportRow("Vital",
         num(ov.vital) + (ov.vital_pct != null ? " <span class='pct'>(" + ov.vital_pct + "%)</span>" : "")));
       if (ov.near_miss != null) {

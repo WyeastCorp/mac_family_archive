@@ -80,7 +80,7 @@ from tools._archive_data import (  # noqa: E402
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
     email_category_counts, merge_email_category_counts, email_rows_for_category,
-    significance_bucket_counts, report_data, gathers_data,
+    significance_bucket_counts, report_data, gathers_data, _documents_found_count,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -1318,7 +1318,8 @@ class ArchiveCase:
                                                   doc_rows=rows)}
         if page == "report":
             docs = self.section("documents")      # reuses the same index + vital_docs
-            return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions))
+            return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions),
+                               docs_found=_documents_found_count(self.paths.metadata_dir))
         if page == "gather":
             # Gather-for-someone (2026-10-15): examiner-only (EXAMINER_ONLY), so
             # document_rows's role branch here is always "examiner" in practice —

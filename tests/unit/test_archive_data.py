@@ -381,6 +381,17 @@ def test_doc_placements_overrides_document_rows_category():
     assert idx == {"legal": 1, "miscellaneous": 1}, "documents_index counts are DERIVED"
 
 
+def test_documents_found_count_reads_collect_dedup_summary(tmp_path):
+    md = tmp_path / "md"; md.mkdir()
+    (md / "collect_dedup_summary.json").write_text(json.dumps({"source_docs_found": 6418}))
+    assert ad._documents_found_count(md) == 6418
+
+
+def test_documents_found_count_none_when_stage_never_ran(tmp_path):
+    md = tmp_path / "md"; md.mkdir()  # no collect_dedup_summary.json at all — older case
+    assert ad._documents_found_count(md) is None
+
+
 def test_report_data_splits_found_and_not_found_vital_targets():
     # Section 1 ("what's here") gets folder counts + the FOUND vital kinds;
     # Section 2 ("what wasn't found") gets everything else, grouped by the
@@ -441,6 +452,7 @@ def test_report_data_doc_overview_partitions_total_docs():
                   "groups": [], "targets": []}
     r = ad.report_data(index, vital_docs)
     assert r["doc_overview"] == {
+        "found": None,
         "total": 10,
         "vital": 2, "vital_pct": 20,
         "near_miss": 3, "near_miss_pct": 30,
@@ -458,6 +470,7 @@ def test_report_data_doc_overview_family_absorbs_near_miss_into_neither():
                   "groups": [], "targets": []}
     r = ad.report_data(index, vital_docs)
     assert r["doc_overview"] == {
+        "found": None,
         "total": 10, "vital": 4, "vital_pct": 40,
         "near_miss": None, "near_miss_pct": None,
         "neither": 6, "neither_pct": 60,
@@ -467,10 +480,25 @@ def test_report_data_doc_overview_family_absorbs_near_miss_into_neither():
 def test_report_data_doc_overview_no_documents_has_no_percentages():
     r = ad.report_data([], {"available": False, "targets": [], "found_count": 0, "total_count": 0})
     assert r["doc_overview"] == {
+        "found": None,
         "total": 0, "vital": 0, "vital_pct": None,
         "near_miss": None, "near_miss_pct": None,
         "neither": 0, "neither_pct": None,
     }
+
+
+def test_report_data_doc_overview_found_passed_through_when_given():
+    """docs_found (2026-10-16): the pipeline's pre-filing document count —
+    the user asked directly whether every scanned document is kept, and the
+    answer (checked against a real case) was no. Always >= total; report_data
+    just passes it through, never recomputes or validates it against total —
+    that honesty check belongs to whoever reads it, not this function."""
+    index = [{"category": "financial", "count": 10, "subcategories": []}]
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 0, "near_miss_document_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs, docs_found=14)
+    assert r["doc_overview"]["found"] == 14
 
 
 def test_report_data_unsure_section_from_real_unconfirmed_and_near_miss_counts():

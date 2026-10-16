@@ -2641,7 +2641,26 @@ def _pct(part, whole):
     return round(100 * part / whole)
 
 
-def report_data(index, vital_docs, counts=None):
+def _documents_found_count(md):
+    """How many document-type FILES the pipeline found before any filing
+    happened — collect_dedup's own `source_docs_found` (collect_dedup_
+    summary.json), which counts the same population as document_classifications'
+    source=="document" rows but BEFORE classification/filing, so it's always
+    >= total_docs, never a subset of it. 2026-10-16: the user asked whether
+    every scanned document is kept — checked this case directly and found a
+    real gap (6,418 found vs. 5,240 archived here) that total_docs alone
+    can't show, since total_docs is already the post-filing count. None when
+    the stage never ran or the file is missing/unreadable (older case) —
+    never a guess, and the Report must then omit the found→archived line
+    rather than show a wrong one."""
+    data = load_json(Path(md) / "collect_dedup_summary.json", None)
+    if not isinstance(data, dict):
+        return None
+    n = data.get("source_docs_found")
+    return n if isinstance(n, int) else None
+
+
+def report_data(index, vital_docs, counts=None, docs_found=None):
     """The Report page's three kept-apart statements (the front-end
     brainstorm's own framing): what the archive holds, what it couldn't find,
     and — since 2026-10-16 — what it hasn't resolved yet.
@@ -2702,6 +2721,11 @@ def report_data(index, vital_docs, counts=None):
     accounted = vital_doc_count + (near_miss_doc_count or 0)
     neither_count = max(total_docs - accounted, 0)
     doc_overview = {
+        # 2026-10-16: the true pre-filing count (collect_dedup's source_docs_
+        # found) — always >= total, since total is already post-filing. None
+        # when the stage never ran (older case); the front end must then omit
+        # the "found → archived" line rather than show a wrong one.
+        "found": docs_found,
         "total": total_docs,
         "vital": vital_doc_count, "vital_pct": _pct(vital_doc_count, total_docs),
         "near_miss": near_miss_doc_count,
