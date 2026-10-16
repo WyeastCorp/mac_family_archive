@@ -99,8 +99,24 @@ would have stayed searchable — see the search section of `tools/family_archive
 reachable`) encoded the OLD demote-stays-visible contract — updated, not just made to pass, since
 the user's ask is a deliberate behavior change to something that was tested on purpose before.
 
-**Blocked:** nothing. Not pushed or PR'd yet as of this entry — `git log --oneline -8` on
-`emails-report-operative-view` for the exact commit(s).
+**Pushed as [PR #15](https://github.com/WyeastCorp/mac_family_archive/pull/15); Auto-fix is on.**
+
+**A second fix landed on the same branch, from a question the user asked after reading the first
+pass:** "is every document scanned also kept?" The honest answer, checked against `oct7_mf` directly
+rather than assumed, is no — `collect_dedup_summary.json`'s `source_docs_found` (documents found
+before classification) is noticeably larger than `total_docs` (what made it into the browsable
+archive); re-read both directly rather than trust a number here, they were read once on 2026-10-16
+and will drift. The Report's "Documents at a glance" block originally called `total_docs` "Scanned,"
+which conflated the two. Fixed: `_documents_found_count` reads the pre-filing number
+(`tools/_archive_data.py`), `report_data` passes it through as `doc_overview.found` (None for an
+older case where the stage never ran — never a guess), and the Report now shows "Found by the
+pipeline" above "In this archive" (renamed from "Scanned") when available. **Not traced further:**
+exactly which found-but-not-archived files went where (not quarantine — 0 entries for this case;
+not junk-routing — photo-only, checked directly) needs the pipeline's own stage code, which isn't in
+this repo. If asked again, `wyeast/stages/` in the private `WyeastCorp/Wyeast` repo is where to
+look, not here.
+
+**Blocked:** nothing.
 
 **Known issue, not filed, pre-existing (not introduced this session):** `vitalDateText` doesn't
 format a day-precision date per the contract's own rule ("`2014-01-05` → '5 Jan 2014'") — it falls
@@ -108,8 +124,8 @@ through to the raw ISO string. This affects every existing single-document date 
 the new operative-view badges; the already-open `date-index-as-of-date` branch (PR #14) is a
 narrower wording fix in the same area, not this gap. Worth fixing in its own pass.
 
-**Next action:** `cd ~/mac_family_archive && git log --oneline -8 && ./run_tests.sh` on
-`emails-report-operative-view`, then decide whether to push/PR. `git diff main --stat` for the
+**Next action:** `gh pr view 15 --repo WyeastCorp/mac_family_archive` for CI/review status before
+assuming nothing has happened since this was written. `git diff main --stat` for the
 full change.
 
 ---
