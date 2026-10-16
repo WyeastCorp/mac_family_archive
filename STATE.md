@@ -23,6 +23,44 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-16, newest — Richard sent a refreshed date_index.json with a NEW `near_misses` key; directly answers to-do #3 below
+
+**Not yet installed into the case — sitting in Downloads, not in `oct7_mf`'s `output/metadata/`.**
+Two files, dropped by the user from Richard: `/Users/claudeai/Downloads/date_index (2).json` and
+`vital_doc_provenance (2).json`, both for `oct7_mf`. **Richard's own instructions, verbatim:**
+"Added the near-misses. Am looking at what date codifying the whole corpus looks like. Try
+incorporating this first. I don't believe you have any near-miss views atm in your code."
+
+**What's actually new, checked by reading the file directly (re-check before trusting this, it's a
+live hand-off and may already be superseded):** `date_index.json` now carries a top-level
+**`near_misses`** key — `{counts, items}`, structurally unlike `vital_doc_candidates.json`'s flat
+per-target `hits` list this repo's `_near_miss_hits()`/`near_miss_rows()` currently reads (and ONLY
+reads — this new key is not consumed anywhere in this repo yet). Each item has `file`, `source`
+(`"document"` or `"email"` — confirmed BOTH appear, a real mix), and a `targets` dict keyed by vital
+target, each carrying its own `date_used`/`primary`/`flags` — so one near-miss file can be a
+candidate for several targets at once, each with its own resolved date. An email-sourced item's
+`date_used` is `email_sent`-based, same basis convention `date_index_contract.md` already documents
+for confirmed items. `vital_doc_provenance.json` itself looks like a plain data refresh, same shape
+as before (`docs/date_index_contract.md` §1's `source_email` records) — nothing structurally new
+there.
+
+**This directly answers to-do #3 below ("why do no emails show up as vital/near-miss"):** emails
+near-misses DO exist in the pipeline's own data — this new key is explicit, resolved proof, not an
+inference from this session's own probing of the OLDER `vital_doc_candidates.json`. The open
+question is no longer "does the data exist" — it's "this repo's near-miss code was built against
+the OLD file/shape, and needs to decide whether to read this NEW key instead of, or alongside,
+`vital_doc_candidates.json`." No contract doc exists yet for this new key (unlike `operative_views`/
+`account_views`, which have `docs/date_index_contract.md`) — read the file directly rather than
+assume this entry's description of it still holds, and consider asking Richard for one the way
+`date_index_contract.md` itself got written, before building against guessed semantics.
+
+**Not done:** installing these files into the case (`output/metadata/`, same backup-first pattern as
+the 2026-10-16 "date_index refreshed to tier 2" entry below used), and everything to-do #2/#3 below
+already called for. Richard's "try incorporating this first" reads as a direct steer on priority —
+probably the right place to start the next session, ahead of the other four to-dos.
+
+---
+
 ### 2026-10-16, newest — PR #15 merged; handoff with five new to-dos from the user
 
 **PR #15 merged to `main`** (merge commit, not squashed — `git log --oneline -3` for the hash). Full
