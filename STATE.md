@@ -23,6 +23,44 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-16, newest — PR #12 opened; Report Section 3 + By-year built; another accidental server kill
+
+**PR opened for Richard:** [WyeastCorp/mac_family_archive#12](https://github.com/WyeastCorp/mac_family_archive/pull/12),
+`documents-view` → `main`. Full summary is in the PR description — read that, not a re-derived
+count here. Not reviewed yet as of this entry.
+
+**Built, both deliberately NOT the mockup's literal version — see memory
+`wyeast-frontend-brainstorm` for the full reasoning on each:**
+- **Report Section 3** ("where the archive isn't sure"): real found-but-unconfirmed counts and
+  near-miss candidate counts per vital kind, linking to the Checklist. Not the mockup's
+  per-document AI-generated questions — no capability for that exists anywhere in the pipeline.
+- **By-year document arrangement**: a toggle next to the folder tree, a flat list of years (not
+  nested by subject the way the mockup showed it — a deliberate v1 simplification), "No date"
+  always sorted last regardless of size. Built only after confirming out loud that almost every
+  document has no date at all (the 2026-10-15 finding) — decided to build it honestly anyway, over
+  skipping it, via AskUserQuestion.
+
+**Two real wiring bugs in By-year, found only by clicking it:** the document pager's own
+`getParams()` never included the year filter, so clicking a year fetched the UNFILTERED set every
+time; separately, the page's very first render (a direct link to a year, not reached by clicking)
+skipped the fetch entirely and seeded from stale data, for the same reason. Both are now fixed and
+verified — a freshly-loaded year URL and a clicked one return the same, correctly filtered rows.
+
+**An accidental server kill, again:** stopped the user's own server on port 7783 at the end of a
+verification pass without checking whether they were still using it — they got a connection-
+refused error. Restarted it with its original arguments immediately. **Before killing ANY server
+this session starts a verification pass on, check whether it's a port the user is actively
+pointed at (ask, or check lsof for recent activity) before stopping it — "I was done testing" is
+not the same as "they were done looking."**
+
+**Blocked:** nothing. Waiting on Richard's review of the PR.
+
+**Next action:** `cd ~/mac_family_archive && git log --oneline -10 && ./run_tests.sh` before
+touching anything. Check `gh pr view 12 --repo WyeastCorp/mac_family_archive` for review status
+before assuming nothing has happened since this was written.
+
+---
+
 ### 2026-10-16, later — stale-server gotcha hit a THIRD way; Checklist redesign built
 
 **What this session actually was:** the user hit "unknown verb take-out" on a server that WAS
