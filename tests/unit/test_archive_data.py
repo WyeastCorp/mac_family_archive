@@ -429,6 +429,48 @@ def test_report_data_here_folders_pct_is_none_when_no_documents():
     assert r["here_folders"] == [{"name": "miscellaneous", "count": 0, "pct": None}]
 
 
+def test_report_data_unsure_section_from_real_unconfirmed_and_near_miss_counts():
+    """Section 3, 2026-10-16: real open items only — a found-but-unconfirmed
+    item and a near-miss count, never a fabricated question. Grouped by
+    target like Section 2, each carrying both numbers so the UI can say
+    which is which."""
+    vital_docs = {
+        "available": True, "found_count": 2, "total_count": 3,
+        "unconfirmed_count": 1,   # non-None → examiner role, Section 3 active
+        "groups": [{"group": "estate_legal", "label": "Estate & legal"}],
+        "targets": [
+            {"target": "will_testament", "label": "Will / testament", "group": "estate_legal",
+             "found": True, "near_miss_count": 2,
+             "items": [{"reviewed": True}, {"reviewed": False}]},
+            {"target": "trust_instrument", "label": "Trust agreement", "group": "estate_legal",
+             "found": True, "near_miss_count": 0,
+             "items": [{"reviewed": True}]},
+            {"target": "deed_title", "label": "Deed", "group": "estate_legal",
+             "found": False, "near_miss_count": 0, "items": []},
+        ],
+    }
+    r = ad.report_data([], vital_docs)
+    assert r["unsure"] == [
+        {"area": "Estate & legal", "target": "will_testament", "what": "Will / testament",
+         "unconfirmed": 1, "near_miss": 2},
+    ], "fully-confirmed/no-near-miss targets (trust) and not-found ones (deed) are left out"
+
+
+def test_report_data_unsure_empty_for_family_even_with_real_gaps():
+    """unconfirmed_count is already role-gated to None for family upstream
+    (vital_docs_data) — Section 3 must read that as "nothing to show", not
+    recompute its own, un-gated version from the same target data."""
+    vital_docs = {
+        "available": True, "found_count": 1, "total_count": 1,
+        "unconfirmed_count": None,
+        "groups": [],
+        "targets": [{"target": "will_testament", "label": "Will / testament", "group": None,
+                    "found": True, "near_miss_count": 5,
+                    "items": [{"reviewed": False}]}],
+    }
+    assert ad.report_data([], vital_docs)["unsure"] == []
+
+
 def test_gathers_data_resolves_known_and_unknown_members():
     curation_layer = {
         "recipients": ["CPA", "Estate attorney"],

@@ -2574,12 +2574,22 @@ def _pct(part, whole):
 
 
 def report_data(index, vital_docs, counts=None):
-    """The Report page's Section 1 ("what's here") and Section 2 ("what wasn't
-    found") — see the front-end brainstorm's three-kept-apart-statements
-    principle. Section 3 ("where the archive isn't sure, and why it matters")
-    is deliberately NOT built: it needs an AI-question-generation feature that
-    doesn't exist anywhere in the real pipeline yet (the mockup that proposed
-    it used invented example documents) — this function never fabricates one.
+    """The Report page's three kept-apart statements (the front-end
+    brainstorm's own framing): what the archive holds, what it couldn't find,
+    and — since 2026-10-16 — what it hasn't resolved yet.
+
+    Section 3 is deliberately NOT the mockup's version: that one had the
+    archive ask a per-document question ("is this the final return?"), which
+    needs AI question-generation the real pipeline has never had — the mockup
+    used invented example documents for it, and this function still never
+    fabricates one. What's real and already computed: a found vital item the
+    examiner hasn't confirmed yet (`reviewed`), and near-miss candidates the
+    pipeline wasn't confident enough to list automatically
+    (`near_miss_count`). Grouped by vital kind, same as Section 2, each count
+    points back to the Checklist rather than claiming to BE the checklist.
+    Examiner-only, gated on `unconfirmed_count` already being role-gated
+    upstream (vital_docs_data) — None for family means Section 3 is empty,
+    not a shorter version of itself.
 
     `index` is documents_index()'s folder-count tree; `vital_docs` is
     vital_docs_data()'s output. `counts` is the SAME dict the Overview tiles
@@ -2607,6 +2617,22 @@ def report_data(index, vital_docs, counts=None):
                      "pct": _pct(c.get("count") or 0, total_docs)} for c in index or []]
     found_count = vital_docs.get("found_count", 0)
     total_count = vital_docs.get("total_count", 0)
+    # Section 3: real, un-fabricated open items — see the docstring above for
+    # exactly what this is and isn't. None for family (unconfirmed_count is
+    # already role-gated upstream) means an empty list, not a shorter one.
+    unsure = []
+    if vital_docs.get("unconfirmed_count") is not None:
+        for t in targets:
+            unconfirmed_here = sum(1 for it in (t.get("items") or []) if not it.get("reviewed"))
+            near_miss = t.get("near_miss_count") or 0
+            if unconfirmed_here or near_miss:
+                unsure.append({
+                    "area": glabel.get(t.get("group")) or "Other",
+                    "target": t.get("target"),
+                    "what": t.get("label"),
+                    "unconfirmed": unconfirmed_here,
+                    "near_miss": near_miss,
+                })
     return {
         "available": bool(vital_docs.get("available")),
         "here_folders": here_folders,
@@ -2616,6 +2642,7 @@ def report_data(index, vital_docs, counts=None):
         "total_count": total_count,
         "found_pct": _pct(found_count, total_count),
         "processed": dict(counts or {}),
+        "unsure": unsure,
     }
 
 

@@ -3315,7 +3315,7 @@
   }
   P.report = function (main, data) {
     head(main, "Report", "Report", "Three kept-apart statements: what the archive holds, " +
-        "what it could not find, and — later — where it is unsure. Nothing here is a to-do.");
+        "what it could not find, and what it hasn't resolved yet. Nothing here is a to-do.");
     if (!data.available) {
       main.appendChild(el("p", "notice",
         "The vital-document checklist hasn't run for this case yet, so Section 2 (what wasn't " +
@@ -3368,6 +3368,28 @@
       });
       if (!(data.not_found || []).length) sheet3.appendChild(el("p", "notice",
         "Every kind the archive searches for was found."));
+
+      // Section 3 (2026-10-16), examiner-only — see report_data's docstring
+      // for why this is real open items (unconfirmed finds, near-miss
+      // candidates) and NOT the mockup's per-document questions, which would
+      // need AI question-generation this pipeline doesn't have.
+      if ((data.unsure || []).length) {
+        main.appendChild(el("h2", "sec", "3 · Where the archive isn't sure"));
+        main.appendChild(el("p", "lede",
+          "A kind below has a found document the examiner hasn't confirmed yet, " +
+          "or candidates the archive wasn't confident enough to list automatically. " +
+          "Review them on the "));
+        var lede3 = main.lastChild;
+        var clink = el("a", null, "Checklist"); clink.href = "/documents?docview=checklist";
+        lede3.appendChild(clink); lede3.appendChild(document.createTextNode("."));
+        var sheet4 = el("div", "sheet"); main.appendChild(sheet4);
+        data.unsure.forEach(function (u) {
+          var bits = [];
+          if (u.unconfirmed) bits.push(num(u.unconfirmed) + " not yet confirmed");
+          if (u.near_miss) bits.push(num(u.near_miss) + " near-miss" + (u.near_miss === 1 ? "" : "es"));
+          sheet4.appendChild(reportRow(u.what, esc(bits.join(" · "))));
+        });
+      }
     }
   };
 
