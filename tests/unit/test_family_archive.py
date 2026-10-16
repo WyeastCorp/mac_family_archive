@@ -2257,19 +2257,21 @@ def test_api_section_emails_search_date_and_sort(tmp_path):
     # ?q= composes with the existing ?participant= click-through filter.
     combined = case.api_section("emails", {"participant": "dawn@x", "q": "re:"})
     assert combined["total"] == 1 and combined["rows"][0]["thread_id"] == "t3"
-    # ?min_significance=N keeps only threads at or above that pipeline score —
-    # a THRESHOLD, not grouping/sorting (which stay independent of it).
-    top_only = case.api_section("emails", {"min_significance": "5"})
+    # ?significance=N keeps only threads at EXACTLY that pipeline score
+    # (2026-10-16: switched from "at or above" to an exact level, per the
+    # user's explicit request) — not grouping/sorting (which stay off it).
+    top_only = case.api_section("emails", {"significance": "5"})
     assert {r["thread_id"] for r in top_only["rows"]} == {"t2"}
-    top_two = case.api_section("emails", {"min_significance": "2"})
-    assert {r["thread_id"] for r in top_two["rows"]} == {"t1", "t2"}
-    everything = case.api_section("emails", {"min_significance": "0"})
-    assert everything["total"] == 3, "0 is a no-op — every score is >= 0"
+    mid_only = case.api_section("emails", {"significance": "2"})
+    assert {r["thread_id"] for r in mid_only["rows"]} == {"t1"}, \
+        "exact match: t2 (significance 5) must NOT show up for significance=2"
+    unfiltered = case.api_section("emails", {"significance": ""})
+    assert unfiltered["total"] == 3, "an empty value is a no-op — same as no filter at all"
     # significance_counts rides on every envelope — the count meter next to the
-    # threshold dropdown — and reflects the OTHER active filters (q= here),
-    # not the significance filter itself.
-    assert default["significance_counts"] == {1: 3, 2: 2, 3: 1, 4: 1, 5: 1}
-    assert by_subject["significance_counts"] == {1: 2, 2: 1, 3: 0, 4: 0, 5: 0}
+    # dropdown — and reflects the OTHER active filters (q= here), not the
+    # significance filter itself. EXACT per-bucket tallies (2026-10-16).
+    assert default["significance_counts"] == {1: 1, 2: 1, 3: 0, 4: 0, 5: 1}
+    assert by_subject["significance_counts"] == {1: 1, 2: 1, 3: 0, 4: 0, 5: 0}
     # ?dir= toggles direction per column, "usual email browser" header-click style.
     recent_asc = case.api_section("emails", {"sort": "recent", "dir": "asc"})
     assert [r["thread_id"] for r in recent_asc["rows"]] == ["t3", "t1", "t2"]

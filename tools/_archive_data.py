@@ -3356,20 +3356,21 @@ def email_category_counts(email_rows):
     return counts
 
 
-def significance_threshold_counts(rows):
-    """{N: count} for N in 1..5 — how many `rows` have significance >= N, i.e.
-    exactly what `?min_significance=N` would keep. CUMULATIVE on purpose (the
-    Emails page's threshold dropdown reads "this level and up", not "exactly
-    this level"), so the count meter next to it matches each option 1:1. Call
-    on whatever rows already survived the OTHER filters (search/date/
-    direction/...) but before the significance threshold itself narrows them,
-    so the meter reflects "what you'd get at each level, given everything else
-    you've already filtered by"."""
+def significance_bucket_counts(rows):
+    """{N: count} for N in 1..5 — how many `rows` have significance EXACTLY N,
+    i.e. what `?significance=N` would keep. Was CUMULATIVE ("this level and
+    up") until 2026-10-16, when the user asked for an exact filter instead —
+    picking "Everyday" should show only Everyday, not Everyday-and-everything-
+    above-it — so the count meter next to it switched to match. Call on
+    whatever rows already survived the OTHER filters (search/date/direction/
+    ...) but before the significance filter itself narrows them, so the meter
+    reflects "what you'd get at each level, given everything else you've
+    already filtered by"."""
     counts = {n: 0 for n in range(1, 6)}
     for r in rows or []:
         sig = r.get("significance") or 0
-        for n in range(1, min(sig, 5) + 1):
-            counts[n] += 1
+        if 1 <= sig <= 5:
+            counts[sig] += 1
     return counts
 
 

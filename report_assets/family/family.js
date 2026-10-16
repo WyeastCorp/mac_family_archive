@@ -4919,20 +4919,17 @@
     // Sort is now From/Subject/Date column headers on the list itself (2026-
     // 10-15, "usual email browser" style) — no dropdown here any more.
     var sort = { by: Q.sort || "recent", dir: Q.dir || "" };
-    // A THRESHOLD ("this level and everything above it"), not independent
-    // per-level checkboxes — the levels are nested, so a plain select reads
-    // more honestly than 6 checkboxes that could be set inconsistently.
-    // Labels reuse the same band names the old grouped view used, highest
-    // first, so "highest only" / "highest + second" read in order. Filtering
-    // BY the pipeline score is a deliberate, separate decision from sort/
-    // grouping (which stay off it) — kept independent of the hand-set
-    // Important flag's own filter below.
-    var sigSel = el("select"); sigSel.setAttribute("aria-label", "Minimum significance");
-    [["", "Any significance"], ["5", "Major life events only"],
-     ["4", "Emotionally resonant and up"], ["3", "Personal and up"],
-     ["2", "Everyday and up"], ["1", "Routine and up"]]
+    // An EXACT level (2026-10-16, replacing the old "this level and up"
+    // threshold per the user's explicit request): picking "Everyday" shows
+    // only Everyday, not Everyday plus every band above it. Filtering BY the
+    // pipeline score is a deliberate, separate decision from sort/grouping
+    // (which stay off it) — kept independent of the hand-set Important
+    // flag's own filter below.
+    var sigSel = el("select"); sigSel.setAttribute("aria-label", "Significance");
+    [["", "Any significance"], ["5", "Major life events"], ["4", "Emotionally resonant"],
+     ["3", "Personal"], ["2", "Everyday"], ["1", "Routine"]]
       .forEach(function (o) { sigSel.appendChild(new Option(o[1], o[0])); });
-    sigSel.value = Q.min_significance || "";
+    sigSel.value = Q.significance || "";
     var impChk = el("label", "flabel chkflabel");
     var impBox = el("input"); impBox.type = "checkbox";
     if (Q.important === "1") impBox.checked = true;
@@ -4948,11 +4945,11 @@
     listctrls.appendChild(impChk);
     listctrls.appendChild(attChk);
 
-    // Significance count meter: how many threads each threshold option would
+    // Significance count meter: how many threads each exact level would
     // keep, GIVEN the other active filters (search/date/direction/...) — so it
     // answers "what would I get if I picked this?" before you pick it. One bar
     // per level, highest first, clicking a bar jumps straight to that
-    // threshold (same destination as picking it from the dropdown above).
+    // level (same destination as picking it from the dropdown above).
     var sigMeter = el("div", "sigmeter"); main.appendChild(sigMeter);
     var SIG_LABELS = { 5: "Major life events", 4: "Emotionally resonant",
                        3: "Personal", 2: "Everyday", 1: "Routine" };
@@ -4970,7 +4967,7 @@
           "<span class='ct'>" + num(c) + "</span>";
         row.onclick = function () {
           sigSel.value = String(n);
-          setQ({ min_significance: String(n) });
+          setQ({ significance: String(n) });
           pg.load(true);
         };
         sigMeter.appendChild(row);
@@ -5016,7 +5013,7 @@
         if (dTo.value) p.date_to = dTo.value;
         p.sort = sort.by;
         if (sort.dir) p.dir = sort.dir;
-        if (sigSel.value) p.min_significance = sigSel.value;
+        if (sigSel.value) p.significance = sigSel.value;
         if (impBox.checked) p.important = "1";
         if (attBox.checked) p.has_attachment = "1";
         if (direction) p.direction = direction;
@@ -5051,7 +5048,7 @@
     search.oninput = reload;
     function onDate() { setQ({ date_from: dFrom.value, date_to: dTo.value }); pg.load(true); }
     dFrom.onchange = onDate; dTo.onchange = onDate;
-    sigSel.onchange = function () { setQ({ min_significance: sigSel.value }); pg.load(true); };
+    sigSel.onchange = function () { setQ({ significance: sigSel.value }); pg.load(true); };
     impBox.onchange = function () { setQ({ important: impBox.checked ? "1" : "" }); pg.load(true); };
     attBox.onchange = function () { setQ({ has_attachment: attBox.checked ? "1" : "" }); pg.load(true); };
     // The router's seed payload is unsorted (/api/emails with no params, which

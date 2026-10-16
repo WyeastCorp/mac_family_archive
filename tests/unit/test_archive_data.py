@@ -471,13 +471,13 @@ def test_gathers_data_empty_when_no_gathers_yet():
     assert r == {"gathers": [], "recipients": []}
 
 
-def test_significance_threshold_counts_matches_each_filter_option():
-    # Each key N is "how many rows ?min_significance=N would keep" — a
-    # CUMULATIVE count, matching the dropdown's "X and up" semantics exactly,
-    # not a per-bucket tally.
+def test_significance_bucket_counts_matches_each_filter_option():
+    # Each key N is "how many rows ?significance=N would keep" — an EXACT,
+    # per-bucket tally (2026-10-16: switched from the old cumulative "X and
+    # up" count to match the filter's own switch to an exact level).
     rows = [{"significance": 5}, {"significance": 5}, {"significance": 3},
            {"significance": 1}, {"significance": 0}, {}]
-    assert ad.significance_threshold_counts(rows) == {5: 2, 4: 2, 3: 3, 2: 3, 1: 4}
+    assert ad.significance_bucket_counts(rows) == {5: 2, 4: 0, 3: 1, 2: 0, 1: 1}
 
 
 def test_email_category_counts_tallies_every_category_on_a_thread():

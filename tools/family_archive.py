@@ -80,7 +80,7 @@ from tools._archive_data import (  # noqa: E402
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
     email_category_counts, merge_email_category_counts, email_rows_for_category,
-    significance_threshold_counts, report_data, gathers_data,
+    significance_bucket_counts, report_data, gathers_data,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -594,10 +594,10 @@ def _filter_emails_search(rows, params):
     subject OR any participant; the date range narrows by the thread's last
     activity date.
 
-    Deliberately NOT min_significance or sort — see _filter_emails_min_significance
-    / _sort_emails. The significance threshold is split out so the caller can
-    compute significance_threshold_counts (the count meter) on these results
-    BEFORE narrowing to one threshold."""
+    Deliberately NOT significance or sort — see _filter_emails_significance /
+    _sort_emails. The significance filter is split out so the caller can
+    compute significance_bucket_counts (the count meter) on these results
+    BEFORE narrowing to one level."""
     q = _one(params, "q").strip().lower()
     if q:
         rows = [r for r in rows
@@ -618,18 +618,21 @@ def _filter_emails_search(rows, params):
     return rows
 
 
-def _filter_emails_min_significance(rows, params):
-    """A THRESHOLD on the pipeline's significance score (2026-10-15: the score
-    drives this filter on purpose, unlike sort, which stays off it — see the
-    Important flag for the independent, examiner/family-set signal)."""
-    min_sig = _one(params, "min_significance")
-    if not min_sig:
+def _filter_emails_significance(rows, params):
+    """An EXACT level on the pipeline's significance score (2026-10-15: the
+    score drives this filter on purpose, unlike sort, which stays off it —
+    see the Important flag for the independent, examiner/family-set signal).
+    2026-10-16: switched from a threshold ("this level and up") to an exact
+    match per the user's explicit request — picking "Everyday" now shows only
+    Everyday, not Everyday plus every level above it."""
+    sig = _one(params, "significance")
+    if not sig:
         return rows
     try:
-        floor = int(min_sig)
+        want = int(sig)
     except ValueError:
         return rows
-    return [r for r in rows if (r.get("significance") or 0) >= floor]
+    return [r for r in rows if (r.get("significance") or 0) == want]
 
 
 def _sort_emails(rows, params):
@@ -1442,11 +1445,11 @@ class ArchiveCase:
             rows = self._attach_direction(rows)
             rows = _filter_emails_by_participant(rows, params)
             rows = _filter_emails_search(rows, params)
-            # Counts BEFORE the significance threshold narrows the list — the
+            # Counts BEFORE the significance filter narrows the list — the
             # count meter next to the dropdown shows what every option would
             # yield given the OTHER active filters, not just the chosen one.
-            sig_counts = significance_threshold_counts(rows)
-            rows = _filter_emails_min_significance(rows, params)
+            sig_counts = significance_bucket_counts(rows)
+            rows = _filter_emails_significance(rows, params)
             rows = _sort_emails(rows, params)
             page = _paginate(rows, offset, limit)
             # So the Emails page's owner-address settings form can show what's
