@@ -23,11 +23,16 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
-### 2026-10-16, newest — PR #12 opened; Report Section 3 + By-year built; another accidental server kill
+### 2026-10-16, newest — PR #12 merged; Report Section 3 + By-year built; another accidental server kill
 
-**PR opened for Richard:** [WyeastCorp/mac_family_archive#12](https://github.com/WyeastCorp/mac_family_archive/pull/12),
-`documents-view` → `main`. Full summary is in the PR description — read that, not a re-derived
-count here. Not reviewed yet as of this entry.
+**PR #12 merged** ([WyeastCorp/mac_family_archive#12](https://github.com/WyeastCorp/mac_family_archive/pull/12),
+`documents-view` → `main`) — the user merged it themselves once CI passed (4 checks: macOS/Ubuntu
+× Python 3.10/3.12, all green). Full summary of everything it carried is in the PR description on
+GitHub, not re-derived here. It hit one real merge conflict first — a separate, unrelated PR (#11,
+from another contributor) landed on `main` while this branch was open, both touching STATE.md at
+the same insertion point; resolved by interleaving the two entries in chronological order (see
+PR #11's own entry, a few below this one, for what it actually added — a `date_index.json` schema
+doc directly relevant to the By-year work below).
 
 **Built, both deliberately NOT the mockup's literal version — see memory
 `wyeast-frontend-brainstorm` for the full reasoning on each:**
@@ -53,11 +58,12 @@ this session starts a verification pass on, check whether it's a port the user i
 pointed at (ask, or check lsof for recent activity) before stopping it — "I was done testing" is
 not the same as "they were done looking."**
 
-**Blocked:** nothing. Waiting on Richard's review of the PR.
+**Blocked:** nothing. This work is in `main` now — start the next session from there, not from
+`documents-view` (merged; safe to delete once nothing local still points at it).
 
-**Next action:** `cd ~/mac_family_archive && git log --oneline -10 && ./run_tests.sh` before
-touching anything. Check `gh pr view 12 --repo WyeastCorp/mac_family_archive` for review status
-before assuming nothing has happened since this was written.
+**Next action:** `cd ~/mac_family_archive && git checkout main && git pull && ./run_tests.sh`
+before starting anything new. `gh pr list --repo WyeastCorp/mac_family_archive --state merged
+--limit 5` to see what's landed since.
 
 ---
 
