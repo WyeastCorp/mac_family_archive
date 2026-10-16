@@ -1902,6 +1902,36 @@ def _pages(case, name, params_base, limit=10):
     return out, total
 
 
+def test_api_section_documents_year_index_and_year_filter(tmp_path):
+    """By-year arrangement (2026-10-16): year_index rides the envelope
+    alongside the category index, and ?year=/?year=nodate narrow the rows —
+    built from the SAME vital date_used join Detail's docDateOf reads, since
+    that's the only date any document in this app ever has."""
+    case, paths = setup_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"] = [
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."},
+        {"file": "/d/recipe.pdf", "filename": "recipe.pdf", "category": "recipe",
+         "source": "document", "significance": 1, "summary": "A recipe."},
+    ]
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    (paths.metadata_dir / "vital_doc_confirmed.json").write_text(
+        json.dumps([{"path": "/d/will.pdf", "target": "will_testament", "tag": "will"}]))
+    (paths.metadata_dir / "vital_doc_candidates.json").write_text(
+        json.dumps({"will_testament": {"description": "a will", "hits": []}}))
+    (paths.metadata_dir / "date_index.json").write_text(json.dumps(
+        {"items": [{"file": "/d/will.pdf", "date_used": {"value": "2015-02"}}]}))
+    case.load()
+
+    full = case.api_section("documents", {})
+    assert full["year_index"] == [{"year": "2015", "count": 1}, {"year": "nodate", "count": 1}]
+    by_year = case.api_section("documents", {"year": "2015"})
+    assert {r["file"] for r in by_year["rows"]} == {"/d/will.pdf"}
+    undated = case.api_section("documents", {"year": "nodate"})
+    assert {r["file"] for r in undated["rows"]} == {"/d/recipe.pdf"}
+
+
 def test_api_section_paginates_documents_true_total_and_index(tmp_path):
     case, paths = setup_case(tmp_path)
     summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())

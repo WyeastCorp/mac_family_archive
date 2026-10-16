@@ -3396,6 +3396,41 @@ def documents_index(rows):
     return out
 
 
+def documents_year_index(rows):
+    """Group document rows by year for the By-year arrangement (2026-10-16,
+    built honestly per the user's own call): [{year, count}], years
+    descending, "No date" always last regardless of count.
+
+    The pipeline gives a date to exactly the ~13 vital document kinds (see
+    the undated-ordinary-documents finding, 2026-10-15) — `r["vital"]`
+    carries it when present (same `_attach_vital` join Detail's docDateOf
+    reads), nothing else in this app ever has one. So this index is mostly
+    one large "No date" bucket and a handful of real years holding the vital
+    documents — an honest reflection of what the pipeline actually knows, not
+    a broader by-year feature the data doesn't support. `rows` must already
+    have `.vital` attached (api_section's documents branch does this before
+    calling in); a plain document_rows() row with no `.vital` key reads as
+    undated, same as one that has the key but no date_used.
+    """
+    years = {}
+    nodate = 0
+    for r in rows:
+        y = None
+        for v in r.get("vital") or ():
+            val = str((v.get("date_used") or {}).get("value") or "")
+            if len(val) >= 4 and val[:4].isdigit():
+                y = val[:4]
+                break
+        if y is None:
+            nodate += 1
+        else:
+            years[y] = years.get(y, 0) + 1
+    out = [{"year": y, "count": c} for y, c in years.items()]
+    out.sort(key=lambda e: e["year"], reverse=True)
+    out.append({"year": "nodate", "count": nodate})
+    return out
+
+
 def email_category_counts(email_rows):
     """{category: count} across every thread's `categories` list — a thread with
     several categories (different messages classified differently) counts once

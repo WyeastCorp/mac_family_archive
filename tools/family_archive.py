@@ -73,7 +73,7 @@ from tools._archive_data import (  # noqa: E402
     family_block_reasons, correspondents_data, correspondent_duplicate_candidates,
     _duplicate_cluster_id, delivered_basename_index,
     audio_rows, build_doctext_views, build_photo_universe, build_search, build_stacks,
-    confirm_queue_data, conversation_detail, document_rows, documents_index,
+    confirm_queue_data, conversation_detail, document_rows, documents_index, documents_year_index,
     file_identity,
     email_rows, email_thread_detail, event_album_titles, event_albums_data,
     thread_has_delivered_attachment, thread_direction_flags, _participant_address,
@@ -533,6 +533,18 @@ _DOC_SORTS = {
 }
 
 
+def _document_year(r):
+    """The 4-digit year a document row's vital date_used falls in, or None —
+    the ONLY date any document in this app ever has (see documents_year_index
+    for why this means "no date" for nearly every ordinary document). Reads
+    the row's OWN first vital entry, same source Detail's docDateOf uses."""
+    for v in r.get("vital") or ():
+        val = str((v.get("date_used") or {}).get("value") or "")
+        if len(val) >= 4 and val[:4].isdigit():
+            return val[:4]
+    return None
+
+
 def _filter_documents(rows, params):
     """Server-side filters + sort for Documents, applied BEFORE the page slice so
     a category's tail is reachable (the full category index is computed
@@ -541,7 +553,10 @@ def _filter_documents(rows, params):
     ?cat=/subcat= narrow to a category; ?collection_curation=<slug> to one curation
     collection (needs rows stamped by apply_curation); ?vital=<target> to the documents that are
     a checklist item for that target (`vital=*` → any target; needs rows stamped
-    by _attach_vital); ?sort=name|kind|significance with ?dir=asc|desc reorders."""
+    by _attach_vital); ?year=<YYYY>|nodate narrows by _document_year (the By-year
+    arrangement, 2026-10-16 — mutually exclusive with ?cat/?vital in the UI, but
+    not enforced here, same as every other filter); ?sort=name|kind|significance
+    with ?dir=asc|desc reorders."""
     cat = _one(params, "cat")
     out = rows
     if cat:
@@ -556,6 +571,11 @@ def _filter_documents(rows, params):
     if vital:
         out = [r for r in out
                if any(vital == "*" or v.get("target") == vital for v in r.get("vital") or ())]
+    year = _one(params, "year")
+    if year == "nodate":
+        out = [r for r in out if _document_year(r) is None]
+    elif year:
+        out = [r for r in out if _document_year(r) == year]
     key = _DOC_SORTS.get(_one(params, "sort"))
     if key:
         default_desc = _one(params, "sort") == "significance"
@@ -1481,6 +1501,7 @@ class ArchiveCase:
             rows = apply_curation(data["rows"], curation, "file")
             rows = _attach_vital(rows, data["vital_docs"], self.vital_candidate_targets())
             index = data["index"]
+            year_index = documents_year_index(rows)   # By-year arrangement (2026-10-16)
             # Documents-view topic merge (?include_emails=1): email bodies share
             # the SAME category taxonomy as documents (case_summary's pipeline
             # classification, source=="email") but document_rows() routes them
@@ -1506,6 +1527,7 @@ class ArchiveCase:
             rows = _filter_documents(rows, params)
             page = _paginate(rows, offset, limit)
             page["index"] = index                       # full index (all rows)
+            page["year_index"] = year_index
             page["vital_docs"] = data["vital_docs"]    # checklist panel (G-2)
             return page
         if name == "correspondence":

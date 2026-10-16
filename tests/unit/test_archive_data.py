@@ -522,6 +522,22 @@ def test_significance_bucket_counts_matches_each_filter_option():
     assert ad.significance_bucket_counts(rows) == {5: 2, 4: 0, 3: 1, 2: 0, 1: 1}
 
 
+def test_documents_year_index_groups_by_vital_date_nodate_always_last():
+    rows = [
+        {"file": "/d/will.pdf", "vital": [{"date_used": {"value": "2015-02"}}]},
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}}]},
+        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}}]},
+        {"file": "/d/recipe.pdf"},                              # no .vital at all
+        {"file": "/d/deed.pdf", "vital": [{}]},                  # .vital present, no date_used
+        {"file": "/d/odd.pdf", "vital": [{"date_used": {"value": "unreadable"}}]},
+    ]
+    assert ad.documents_year_index(rows) == [
+        {"year": "2023", "count": 2},
+        {"year": "2015", "count": 1},
+        {"year": "nodate", "count": 3},
+    ]
+
+
 def test_email_category_counts_tallies_every_category_on_a_thread():
     rows = [{"thread_id": "t1", "categories": ["financial", "insurance"]},
            {"thread_id": "t2", "categories": ["financial"]},
