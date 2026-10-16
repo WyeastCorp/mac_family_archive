@@ -23,6 +23,54 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15, even later — why ordinary documents carry no date: confirmed upstream, not a bug here
+
+**What this means for the product:** a recipe, a piece of creative writing, an ordinary letter —
+anything that isn't a will, trust, tax return, deed, POA, or similar — will never show a date in
+this archive, no matter what we build here. The pipeline simply never looked for one. This isn't
+new information changing; it's the 2026-10-13 brainstorm note's claim, re-checked from scratch
+against this session's live case data (not trusted as written) and found to still hold, with the
+scope now pinned down exactly.
+
+**The mechanism:** the pipeline runs a dedicated date-extraction stage (`date_index.json`), but
+only for documents it already recognizes as one of ~13 "vital" kinds — will, trust, tax return,
+financial statement, power of attorney, deed, and a few others — because the dates there answer a
+real legal question (which copy of the will governs). In this case that stage touched 199
+documents. The other ~36,800 — every recipe, every ordinary letter, every piece of correspondence
+that isn't flagged vital — have no date anywhere in their pipeline record: not in
+`case_summary.json`'s `document_classifications`, not in `date_index.json`, nowhere. Confirmed by
+reading both files directly for this case, not by trusting a prior note. The front end's "—" is
+accurate: `family.js`'s `docDateOf()` only reads a document's `vital[].date_used`, which simply
+doesn't exist for a non-vital document.
+
+**The one thing that looked fixable here, and why it isn't (safely):** some ordinary documents
+arrived as email attachments — their filename carries a `msgNNNNN_` prefix, and the carrying email
+does have a real date. But that number isn't an index we can resolve from this repo (the stage
+that assigns it isn't in this closure, and some of the numbers exceed the email list's own
+length), and matching by attachment filename instead is unsafe: tested against this case's own
+`email_index.json`, a single attachment filename came back shared by three separate emails with
+three different dates — not a one-off, real collisions happen. Guessing one would be exactly the
+kind of "plausible wrong answer" this codebase already refuses to give elsewhere (see
+`delivered_basename_index`'s fail-closed design, which this would have to duplicate correctly to
+be safe — showing a date only when exactly one email matches, never a guess among several).
+
+**Not done, needs a decision, not a detour into pipeline work:** this is an upstream pipeline
+limitation, not a bug in this repo's consume/export layer — there's no local fix that doesn't
+either (a) ask the pipeline to extract dates for far more document kinds than it does today (real
+scope increase, not something to build from this side), or (b) add a new, narrower feature here —
+show a date only for the email-attachment documents where the email match is unambiguous, labeled
+as "received" rather than implied to be the document's own date, since it would otherwise look as
+authoritative as a will's execution date. (b) is a real option but is new work and a product
+decision (is an approximate "received" date worth showing, and how is it visually distinguished
+from a real document date), not something to build without that decision first.
+
+**Blocked:** on the user — whether to leave this as a known, accurate "—", or build (b) above.
+
+**Next action:** none until the user decides; nothing further to investigate here without new
+upstream pipeline work.
+
+---
+
 ### 2026-10-15, later still — List/Detail highlight fixed; a gotcha about port 7766
 
 **What shipped:** the List/Detail toggle buttons on the Documents page now show which one is
