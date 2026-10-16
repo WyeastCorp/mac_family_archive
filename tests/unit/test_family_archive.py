@@ -2139,22 +2139,75 @@ def test_api_section_photos_owner_gallery_filters_and_facets(tmp_path):
     assert pg["total"] == 3 and pg["offset"] == 2 and len(pg["rows"]) == 1
 
 
-def test_api_section_paginates_emails_and_keeps_demoted_reachable(tmp_path):
+def test_api_section_paginates_emails_and_excludes_demoted(tmp_path):
+    """2026-10-16: a demoted thread used to stay in the list (just sunk toward
+    the bottom of a significance sort) — but the list's default sort moved to
+    Date/From/Subject a day earlier, so it no longer sank anywhere and visibly
+    "stayed in view" with nothing changed, which the user flagged as wrong.
+    It's now excluded from the Emails list's own pagination by default
+    (_filter_emails_visibility) while staying present in the UNfiltered
+    section data (so Overview/Report counts, which read case.section("emails")
+    directly, never drift just because something was demoted — demote is
+    still not a discard)."""
     case, paths = setup_case(tmp_path)
     threads = [{"thread_id": f"t{i}", "subject": f"s{i}", "significance": 5,
                 "date_last": "2020-01-01"} for i in range(30)]
     (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": threads}))
-    # Demote t0 → forced to significance 0 (sinks to the bottom band). With true
-    # pagination the cap is gone, so it must remain reachable on a later page.
     (paths.metadata_dir / "family_decisions.json").write_text(
         json.dumps({"email_demoted": {"t0": {}}}))
     case.load()
-    assert len(case.section("emails")) == 30
+    assert len(case.section("emails")) == 30, "unfiltered count unaffected by demote"
     seen, total = _pages(case, "emails", {}, limit=10)
     ids = [r["thread_id"] for r in seen]
-    assert total == 30 and len(ids) == 30 and len(set(ids)) == 30, "sum of pages == full set, no dupes"
-    demoted = [r for r in seen if r["thread_id"] == "t0"]
-    assert demoted and demoted[0]["demoted"] is True, "demoted thread reachable + still flagged"
+    assert total == 29 and len(ids) == 29 and len(set(ids)) == 29, "demoted thread excluded, no dupes"
+    assert "t0" not in ids, "demoted thread hidden from the default list"
+
+
+def test_delete_email_toggle_and_undo(tmp_path):
+    """Mirrors test_demote_email_toggle_and_undo's shape, for the new verb."""
+    case, paths = setup_case(tmp_path)
+    dpath = paths.metadata_dir / "family_decisions.json"
+    res = fa.verb_delete_email(case, {"thread_id": "t1", "subject": "Delete me"})
+    assert res["ok"] and res["deleted"] is True
+    assert "t1" in json.loads(dpath.read_text())["email_deleted"]
+    assert len(_actions(paths)) == 1
+    # deleting again toggles it back off (undelete)
+    res2 = fa.verb_delete_email(case, {"thread_id": "t1", "subject": "Delete me"})
+    assert res2["deleted"] is False
+    assert "t1" not in json.loads(dpath.read_text()).get("email_deleted", {})
+    # undo of the undelete re-deletes it
+    fa.verb_undo(case, {"undo_token": res2["undo_token"]})
+    assert "t1" in json.loads(dpath.read_text())["email_deleted"]
+    # explicit restore flag also lifts it
+    fa.verb_delete_email(case, {"thread_id": "t1", "restore": True})
+    assert "t1" not in json.loads(dpath.read_text()).get("email_deleted", {})
+
+
+def test_delete_email_excludes_from_section_and_search_and_undo_restores(tmp_path):
+    """Delete is a real removal (unlike Demote): excluded from email_rows()
+    itself, so EVERY caller drops it (list, counts, search) — mirroring a
+    taken-out document. Undo must bring it back everywhere."""
+    case, paths = setup_case(tmp_path)
+    threads = [{"thread_id": "t0", "subject": "Keep me", "significance": 5,
+                "date_last": "2020-01-01", "participants": ["a@x.com"]},
+               {"thread_id": "t1", "subject": "Delete me", "significance": 5,
+                "date_last": "2020-01-02", "participants": ["b@x.com"]}]
+    (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": threads}))
+    case.load()
+    assert len(case.section("emails")) == 2
+    res = fa.verb_delete_email(case, {"thread_id": "t1", "subject": "Delete me"})
+    assert res["ok"] is True and res["deleted"] is True
+    case.load()
+    assert len(case.section("emails")) == 1, "deleted thread excluded from the raw section too"
+    ids = [row["thread_id"] for row in case.section("emails")]
+    assert "t1" not in ids
+    recs = [r for r in case.section("search")["records"] if r["p"] == "emails"]
+    assert not any(r["h"] == "t1" for r in recs), \
+        "deleted thread must not resurface via full-text search either"
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    case.load()
+    ids = [row["thread_id"] for row in case.section("emails")]
+    assert "t1" in ids, "undo restores the deleted thread"
 
 
 def test_overview_emails_count_matches_email_section(tmp_path):
