@@ -23,6 +23,64 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15, latest — Report percentages; Gather-for-someone built end to end
+
+**What shipped (on `documents-view`, committed, not pushed — three commits, newest first:
+front end, backend, and the earlier Report-percentages commit; `git log --oneline -6` for the
+exact set):**
+
+- **Report percentages + a "Processed" totals block.** Every document-category row and the
+  vital-kinds-found line now show a percentage alongside the count, and a new section at the
+  top lists the same totals the Overview tiles use (documents/emails/messages/photos/audio/
+  videos) — factored into one shared `_tab_counts()` so Report and Overview can never disagree.
+  Verified live in a browser (screenshot sent to the user).
+- **Gather-for-someone, the mockup helper, actually built** — manual (browse-and-pick, like
+  Collections), not the mockup's keyword/AI-matching variant: a real AskUserQuestion exchange
+  this session ruled that out as a false-thoroughness risk (see memory
+  `richard-feedback-report`). A saved, reusable recipient list; examiner-only. New `/gather`
+  page, a "Gather for someone…" entry on Documents, a "Gather for…" picker on every document's
+  Detail actions. Inside a folder: possible/left-out members (a left-out reason shows, nothing
+  is silently dropped), a couldn't-find list, Edit/Delete, "Save to my Mac" (real file copy +
+  a plain-text contents page carrying the cover note/ask/left-out reasons/missing lines), and
+  "Saved before" (every export logged on the folder itself). Every verb: one audit line,
+  examiner-only, reversible via the existing Undo mechanism except export itself (matches every
+  other export verb in this codebase). New tests for all of it (`tests/unit/test_family_archive.py`,
+  `tests/unit/test_archive_data.py`) — `./run_tests.sh` for the current count.
+
+**Verified live, not just by test:** created a folder on `oct7_mf`, added a document from
+Documents, held one back with a reason, added a couldn't-find line, exported (checked the real
+copied file + `contents.txt` on disk), confirmed History shows every action with working Undo
+(export correctly has none). **The test data was removed from the case afterward through the
+app's own `gather/delete` and `recipient/remove` verbs** (curl, not hand-editing the sidecar) —
+so the case's own audit trail stays honest about what actually happened, rather than being
+silently edited out from under it.
+
+**A real UI gotcha hit while testing, worth knowing:** a native `confirm()` dialog (used by
+"Save to my Mac", same as every other destructive-ish button in this app) does not fire in the
+in-app browser tool used for verification here — it auto-cancels. Verify an action gated by
+`confirm()` with a direct `fetch()`/curl POST to the verb instead of clicking the button when
+testing this way; the button itself is fine for a real person, who does see the dialog.
+
+**Decided this session, no code to write:** Richard only wants vital/not-vital, not the
+mockups' three-way Important/Normal/Less-important control — the existing binary star stays, as
+its own separate axis from vital (someone might star a non-vital document). See the entry below
+this one for the full reasoning; this line is just the pointer so it isn't re-derived.
+
+**Blocked:** nothing.
+
+**Known issues not yet filed:**
+- No UI yet to manage saved recipients beyond "type a new one when creating a folder" (the
+  index page shows a remove link per saved name, but there's no dedicated add-without-creating-
+  a-folder flow). Not asked for; flagging in case it's wanted later.
+- The Gather folder's "Edit folder" and "New folder for someone" modals share one function
+  (`openGatherEditor`) with no visual distinction beyond the title/button label — fine for now,
+  revisit if the two ever need to diverge.
+
+**Next action:** `cd ~/mac_family_archive && git log --oneline -6 && ./run_tests.sh` before
+touching anything; nothing is pushed or PR'd yet from this session.
+
+---
+
 ### 2026-10-15, later yet — demo-vs-built gap check, by reading code (not trusting the brainstorm memory)
 
 **Why this entry exists:** the user asked for a side-by-side of what the 2026-10-09–14 mockup
