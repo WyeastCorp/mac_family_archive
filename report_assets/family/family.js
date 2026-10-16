@@ -4424,6 +4424,15 @@
         var gt = el("button", "btn small", "Gather for…");
         gt.onclick = function () { addToGather([r.file]); };
         acts.appendChild(gt);
+        var tk = el("button", "btn small danger", "Take out…");
+        tk.onclick = function () {
+          textPrompt("Why is it coming out? (Optional. Nothing is deleted — " +
+                     "reversible from History.)", "", function (reason) {
+            docsAct("/api/take-out", { file: r.file, reason: reason },
+              "Took out " + r.name);
+          });
+        };
+        acts.appendChild(tk);
         if (view.coll) {
           var rm = el("button", "btn small", "Remove from this collection");
           rm.onclick = function () {
