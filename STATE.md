@@ -54,19 +54,22 @@ demo-derived if someone goes looking for them on the canvas.
 - The "Gather for someone…" helper and its "Handed over" bundle tracking — absent entirely.
 - The mockup's ruled/numbered-sheet document-row style — only typography/color were applied.
 
-**A real naming/behavior drift worth a decision, not just a note:** both mockups ("TODAY" and
-"WISHLIST" alike) replaced the star with one three-way **Important / Normal / Less important**
-control (decided 2026-10-11) — the real build never made that change and still has a binary ☆
-star (`favorite_curation`) plus a separate significance score driving a different filter. Also,
-the final 2026-10-14 tab decision said "Texts"; the shipped code says "Messages". Neither is fixed
-in this round — flagging for a decision (intentional rename vs. drift) before anyone treats either
-mockup as the current spec for either of these two points.
+**A real naming/behavior drift, flagged for a decision:** both mockups ("TODAY" and "WISHLIST"
+alike) replaced the star with one three-way **Important / Normal / Less important** control
+(decided 2026-10-11) — the real build never made that change and still has a binary ☆ star
+(`favorite_curation`) plus a separate significance score driving a different filter. **Resolved
+2026-10-15: the user decided to keep the real build's model, not the mockups'.** Richard only
+cares about vital/not-vital; a star is its own, separate thing — a PR might star a non-vital
+document for sentimental reasons, independent of vital status. No code change — current behavior
+already matches. The mockups' single control is superseded, not a gap to close.
 
-**Blocked:** nothing.
+Still open, not decided this round: the final 2026-10-14 tab decision said "Texts"; the shipped
+code says "Messages". Intentional rename or drift — ask before treating either as correct.
 
-**Next action:** none required; this was a status check, not new work. If the Important/star
-divergence or the Messages/Texts naming should be reconciled, that's a product decision, not a
-bug fix — ask before picking a direction.
+**Blocked:** on the user, for the Messages/Texts naming question only.
+
+**Next action:** none required for the star/vital point (closed). If Messages/Texts should be
+reconciled, that's a naming decision, not a bug fix — ask before picking a direction.
 
 ---
 
