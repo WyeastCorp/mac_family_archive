@@ -534,6 +534,24 @@ and open a PR — nothing has been committed yet.
 
 ---
 
+### 2026-10-16 — date_index.json contract written down for the front end
+
+**What changed**
+- `docs/date_index_contract.md` describes what Wyeast's `date_index` stage writes, with synthetic
+  examples: `items[].date_used` and its `basis` values, the ranked `operative_views` (wills, POAs,
+  trusts, beneficiary forms) and the new tier 2 `account_views` (statements grouped by account).
+  Only `date_used` is displayed here today, and only to the examiner. The two views have no UI yet.
+
+**To refresh a case's dates** (the pipeline is not here): re-run `date_index` in Wyeast and copy
+`output/metadata/date_index.json` and `vital_doc_provenance.json` into the case. Whether a case
+has tier 2 data: `python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('tier'))" <case>/output/metadata/date_index.json`
+
+**Blocked:** nothing.
+
+**Next action:** decide whether the family role sees the ranked views before building them.
+
+---
+
 ### 2026-10-14 — CI no longer fails on edits to carried files
 
 **What changed**
