@@ -205,7 +205,7 @@
     var url = "/" + (target.page || "overview"), q = [];
     ["person", "scene", "place", "event", "thread", "conversation", "venue", "tab",
      "media", "vperson", "vscene", "favorite_curation", "collection_curation", "people",
-     "rec"].forEach(function (k) {
+     "rec", "gslug"].forEach(function (k) {
       var v = target[k] != null ? target[k] : target[k + "_id"];
       if (v != null && v !== "") q.push(k + "=" + encodeURIComponent(v));
     });
@@ -244,7 +244,8 @@
     ["person", "scene", "place", "event", "thread", "media", "cat", "subcat", "vital", "docview",
      "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
-     "vperson", "vscene", "favorite_curation", "collection_curation", "people"]
+     "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug",
+     "year", "arrange"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
     return location.pathname + (q.length ? "?" + q.join("&") : "");
   }
@@ -529,15 +530,30 @@
   }
 
   // ── shell ──
+  // Top nav (2026-10-15 decision): a slim bar, not the old full-PAGES sidebar —
+  // scoped to the 4 areas the archive is now organized around.
+  var TOP_NAV = [["documents", "Documents"], ["emails", "Emails"], ["messages", "Messages"],
+                 ["report", "Report"]];
   function shell() {
     var app = document.getElementById("app");
     app.innerHTML = "";
     if (CTX.solo) return soloShell(app);
-    var sh = el("div", "shell");
-    var rail = el("nav", "rail");
-    rail.setAttribute("role", "navigation");
-    rail.setAttribute("aria-label", "Archive sections");
-    rail.innerHTML = '<div class="brand"><span class="mark">Wyeast</span><span class="sub">Family Archive</span></div>';
+    var sh = el("div", "shell topnav");
+    var bar = el("nav", "topbar");
+    bar.setAttribute("role", "navigation");
+    bar.setAttribute("aria-label", "Archive sections");
+    bar.appendChild(el("div", "brand",
+      '<span class="mark">Wyeast</span><span class="sub">Family Archive</span>'));
+    var links = el("div", "topbar-links");
+    TOP_NAV.forEach(function (item) {
+      var key = item[0], label = item[1];
+      var active = key === CTX.page;
+      var a = el("a", "navlink" + (active ? " active" : ""), esc(label));
+      a.href = "/" + key;
+      if (active) a.setAttribute("aria-current", "page");
+      links.appendChild(a);
+    });
+    bar.appendChild(links);
     // Full-text search box — present on every page (family-archive-full-text-search.md).
     // CSP-safe: no inline handlers, submit navigates to the /search results page.
     var railForm = el("form", "railsearch");
@@ -554,18 +570,10 @@
       var v = railInput.value.trim();
       location.href = v ? "/search?q=" + encodeURIComponent(v) : "/search";
     });
-    rail.appendChild(railForm);
-    (CTX.nav || []).forEach(function (item) {
-      var active = item.key === CTX.page;
-      var a = el("a", "navlink" + (active ? " active" : ""), esc(item.label));
-      a.href = "/" + item.key;
-      if (active) a.setAttribute("aria-current", "page");
-      rail.appendChild(a);
-    });
-    rail.appendChild(el("div", "spacer"));
-    rail.appendChild(el("div", "casemeta", esc(CTX.case_id) + '<br><span class="role-pill">' + esc(CTX.role) + '</span>'));
+    bar.appendChild(railForm);
+    bar.appendChild(el("div", "casemeta", esc(CTX.case_id) + ' <span class="role-pill">' + esc(CTX.role) + '</span>'));
     var main = el("main", "main"); main.id = "main"; main.setAttribute("role", "main");
-    sh.appendChild(rail); sh.appendChild(main); app.appendChild(sh);
+    sh.appendChild(bar); sh.appendChild(main); app.appendChild(sh);
     return main;
   }
 
@@ -1728,6 +1736,48 @@
     }).catch(function (e) { toast("Couldn't load collections: " + (e && e.message)); });
   }
 
+  // Same shape as addToCollection, for a Gather-for-someone folder: pick an
+  // existing one or type a new folder name (recipient/ask/cover note are set
+  // afterward on the /gather page's Edit — this picker only decides WHICH
+  // folder gets the document, same one-click motion as Add to collection).
+  function addToGather(ids) {
+    getJSON("/api/gather").then(function (d) {
+      var folders = (d && d.gathers) || [];
+      var body = el("div");
+      body.appendChild(el("p", "pickmodal-note",
+        esc("Add " + ids.length + " item(s) to a gather-for-someone folder.")));
+      var sel = el("select", "pickmodal-sel");
+      sel.appendChild(new Option("— New folder —", ""));
+      folders.forEach(function (g) {
+        sel.appendChild(new Option(g.title + (g.recipient ? " (" + g.recipient + ")" : ""), g.slug));
+      });
+      var input = el("input", "pickmodal-sel");
+      input.type = "text"; input.placeholder = "New folder name, e.g. “For the CPA”";
+      function sync() { input.style.display = sel.value ? "none" : ""; }
+      sel.onchange = sync; sync();
+      body.appendChild(sel); body.appendChild(input);
+      pickmodal("Gather for someone", body, {
+        onConfirm: function (close) {
+          var slug = sel.value, name = input.value.trim();
+          if (slug) {
+            var picked = folders.filter(function (g) { return g.slug === slug; })[0];
+            close();
+            doVerb("/api/gather/add", { slug: slug, ids: ids }, "Added to " + (picked ? picked.title : slug));
+          } else if (name) {
+            close();
+            postJSON("/api/gather/create", { title: name }).then(function (res) {
+              if (!res.ok) { toast((res.j && res.j.error) || "Couldn't create folder"); return; }
+              doVerb("/api/gather/add", { slug: res.j.slug, ids: ids }, "Added to " + name);
+            });
+          } else {
+            toast("Pick a folder or type a new name.");
+          }
+        },
+      });
+      try { sel.focus(); } catch (e) { /* no focus */ }
+    }).catch(function (e) { toast("Couldn't load gather folders: " + (e && e.message)); });
+  }
+
   // Per-photo actions shown in the zoom/lightbox (#13).
   function photoActions(r, card, win) {
     var acts = [
@@ -2843,6 +2893,34 @@
     });
   }
 
+  // Collapse `node` to nothing in place (fade + height/margin to 0), then
+  // remove it and call `done()` — used instead of a full render() for a
+  // checklist action (dismiss/reassign) so the item just disappears where it
+  // was, with no page-wide rebuild and no scroll jump (#checklist-jump).
+  function fadeOutAndRemove(node, done) {
+    var h = node.getBoundingClientRect().height;
+    node.style.overflow = "hidden";
+    node.style.height = h + "px";
+    node.style.transition = "height .2s ease, opacity .2s ease, margin .2s ease, padding .2s ease";
+    // Force a reflow so the browser registers the starting height before we
+    // animate to the end state — otherwise the two style writes coalesce and
+    // nothing animates.
+    void node.offsetHeight;
+    node.style.opacity = "0";
+    node.style.height = "0";
+    node.style.marginTop = "0"; node.style.marginBottom = "0";
+    node.style.paddingTop = "0"; node.style.paddingBottom = "0";
+    var finished = false;
+    function finish() {
+      if (finished) return;
+      finished = true;
+      node.remove();
+      if (done) done();
+    }
+    node.addEventListener("transitionend", finish, { once: true });
+    setTimeout(finish, 400);   // belt-and-braces: a transition that never fires (display:none ancestor, etc.) still cleans up
+  }
+
   // Near-miss review drawer (examiner-only): the candidate hits for one vital-doc
   // target that did NOT make the checklist, with WHY, and a deep link to each.
   //
@@ -3104,181 +3182,6 @@
     return box;
   }
 
-  // G-2: full vital-documents checklist — one row per searched-for document type,
-  // ✓ found (deep-links to the doc[s]) or "not found in this collection". All
-  // estate-derived text (labels, item names, tags) is escaped via esc().
-  function vitalDocsPanel(main, vd) {
-    // #17: a promote/dismiss (single or batched) triggers a full render(), which
-    // rebuilds this panel from scratch — drop any selection state and floating
-    // bar left over from the PREVIOUS build so a stale #vselbar (bound to rows
-    // that no longer exist) never leaks into the new one.
-    VITAL_SEL = {};
-    var staleVBar = document.getElementById("vselbar"); if (staleVBar) staleVBar.remove();
-    if (!vd) return;
-    if (vd.available === false) {
-      main.appendChild(el("p", "notice", "Vital-document scan not available for this case."));
-      return;
-    }
-    if (!vd.available) return;
-    var panel = el("section", "vitals-panel");
-    panel.appendChild(el("h2", null, "Vital documents"));
-    panel.appendChild(el("p", "vitals-tally",
-      esc(num(vd.found_count) + " of " + num(vd.total_count) +
-          " key document types found in this collection.")));
-    var rows = el("div", "vitals-rows");
-    (vd.targets || []).forEach(function (t) {
-      var row = el("div", "vitals-row " + (t.found ? "found" : "missing"));
-      var rhead = el("div", "vitals-row-head");
-      rhead.innerHTML = '<span class="vmark">' + (t.found ? "✓" : "—") + '</span>' +
-        '<span class="vlabel">' + esc(t.label) + '</span>';
-      if (EXAMINER && t.near_miss_count) {  // near-miss hits, examiner-only
-        // Was a dead span: it stated a number and gave no way to look at it, so
-        // reviewing a near-miss meant opening vital_doc_candidates.json on the
-        // workstation by hand. Now it opens the list inline.
-        var drawer = el("div", "vcand-drawer");
-        drawer.hidden = true;
-        var toggle = el("button", "vcand",
-          num(t.near_miss_count) + " near-miss" + (t.near_miss_count === 1 ? "" : "es"));
-        toggle.setAttribute("aria-expanded", "false");
-        toggle.onclick = (function (tgt, btn, box, vdoc) {
-          return function () {
-            if (!box.hidden) {                       // collapse
-              box.hidden = true;
-              btn.setAttribute("aria-expanded", "false");
-              delete NEARMISS_OPEN[tgt];             // stay closed across renders
-              return;
-            }
-            box.hidden = false;
-            btn.setAttribute("aria-expanded", "true");
-            NEARMISS_OPEN[tgt] = NEARMISS_OPEN[tgt] || 0;
-            // vd carries all_targets, which the row's Reassign picker needs.
-            if (!box.dataset.loaded) nearMissLoad(tgt, box, 0, vdoc);
-          };
-        })(t.target, toggle, drawer, vd);
-        rhead.appendChild(toggle);
-        if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
-        row.appendChild(rhead);
-        row.appendChild(drawer);
-        // Re-open a drawer the examiner had open before this render, as deep as
-        // they had paged it. One request for `want` rows, not one per page — the
-        // server clamps to MAX_PAGE_LIMIT, past which the "Show more" button is
-        // still there to carry on.
-        if (NEARMISS_OPEN[t.target] != null) {
-          drawer.hidden = false;
-          toggle.setAttribute("aria-expanded", "true");
-          nearMissLoad(t.target, drawer, 0, vd, NEARMISS_OPEN[t.target]);
-          // The panel is rebuilt from the top, so the row they were working in
-          // may be off-screen now. Put it back in front of them.
-          scrollBackTo(row);
-        }
-      } else {
-        // Retrieval can hit the cap even with no near-misses left to review (every
-        // hit already confirmed/dismissed) — the truncation still means more
-        // candidates may exist unretrieved, so flag it whether or not a drawer opened.
-        if (EXAMINER && t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
-        row.appendChild(rhead);
-      }
-      if (t.found) {
-        var items = el("div", "vitals-items");
-        (t.items || []).forEach(function (it) {
-          var label = it.name || it.tag || "document";
-          var itemRow = el("div", "vitals-item");
-          if (it.file_id) {
-            var a = el("a", "vitals-link", esc(label));
-            a.href = "#";
-            a.onclick = function (e) { e.preventDefault(); go({ open: true, file: it.file_id }); };
-            itemRow.appendChild(a);
-          } else if (it.thread_id) {
-            // Email-sourced vital doc: it lives in the Emails section, not the
-            // documents view, so deep-link into its conversation rather than
-            // printing a dead `message_43267.eml`. Prefer the conversation
-            // SUBJECT as the label — the .eml basename is meaningless to a family.
-            // "(no subject)" matches how the Emails list labels this same thread,
-            // so the row and its destination read alike.
-            var ta = el("a", "vitals-link", esc(it.thread_subject || "(no subject)"));
-            ta.href = "#";
-            ta.onclick = (function (tid) {
-              return function (e) { e.preventDefault(); go({ page: "emails", thread: tid }); };
-            })(it.thread_id);
-            itemRow.appendChild(ta);
-            itemRow.appendChild(el("span", "vitals-inemails", "in Emails"));
-          } else if (it.conversation_id) {
-            // Messages-equivalent of the email deep link above (#26): a vital doc
-            // sourced from a chat/SMS database chunk deep-links into Messages
-            // instead of printing a dead `chat.db#chunk=...` stub.
-            var ca = el("a", "vitals-link", esc(it.conversation_subject || "(conversation)"));
-            ca.href = "#";
-            ca.onclick = (function (cid) {
-              return function (e) { e.preventDefault(); go({ page: "messages", conversation: cid }); };
-            })(it.conversation_id);
-            itemRow.appendChild(ca);
-            itemRow.appendChild(el("span", "vitals-inemails", "in Messages"));
-          } else if (it.recording_id) {
-            // A vital doc evidenced by a voicemail/recording transcript (#32)
-            // opens the recording detail (player + transcript).
-            var ra = el("a", "vitals-link", esc(it.recording_name || label));
-            ra.href = "#";
-            ra.onclick = (function (rid) {
-              return function (e) { e.preventDefault(); go({ page: "recordings", rec: rid }); };
-            })(it.recording_id);
-            itemRow.appendChild(ra);
-            itemRow.appendChild(el("span", "vitals-inemails", "in Recordings"));
-          } else {
-            itemRow.appendChild(el("span", "vitals-noitem", esc(label)));
-          }
-          if (EXAMINER) {
-            // Examiner-only DECISIONS-OVERLAY actions (audited + reversible; the
-            // pipeline index vital_doc_confirmed.json is never touched). The vital-doc
-            // id contains a path — always pass it in the JSON BODY, never inline it.
-            // Confirm — the affirmative "yes, this is the document" the release gate
-            // requires (every vital item must be confirmed, dismissed, or reassigned).
-            if (it.reviewed) {
-              itemRow.appendChild(el("span", "vitals-reviewed", "✓ Confirmed"));
-            } else {
-              var confirm = el("button", "vitals-act primary", "Confirm");
-              confirm.onclick = function () {
-                doVerb("/api/vital/confirm", { id: it.id }, "Confirmed vital document")
-                  .then(function (x) { if (x) render(); });
-              };
-              itemRow.appendChild(confirm);
-            }
-            var dismiss = el("button", "vitals-act", "Not a vital document");
-            dismiss.onclick = function () {
-              doVerb("/api/vital/dismiss", { id: it.id }, "Dismissed vital match")
-                .then(function (x) { if (x) render(); });   // re-render Documents (fresh vital_docs)
-            };
-            itemRow.appendChild(dismiss);
-            var reassign = el("button", "vitals-act", "Reassign…");
-            reassign.onclick = function () {
-              pickVitalTarget("Reassign this document", vd.all_targets, t.target, function (to) {
-                // If the doc matches >1 vital category, ask whether to move all of
-                // them (global) or just this one (single); a single-category doc
-                // needs no prompt — the two scopes are identical.
-                var cats = vitalPathTargets(vd, it.path);
-                function send(scope) {
-                  doVerb("/api/vital/reassign",
-                    { id: it.id, to_target: to, scope: scope }, "Reassigned vital document")
-                    .then(function (x) { if (x) render(); });
-                }
-                if (cats.length > 1) { pickScope(cats.length, send); } else { send("single"); }
-              });
-            };
-            itemRow.appendChild(reassign);
-          }
-          var srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
-          items.appendChild(itemRow);
-          if (srcBox) items.appendChild(srcBox);
-        });
-        row.appendChild(items);
-      } else {
-        row.appendChild(el("div", "vitals-none", "Not found in this collection."));
-      }
-      rows.appendChild(row);
-    });
-    panel.appendChild(rows);
-    main.appendChild(panel);
-  }
-
   // ── Documents: folder tree + list/detail browser ──
   // Left: a tree of every way into the documents (all, the vital kinds grouped,
   // the vital checklist, the categories with their financial sub-categories, and
@@ -3396,14 +3299,381 @@
     });
   }
 
+  // Report (2026-10-15): Sections 1-2 only ("what's here" / "what wasn't
+  // found") — see report_data's docstring for why Section 3 ("where the
+  // archive isn't sure") isn't built: no real question-generation feature
+  // exists yet, and this never fabricates one. A key/value "sheet" row,
+  // matching the mockup's plain summary-row style (not the ruled/numbered
+  // document-list style, which is a different, not-yet-applied piece).
+  // `k` is raw text (goes through txt()/textContent, so never pre-escape it);
+  // `vHtml` is already-safe HTML (goes into innerHTML — esc() it yourself first).
+  function reportRow(k, vHtml) {
+    var row = el("div", "rr");
+    row.appendChild(txt("span", "k", k));
+    var v = el("span", "v"); v.innerHTML = vHtml;
+    row.appendChild(v);
+    return row;
+  }
+  P.report = function (main, data) {
+    head(main, "Report", "Report", "Three kept-apart statements: what the archive holds, " +
+        "what it could not find, and what it hasn't resolved yet. Nothing here is a to-do.");
+    if (!data.available) {
+      main.appendChild(el("p", "notice",
+        "The vital-document checklist hasn't run for this case yet, so Section 2 (what wasn't " +
+        "found) has nothing to report. Section 1 still shows what's here."));
+    }
+
+    // Processed (2026-10-15): the same totals the Overview tiles show, one
+    // sheet — the evidence base for a numbers-backed report, not a new count.
+    var procOrder = [["documents", "Documents"], ["emails", "Emails"], ["messages", "Messages"],
+                      ["photos", "Photos"], ["audio", "Audio"], ["videos", "Videos"]];
+    var proc = data.processed || {};
+    var sheetP = el("div", "sheet"); main.appendChild(el("h2", "sec", "Processed"));
+    main.appendChild(sheetP);
+    procOrder.forEach(function (o) {
+      var n = proc[o[0]];
+      if (n == null) return;
+      sheetP.appendChild(reportRow(o[1], num(n)));
+    });
+
+    main.appendChild(el("h2", "sec", "1 · What's here"));
+    var total = 0; (data.here_folders || []).forEach(function (f) { total += f.count; });
+    main.appendChild(el("p", "lede", num(total) + " documents, filed into " +
+      (data.here_folders || []).length + " folders."));
+    var sheet1 = el("div", "sheet"); main.appendChild(sheet1);
+    (data.here_folders || []).forEach(function (f) {
+      var pctTxt = (f.pct != null) ? " <span class='pct'>(" + f.pct + "%)</span>" : "";
+      sheet1.appendChild(reportRow(pretty(f.name),
+        "<a href='/documents?cat=" + encodeURIComponent(f.name) + "'>" + num(f.count) + "</a>" + pctTxt));
+    });
+    if (!(data.here_folders || []).length) sheet1.appendChild(el("p", "notice", "No documents yet."));
+
+    if (data.available) {
+      main.appendChild(el("h3", "sec3", "Vital documents found"));
+      var foundPctTxt = (data.found_pct != null) ? " (" + data.found_pct + "%)" : "";
+      main.appendChild(el("p", "lede", num(data.found_count) + " of " + num(data.total_count) +
+        " kinds searched for were found" + foundPctTxt + "."));
+      var sheet2 = el("div", "sheet"); main.appendChild(sheet2);
+      (data.here_vital || []).forEach(function (v) {
+        sheet2.appendChild(reportRow(v.name, num(v.count)));
+      });
+      if (!(data.here_vital || []).length) sheet2.appendChild(el("p", "notice", "None found yet."));
+
+      main.appendChild(el("h2", "sec", "2 · What wasn't found"));
+      main.appendChild(el("p", "lede",
+        "“Not found” means not in the archive, within what was searched. " +
+        "It never means the thing doesn't exist."));
+      var sheet3 = el("div", "sheet"); main.appendChild(sheet3);
+      (data.not_found || []).forEach(function (m) {
+        sheet3.appendChild(reportRow(m.area, esc(m.what)));
+      });
+      if (!(data.not_found || []).length) sheet3.appendChild(el("p", "notice",
+        "Every kind the archive searches for was found."));
+
+      // Section 3 (2026-10-16), examiner-only — see report_data's docstring
+      // for why this is real open items (unconfirmed finds, near-miss
+      // candidates) and NOT the mockup's per-document questions, which would
+      // need AI question-generation this pipeline doesn't have.
+      if ((data.unsure || []).length) {
+        main.appendChild(el("h2", "sec", "3 · Where the archive isn't sure"));
+        main.appendChild(el("p", "lede",
+          "A kind below has a found document the examiner hasn't confirmed yet, " +
+          "or candidates the archive wasn't confident enough to list automatically. " +
+          "Review them on the "));
+        var lede3 = main.lastChild;
+        var clink = el("a", null, "Checklist"); clink.href = "/documents?docview=checklist";
+        lede3.appendChild(clink); lede3.appendChild(document.createTextNode("."));
+        var sheet4 = el("div", "sheet"); main.appendChild(sheet4);
+        data.unsure.forEach(function (u) {
+          var bits = [];
+          if (u.unconfirmed) bits.push(num(u.unconfirmed) + " not yet confirmed");
+          if (u.near_miss) bits.push(num(u.near_miss) + " near-miss" + (u.near_miss === 1 ? "" : "es"));
+          sheet4.appendChild(reportRow(u.what, esc(bits.join(" · "))));
+        });
+      }
+    }
+  };
+
+  // ── Gather-for-someone (2026-10-15): manual folders for one recipient at a
+  // time, built like Collections (browse, pick, add — never a search the
+  // archive runs on the PR's behalf). A member's status is possible or
+  // left_out; "left_out" is never a removal, and shows on the saved contents
+  // page with its reason, same honesty rule as a "couldn't find" line having
+  // no file behind it. See memory richard-feedback-report for why this
+  // exists, and STATE.md 2026-10-15 for the decisions it was built from. ──
+
+  function openGatherEditor(existing, recipients) {
+    var body = el("div");
+    var titleInput = el("input", "pickmodal-sel");
+    titleInput.type = "text"; titleInput.placeholder = "Folder name, e.g. “For the CPA”";
+    titleInput.value = existing ? existing.title : "";
+
+    var sel = el("select", "pickmodal-sel");
+    sel.appendChild(new Option("— No recipient set —", ""));
+    recipients.forEach(function (name) { sel.appendChild(new Option(name, name)); });
+    var recInput = el("input", "pickmodal-sel");
+    recInput.type = "text"; recInput.placeholder = "Or type a new recipient";
+    if (existing && existing.recipient) {
+      if (recipients.indexOf(existing.recipient) >= 0) sel.value = existing.recipient;
+      else recInput.value = existing.recipient;
+    }
+
+    var askInput = el("textarea", "pickmodal-sel");
+    askInput.placeholder = "What did they ask for? (optional)";
+    askInput.value = (existing && existing.ask) || "";
+
+    var noteInput = el("textarea", "pickmodal-sel");
+    noteInput.placeholder = "Cover note — goes on the contents page (optional)";
+    noteInput.value = (existing && existing.cover_note) || "";
+
+    body.appendChild(el("label", null, "Folder name"));
+    body.appendChild(titleInput);
+    body.appendChild(el("label", null, "Who is it for?"));
+    body.appendChild(sel);
+    body.appendChild(recInput);
+    body.appendChild(el("label", null, "What did they ask for?"));
+    body.appendChild(askInput);
+    body.appendChild(el("label", null, "Cover note"));
+    body.appendChild(noteInput);
+
+    pickmodal(existing ? "Edit folder" : "New folder for someone", body, {
+      confirmLabel: existing ? "Save" : "Create",
+      onConfirm: function (close) {
+        var title = titleInput.value.trim();
+        if (!title) { toast("Give the folder a name."); return; }
+        var recipient = recInput.value.trim() || sel.value;
+        var ask = askInput.value.trim();
+        var note = noteInput.value.trim();
+        close();
+        var saved = (recipient && recipients.indexOf(recipient) === -1)
+          ? postJSON("/api/recipient/add", { name: recipient }) : Promise.resolve();
+        saved.then(function () {
+          if (existing) {
+            doVerb("/api/gather/update",
+              { slug: existing.slug, title: title, recipient: recipient, ask: ask, cover_note: note },
+              "Folder updated").then(function (x) { if (x) render(); });
+          } else {
+            postJSON("/api/gather/create", { title: title, recipient: recipient, ask: ask, cover_note: note })
+              .then(function (res) {
+                if (!res.ok) { toast((res.j && res.j.error) || "Couldn't create folder"); return; }
+                toast("Folder created");
+                render();
+              });
+          }
+        });
+      },
+    });
+    try { titleInput.focus(); } catch (e) { /* no focus */ }
+  }
+
+  function gatherMemberRow(g, m) {
+    var row = el("div", "rr");
+    var k = el("span", "k");
+    k.appendChild(document.createTextNode(m.name));
+    if (!m.known) k.appendChild(txt("span", "docs-hint inline", " (no longer in Documents)"));
+    row.appendChild(k);
+    var v = el("span", "v");
+    if (m.category) v.appendChild(txt("span", "docs-hint inline", pretty(m.category) + " · "));
+    if (m.status === "possible") {
+      var hold = el("button", "linkbtn", "Leave out");
+      hold.onclick = function () {
+        textPrompt("Why is it being held back? (optional, shown on the contents page)", "", function (reason) {
+          doVerb("/api/gather/mark", { slug: g.slug, id: m.id, status: "left_out", reason: reason },
+            m.name + " held back").then(function (x) { if (x) render(); });
+        });
+      };
+      v.appendChild(hold);
+    } else {
+      if (m.reason) v.appendChild(txt("span", "docs-hint inline", "(" + m.reason + ") "));
+      var back = el("button", "linkbtn", "Make possible");
+      back.onclick = function () {
+        doVerb("/api/gather/mark", { slug: g.slug, id: m.id, status: "possible" },
+          m.name + " back in").then(function (x) { if (x) render(); });
+      };
+      v.appendChild(back);
+    }
+    v.appendChild(document.createTextNode(" · "));
+    var rm = el("button", "linkbtn", "Remove");
+    rm.onclick = function () {
+      doVerb("/api/gather/remove", { slug: g.slug, ids: [m.id] }, "Removed " + m.name)
+        .then(function (x) { if (x) render(); });
+    };
+    v.appendChild(rm);
+    row.appendChild(v);
+    return row;
+  }
+
+  function renderGatherDetail(main, g, recipients) {
+    backLink(main, "Gather for someone", { page: "gather" });
+    head(main, "Gather for someone", g.title,
+      (g.recipient ? "For " + g.recipient + ". " : "") +
+      num(g.possible_count) + " document(s) to include.");
+
+    var tools = el("div", "docs-acts");
+    var editBtn = el("button", "btn small", "Edit folder");
+    editBtn.onclick = function () { openGatherEditor(g, recipients); };
+    tools.appendChild(editBtn);
+    var delBtn = el("button", "btn small danger", "Delete folder");
+    delBtn.onclick = function () {
+      if (!confirm("Delete “" + g.title + "”? The documents are kept. Reversible from History."))
+        return;
+      doVerb("/api/gather/delete", { slug: g.slug }, "Folder deleted")
+        .then(function (x) { if (x) go({ page: "gather" }); });
+    };
+    tools.appendChild(delBtn);
+    main.appendChild(tools);
+
+    if (g.ask) main.appendChild(el("p", "docs-hint", "Asked for: " + esc(g.ask)));
+    if (g.cover_note) main.appendChild(el("p", "docs-hint", "Cover note: " + esc(g.cover_note)));
+
+    main.appendChild(el("h3", "sec3", "Possible (" + num(g.possible_count) + ")"));
+    var possible = g.members.filter(function (m) { return m.status === "possible"; });
+    var sheetP = el("div", "sheet"); main.appendChild(sheetP);
+    possible.forEach(function (m) { sheetP.appendChild(gatherMemberRow(g, m)); });
+    if (!possible.length) sheetP.appendChild(el("p", "notice",
+      "Nothing yet. Browse Documents, then “Gather for…” on a document."));
+
+    if (g.left_out_count) {
+      main.appendChild(el("h3", "sec3", "Left out on purpose (" + num(g.left_out_count) + ")"));
+      var sheetL = el("div", "sheet"); main.appendChild(sheetL);
+      g.members.filter(function (m) { return m.status === "left_out"; })
+        .forEach(function (m) { sheetL.appendChild(gatherMemberRow(g, m)); });
+    }
+
+    main.appendChild(el("h3", "sec3", "Couldn't find (" + num(g.missing.length) + ")"));
+    var sheetM = el("div", "sheet"); main.appendChild(sheetM);
+    g.missing.forEach(function (mi) {
+      var row = el("div", "rr");
+      row.appendChild(txt("span", "k", mi.text));
+      var v = el("span", "v");
+      var rm = el("button", "linkbtn", "Remove");
+      rm.onclick = function () {
+        doVerb("/api/gather/missing/remove", { slug: g.slug, id: mi.id }, "Removed")
+          .then(function (x) { if (x) render(); });
+      };
+      v.appendChild(rm);
+      row.appendChild(v);
+      sheetM.appendChild(row);
+    });
+    if (!g.missing.length) sheetM.appendChild(el("p", "notice", "Nothing missing, yet."));
+    var addMiss = el("button", "btn small", "Add a couldn't-find line");
+    addMiss.onclick = function () {
+      textPrompt("Something searched for and not found:", "", function (text) {
+        if (!text.trim()) return;
+        doVerb("/api/gather/missing/add", { slug: g.slug, text: text.trim() }, "Added")
+          .then(function (x) { if (x) render(); });
+      });
+    };
+    main.appendChild(addMiss);
+
+    var saveBtn = el("button", "btn primary", "Save to my Mac");
+    saveBtn.disabled = !g.possible_count;
+    saveBtn.onclick = function () {
+      if (!confirm("Save " + num(g.possible_count) + " document(s) to a new folder on your Mac?")) return;
+      doVerb("/api/gather/export", { slug: g.slug }, "Saved").then(function (x) {
+        if (x) { if (x.skipped) toast(x.skipped + " item(s) skipped — see History"); render(); }
+      });
+    };
+    main.appendChild(saveBtn);
+
+    main.appendChild(el("h3", "sec3", "Saved before"));
+    if (!g.handoffs.length) {
+      main.appendChild(el("p", "notice", "Not saved yet."));
+    } else {
+      var sheetH = el("div", "sheet"); main.appendChild(sheetH);
+      g.handoffs.forEach(function (h) {
+        sheetH.appendChild(reportRow(String(h.ts || "").replace("T", " "),
+          num(h.count) + " document(s)" + (h.skipped ? ", " + num(h.skipped) + " skipped" : "")));
+      });
+    }
+  }
+
+  P.gather = function (main, data) {
+    var folders = data.gathers || [];
+    var recipients = data.recipients || [];
+
+    if (Q.gslug) {
+      var g = folders.filter(function (x) { return x.slug === Q.gslug; })[0];
+      if (!g) {
+        backLink(main, "Gather for someone", { page: "gather" });
+        main.appendChild(el("p", "notice", "That folder no longer exists."));
+        return;
+      }
+      renderGatherDetail(main, g, recipients);
+      return;
+    }
+
+    head(main, "Gather for someone", "Gather for someone",
+      "A folder for one recipient — what's in it, what's held back, and what " +
+      "couldn't be found, all visible on its own cover sheet when you save it.");
+
+    var nf = el("button", "btn primary", "New folder for someone");
+    nf.onclick = function () { openGatherEditor(null, recipients); };
+    main.appendChild(nf);
+
+    if (recipients.length) {
+      var rl = el("p", "docs-hint");
+      rl.appendChild(document.createTextNode("Saved recipients: "));
+      recipients.forEach(function (name, i) {
+        if (i) rl.appendChild(document.createTextNode(" · "));
+        rl.appendChild(document.createTextNode(name + " ("));
+        var x = el("button", "linkbtn", "remove");
+        x.onclick = function () {
+          doVerb("/api/recipient/remove", { name: name }, "Removed " + name)
+            .then(function (r) { if (r) render(); });
+        };
+        rl.appendChild(x);
+        rl.appendChild(document.createTextNode(")"));
+      });
+      main.appendChild(rl);
+    }
+
+    if (!folders.length) {
+      main.appendChild(el("p", "notice",
+        "No folders yet. Browse Documents, then “Gather for…” on a document, " +
+        "or start one here."));
+      return;
+    }
+    var grid = el("div", "collgrid"); main.appendChild(grid);
+    folders.forEach(function (g) {
+      var card = el("div", "collcard");
+      card.appendChild(el("h2", "collcard-h", esc(g.title)));
+      if (g.recipient) card.appendChild(el("p", "collcard-n", "For " + esc(g.recipient)));
+      var counts = num(g.possible_count) + " to include";
+      if (g.left_out_count) counts += " · " + num(g.left_out_count) + " left out";
+      if (g.missing.length) counts += " · " + num(g.missing.length) + " couldn't find";
+      card.appendChild(el("p", "collcard-n", counts));
+      card.appendChild(el("p", "collcard-n",
+        g.handoffs.length ? "Saved " + num(g.handoffs.length) + " time(s)" : "Not saved yet"));
+      var tools = el("div", "collcard-tools");
+      var open = el("button", "btn", "Open");
+      open.onclick = function () { go({ page: "gather", gslug: g.slug }); };
+      tools.appendChild(open);
+      var del = el("button", "btn danger", "Delete");
+      del.onclick = function () {
+        if (!confirm("Delete “" + g.title + "”? The documents are kept. Reversible from History."))
+          return;
+        doVerb("/api/gather/delete", { slug: g.slug }, "Folder deleted").then(function (x) { if (x) render(); });
+      };
+      tools.appendChild(del);
+      card.appendChild(tools);
+      grid.appendChild(card);
+    });
+  };
+
   P.documents = function (main, data) {
     var index = data.index || [];
+    var yearIndex = data.year_index || [];
     var vd = data.vital_docs || {};
     var total = 0;
     index.forEach(function (c) { total += c.count; });
     var ROWS = {};          // file → row, for drops and the viewer
     var view = { cat: Q.cat || "", subcat: Q.subcat || "", vital: Q.vital || "", docview: Q.docview || "",
-                 coll: Q.collection_curation || "" };
+                 coll: Q.collection_curation || "", year: Q.year || "" };
+    // By-year arrangement (2026-10-16): a separate axis from the folder tree
+    // itself, like layout — which PRIMARY list the tree shows (subject
+    // categories vs. years), not which one is selected within it.
+    var arrange = Q.arrange || prefGet("arrange", "subject");
     var COLLS = null;       // [{slug,title,count}] once fetched (examiner)
     var layout = Q.layout || prefGet("layout", "list");
     var sort = { by: Q.sort || "", dir: Q.dir || "" };
@@ -3417,21 +3687,38 @@
     // ── tree ──
     var open = prefGet("open", { vital: true, financial: true });
     var showSizes = prefGet("sizes", true);
+    // Documents-centric topic view CAN include emails (an email about the same
+    // topic, no attached file, shares the pipeline's category — see
+    // merge_email_category_counts). The Emails-centric view (?page=emails)
+    // never includes documents, by design — these are two separate views.
+    var includeEmails = prefGet("includeEmails", false);
     var maxCount = 1;
     index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
     var targets = vd.available ? (vd.targets || []) : [];
     var groups = vd.groups || [];
 
+    function refreshIndex() {
+      getJSON("/api/documents?limit=1" + (includeEmails ? "&include_emails=1" : "")).then(function (d) {
+        index = d.index || [];
+        yearIndex = d.year_index || [];
+        total = 0; index.forEach(function (c) { total += c.count; });
+        maxCount = 1; index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
+        drawTree();
+        var leadEl = main.querySelector(".pagehead-title .lead");
+        if (leadEl) leadEl.textContent = num(total) + " documents" + (includeEmails ? " (including emails)" : "") + ".";
+      });
+    }
+
     function isCurrent(spec) {
       return (spec.docview || "") === view.docview && (spec.cat || "") === view.cat &&
              (spec.subcat || "") === view.subcat && (spec.vital || "") === view.vital &&
-             (spec.coll || "") === view.coll;
+             (spec.coll || "") === view.coll && (spec.year || "") === view.year;
     }
     function pick(spec) {
       view = { cat: spec.cat || "", subcat: spec.subcat || "", vital: spec.vital || "", docview: spec.docview || "",
-               coll: spec.coll || "" };
+               coll: spec.coll || "", year: spec.year || "" };
       setQ({ cat: view.cat, subcat: view.subcat, vital: view.vital, docview: view.docview,
-             collection_curation: view.coll });
+             collection_curation: view.coll, year: view.year });
       clearSel();
       drawTree(); drawPane(true);
     }
@@ -3484,7 +3771,36 @@
       sz.setAttribute("aria-pressed", showSizes ? "true" : "false");
       sz.onclick = function () { showSizes = !showSizes; prefSet("sizes", showSizes); drawTree(); };
       tools.appendChild(sz);
+      var emChk = el("label", "chkflabel incemails");
+      var emBox = el("input"); emBox.type = "checkbox"; emBox.checked = includeEmails;
+      emBox.onchange = function () {
+        includeEmails = emBox.checked; prefSet("includeEmails", includeEmails);
+        refreshIndex(); drawPane(true);
+      };
+      emChk.appendChild(emBox); emChk.appendChild(document.createTextNode(" Include emails"));
+      tools.appendChild(emChk);
       tree.appendChild(tools);
+
+      // By-year arrangement (2026-10-16): which PRIMARY list the tree shows
+      // below Vital documents — subject categories (the only one before
+      // today) or years. Vital documents/Checklist above are unaffected
+      // either way. Built honestly: most cases will show a handful of real
+      // years and one large "No date" bucket, because the pipeline gives a
+      // date to only the ~13 vital document kinds — see documents_year_index.
+      var arr = el("div", "seg");
+      arr.setAttribute("role", "group"); arr.setAttribute("aria-label", "Arrange by");
+      [["subject", "By subject"], ["year", "By year"]].forEach(function (o) {
+        var b = el("button", null, o[1]); b.type = "button";
+        b.setAttribute("aria-pressed", arrange === o[0] ? "true" : "false");
+        b.onclick = function () {
+          if (arrange === o[0]) return;
+          arrange = o[0]; prefSet("arrange", arrange); setQ({ arrange: arrange });
+          pick({});   // the two lists are different folders — start from the root
+        };
+        arr.appendChild(b);
+      });
+      tree.appendChild(arr);
+
       var ul = el("ul", "tlist");
       trow(ul, { label: "All documents", count: total, spec: {} });
 
@@ -3526,6 +3842,17 @@
       }
 
       sep(ul);
+      if (arrange === "year") {
+        // Flat, not nested by subject within a year (the mockup's richer
+        // version) — a deliberate v1 simplification given how few documents
+        // have a year at all. "No date" always sorts last server-side,
+        // regardless of how large it is — it's usually the biggest folder.
+        yearIndex.forEach(function (y) {
+          trow(ul, { label: y.year === "nodate" ? "No date" : y.year, count: y.count,
+                     spec: { year: y.year } });
+        });
+        if (!yearIndex.length) ul.appendChild(el("li", "tnone", "No documents yet."));
+      } else {
       index.forEach(function (c) {
         var subs = c.subcategories || [];
         trow(ul, { label: pretty(c.category), count: c.count, key: subs.length ? c.category : null,
@@ -3545,6 +3872,7 @@
           });
         }
       });
+      }
 
       if (EXAMINER) {
         sep(ul);
@@ -3605,6 +3933,7 @@
         return ["Vital documents", t ? t.label : pretty(view.vital)];
       }
       if (view.cat) return view.subcat ? [pretty(view.cat), pretty(view.subcat)] : ["Documents", pretty(view.cat)];
+      if (view.year) return ["Documents", view.year === "nodate" ? "No date" : view.year];
       return [null, "All documents"];
     }
     function drawPane(fetch) {
@@ -3658,13 +3987,18 @@
 
       var ctl = el("div", "docs-ctl");
       var seg = el("div", "seg"); seg.setAttribute("role", "group"); seg.setAttribute("aria-label", "View");
+      var segButtons = [];
       [["list", "List"], ["detail", "Detail"]].forEach(function (o) {
         var b = el("button", null, o[1]); b.type = "button";
         b.setAttribute("aria-pressed", layout === o[0] ? "true" : "false");
         b.onclick = function () {
           layout = o[0]; prefSet("layout", layout); setQ({ layout: layout === "list" ? "" : layout });
+          segButtons.forEach(function (pair) {
+            pair.b.setAttribute("aria-pressed", layout === pair.key ? "true" : "false");
+          });
           drawBody();
         };
+        segButtons.push({ b: b, key: o[0] });
         seg.appendChild(b);
       });
       ctl.appendChild(seg);
@@ -3678,6 +4012,11 @@
         doVerb("/api/export", { items: pg.rows.map(function (r) { return r.file; }) }, "Exported " + pg.rows.length + " document(s)");
       };
       ctl.appendChild(exp);
+      if (EXAMINER) {
+        var gth = el("button", "btn small", "Gather for someone…");
+        gth.onclick = function () { go({ page: "gather" }); };
+        ctl.appendChild(gth);
+      }
       pane.appendChild(ctl);
 
       if (view.vital && view.vital !== "*" && DOC_OPERATIVE[view.vital]) {
@@ -3692,13 +4031,14 @@
       pg = pager("/api/documents", {
         getParams: function () {
           return { cat: view.cat, subcat: view.subcat, vital: view.vital, collection_curation: view.coll,
-                   sort: sort.by, dir: sort.dir };
+                   year: view.year, sort: sort.by, dir: sort.dir,
+                   include_emails: includeEmails ? "1" : "" };
         },
         render: function () { drawBody(); },
       });
       pg.limit = 300;
       pane.appendChild(pg.footer);
-      if (fetch || view.cat || view.vital || view.coll || sort.by) pg.load(true); else pg.seed(data);
+      if (fetch || view.cat || view.vital || view.coll || view.year || sort.by) pg.load(true); else pg.seed(data);
     }
 
     // Vital items with no document file (email/message/recording sourced) can't
@@ -3737,7 +4077,9 @@
     }
 
     function rowsInOrder() {
-      var rows = pg ? pg.rows : [];
+      // Email-topic rows (kind:"email", no file) render in their own list
+      // below — see emailTopicRows/drawBody — never through the file table.
+      var rows = (pg ? pg.rows : []).filter(function (r) { return r.kind !== "email"; });
       rows.forEach(function (r) { ROWS[r.file] = r; DOC_CAT[r.file] = r.category; });
       if (view.vital && view.vital !== "*" && !sort.by) {
         // Date order inside one vital kind (newest first; undated last).
@@ -3750,12 +4092,39 @@
       }
       return rows;
     }
+    function emailTopicRows() {
+      return (pg ? pg.rows : []).filter(function (r) { return r.kind === "email"; });
+    }
+    // The email side of "include emails" — a thread with no attached file, in
+    // this same topic, surfaced here but opened via the Emails thread view
+    // (go({page:"emails"}): a thread isn't a document, it has no lightbox.
+    function drawEmailTopicRows(container, rows) {
+      container.appendChild(el("h3", "docs-emails-head", "From the emails (" + rows.length + ")"));
+      var list = el("div", "docs-email-list");
+      rows.forEach(function (r) {
+        var row = el("div", "docs-email-row clickable");
+        row.innerHTML = "<span class='nm'>" + esc(r.name) + "</span>" + sig(r.significance);
+        row.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
+        keyable(row, null);   // F-12
+        list.appendChild(row);
+      });
+      container.appendChild(list);
+    }
     function drawBody() {
+      // Checklist isn't drawn through `body` at all (see drawPane's early
+      // return) — panelBtn/noteEditor's Cancel and empty-save-no-op paths
+      // call drawBody() unconditionally (correct for every Detail card,
+      // which they were built for), so redirect here rather than teaching
+      // three shared, Detail-authored functions about a page mode they
+      // otherwise have no reason to know exists.
+      if (view.docview === "checklist") { drawPane(false); return; }
       if (!body) return;
       body.innerHTML = "";
       var rows = rowsInOrder();
-      if (!rows.length) { body.appendChild(el("p", "notice", "Nothing here.")); return; }
-      if (layout === "detail") detailView(rows); else listView(rows);
+      var emailRows = emailTopicRows();
+      if (!rows.length && !emailRows.length) { body.appendChild(el("p", "notice", "Nothing here.")); return; }
+      if (rows.length) { if (layout === "detail") detailView(rows); else listView(rows); }
+      if (emailRows.length) drawEmailTopicRows(body, emailRows);
     }
 
     function sortHead(label, key) {
@@ -3854,6 +4223,318 @@
     }
 
     var OPEN_PANEL = {};    // file → "move" | "note" (one inline panel per card)
+
+    // G-2, redesigned 2026-10-16: full vital-documents checklist — one row per
+    // searched-for document type, ✓ found (deep-links to the doc[s]) or "not
+    // found in this collection". A browsable item now shows the same
+    // date/category/summary/note a Detail card shows for the same document
+    // (vital_docs_data's doc_rows join — see its docstring) and the same
+    // general-purpose toolbar (Star/Note/Move/Gather for/Take out), reusing
+    // panelBtn/noteEditor/movePanel/docsAct/addToCollection/addToGather
+    // directly — this is why the function moved inside P.documents instead of
+    // staying a top-level sibling: those are this page's own closures, built
+    // once for Detail, never meant to be re-implemented a second time here.
+    // The classification actions (Confirm/Not a vital document/Reassign…) and
+    // the grouping-by-kind are unchanged from before the redesign. All
+    // estate-derived text (labels, item names, tags, summaries) is escaped.
+    function vitalDocsPanel(main, vd) {
+      // #17: a promote/dismiss (single or batched) triggers a full render(),
+      // which rebuilds this panel from scratch — drop any selection state and
+      // floating bar left over from the PREVIOUS build so a stale #vselbar
+      // (bound to rows that no longer exist) never leaks into the new one.
+      VITAL_SEL = {};
+      var staleVBar = document.getElementById("vselbar"); if (staleVBar) staleVBar.remove();
+      if (!vd) return;
+      if (vd.available === false) {
+        main.appendChild(el("p", "notice", "Vital-document scan not available for this case."));
+        return;
+      }
+      if (!vd.available) return;
+      var panel = el("section", "vitals-panel");
+      panel.appendChild(el("h2", null, "Vital documents"));
+      // A found→missing transition (last item of a target dismissed/reassigned
+      // away) needs to decrement this in place — track it locally instead of
+      // re-reading vd.found_count, which goes stale the moment that happens.
+      var foundCount = vd.found_count;
+      var tallyEl = el("p", "vitals-tally",
+        esc(num(foundCount) + " of " + num(vd.total_count) +
+            " key document types found in this collection."));
+      panel.appendChild(tallyEl);
+      function updateTally() {
+        tallyEl.textContent = num(foundCount) + " of " + num(vd.total_count) +
+          " key document types found in this collection.";
+      }
+      var rows = el("div", "vitals-rows");
+      (vd.targets || []).forEach(function (t) {
+        var row = el("div", "vitals-row " + (t.found ? "found" : "missing"));
+        var rhead = el("div", "vitals-row-head");
+        rhead.innerHTML = '<span class="vmark">' + (t.found ? "✓" : "—") + '</span>' +
+          '<span class="vlabel">' + esc(t.label) + '</span>';
+        var vmarkEl = rhead.querySelector(".vmark");
+        if (EXAMINER && t.near_miss_count) {  // near-miss hits, examiner-only
+          // Was a dead span: it stated a number and gave no way to look at it,
+          // so reviewing a near-miss meant opening vital_doc_candidates.json
+          // on the workstation by hand. Now it opens the list inline.
+          var drawer = el("div", "vcand-drawer");
+          drawer.hidden = true;
+          var toggle = el("button", "vcand",
+            num(t.near_miss_count) + " near-miss" + (t.near_miss_count === 1 ? "" : "es"));
+          toggle.setAttribute("aria-expanded", "false");
+          toggle.onclick = (function (tgt, btn, box, vdoc) {
+            return function () {
+              if (!box.hidden) {                       // collapse
+                box.hidden = true;
+                btn.setAttribute("aria-expanded", "false");
+                delete NEARMISS_OPEN[tgt];             // stay closed across renders
+                return;
+              }
+              box.hidden = false;
+              btn.setAttribute("aria-expanded", "true");
+              NEARMISS_OPEN[tgt] = NEARMISS_OPEN[tgt] || 0;
+              // vd carries all_targets, which the row's Reassign picker needs.
+              if (!box.dataset.loaded) nearMissLoad(tgt, box, 0, vdoc);
+            };
+          })(t.target, toggle, drawer, vd);
+          rhead.appendChild(toggle);
+          if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
+          row.appendChild(rhead);
+          row.appendChild(drawer);
+          // Re-open a drawer the examiner had open before this render, as deep
+          // as they had paged it. One request for `want` rows, not one per
+          // page — the server clamps to MAX_PAGE_LIMIT, past which the "Show
+          // more" button is still there to carry on.
+          if (NEARMISS_OPEN[t.target] != null) {
+            drawer.hidden = false;
+            toggle.setAttribute("aria-expanded", "true");
+            nearMissLoad(t.target, drawer, 0, vd, NEARMISS_OPEN[t.target]);
+            // The panel is rebuilt from the top, so the row they were working
+            // in may be off-screen now. Put it back in front of them.
+            scrollBackTo(row);
+          }
+        } else {
+          // Retrieval can hit the cap even with no near-misses left to review
+          // (every hit already confirmed/dismissed) — the truncation still
+          // means more candidates may exist unretrieved, so flag it whether
+          // or not a drawer opened.
+          if (EXAMINER && t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
+          row.appendChild(rhead);
+        }
+        if (t.found) {
+          var items = el("div", "vitals-items");
+          // An item leaving this target (dismissed, or reassigned elsewhere) —
+          // smooth collapse in place (fadeOutAndRemove), never a full
+          // render(), so the page doesn't jump to the top. If it was the last
+          // item, this target itself flips to "missing" and the tally updates
+          // to match.
+          function onItemLeft(itemRow, srcBox) {
+            if (srcBox) srcBox.remove();
+            fadeOutAndRemove(itemRow, function () {
+              if (items.children.length) return;
+              t.found = false;
+              foundCount -= 1;
+              updateTally();
+              row.classList.remove("found"); row.classList.add("missing");
+              vmarkEl.textContent = "—";
+              items.remove();
+              row.appendChild(el("div", "vitals-none", "Not found in this collection."));
+            });
+          }
+          (t.items || []).forEach(function (it) {
+            var label = it.name || it.tag || "document";
+            // "-rich" only for a real browsable document: it gets the extra
+            // meta/summary/note/toolbar blocks below, so it needs the
+            // stacked-card layout, not the compact one-line row an email/
+            // message/recording-linked (or stub) item still uses.
+            var itemRow = el("div", "vitals-item" + (it.file_id ? " vitals-item-rich" : ""));
+            if (it.file_id) {
+              var a = el("a", "vitals-link", esc(label));
+              a.href = "#";
+              a.onclick = function (e) { e.preventDefault(); go({ open: true, file: it.file_id }); };
+              itemRow.appendChild(a);
+            } else if (it.thread_id) {
+              // Email-sourced vital doc: it lives in the Emails section, not
+              // the documents view, so deep-link into its conversation rather
+              // than printing a dead `message_43267.eml`. Prefer the
+              // conversation SUBJECT as the label — the .eml basename is
+              // meaningless to a family. "(no subject)" matches how the
+              // Emails list labels this same thread, so the row and its
+              // destination read alike.
+              var ta = el("a", "vitals-link", esc(it.thread_subject || "(no subject)"));
+              ta.href = "#";
+              ta.onclick = (function (tid) {
+                return function (e) { e.preventDefault(); go({ page: "emails", thread: tid }); };
+              })(it.thread_id);
+              itemRow.appendChild(ta);
+              itemRow.appendChild(el("span", "vitals-inemails", "in Emails"));
+            } else if (it.conversation_id) {
+              // Messages-equivalent of the email deep link above (#26): a
+              // vital doc sourced from a chat/SMS database chunk deep-links
+              // into Messages instead of printing a dead
+              // `chat.db#chunk=...` stub.
+              var ca = el("a", "vitals-link", esc(it.conversation_subject || "(conversation)"));
+              ca.href = "#";
+              ca.onclick = (function (cid) {
+                return function (e) { e.preventDefault(); go({ page: "messages", conversation: cid }); };
+              })(it.conversation_id);
+              itemRow.appendChild(ca);
+              itemRow.appendChild(el("span", "vitals-inemails", "in Messages"));
+            } else if (it.recording_id) {
+              // A vital doc evidenced by a voicemail/recording transcript
+              // (#32) opens the recording detail (player + transcript).
+              var ra = el("a", "vitals-link", esc(it.recording_name || label));
+              ra.href = "#";
+              ra.onclick = (function (rid) {
+                return function (e) { e.preventDefault(); go({ page: "recordings", rec: rid }); };
+              })(it.recording_id);
+              itemRow.appendChild(ra);
+              itemRow.appendChild(el("span", "vitals-inemails", "in Recordings"));
+            } else {
+              itemRow.appendChild(el("span", "vitals-noitem", esc(label)));
+            }
+            // The Detail-equivalent info for a browsable item: date (already
+            // examiner-only, from vital_docs_data's own provenance), category,
+            // significance, collection chips, the AI summary, and any note —
+            // exactly what a Detail card shows, joined server-side by path so
+            // nothing here re-derives it.
+            if (it.file_id) {
+              // Each piece is its own safely-built node — sig() returns a
+              // literal <span> (needs innerHTML), everything else is plain
+              // text (needs textContent) — never joined into one string, or
+              // sig()'s markup shows up as literal text and anything else
+              // escapes wrong the other way.
+              var meta = el("span", "docs-hint inline");
+              var metaFirst = true;
+              function addMeta(node) {
+                if (!metaFirst) meta.appendChild(document.createTextNode(" · "));
+                meta.appendChild(node);
+                metaFirst = false;
+              }
+              if (it.date_used) addMeta(document.createTextNode(vitalDateLabel(it.date_used)));
+              if (it.category) addMeta(document.createTextNode(pretty(it.category)));
+              if (it.significance) addMeta(el("span", null, sig(it.significance)));
+              if ((it.collections || []).length)
+                addMeta(document.createTextNode("In " + it.collections.join(", ")));
+              if (!metaFirst) itemRow.appendChild(meta);
+              if (it.summary) itemRow.appendChild(txt("div", "docs-summary", it.summary));
+              if (it.note && OPEN_PANEL[it.file_id] !== "note") {
+                var nb = el("div", "docs-notebox");
+                nb.appendChild(txt("span", "ic", "✎")); nb.appendChild(txt("span", "t", it.note));
+                itemRow.appendChild(nb);
+              }
+            }
+            var srcBox = null;   // set below (EXAMINER only) — declared early, onItemLeft closures read it
+            if (EXAMINER) {
+              // Examiner-only DECISIONS-OVERLAY actions (audited + reversible;
+              // the pipeline index vital_doc_confirmed.json is never touched).
+              // The vital-doc id contains a path — always pass it in the JSON
+              // BODY, never inline it. Grouped in one element so Confirm can
+              // swap it for the "✓ Confirmed" badge in place, and so the item
+              // stays put — no full render(), see onItemLeft above for why.
+              var actions = el("span", "vitals-item-actions");
+              var confirmSlot = el("span");   // holds either the Confirm button or the badge
+              actions.appendChild(confirmSlot);
+              function showConfirmed() {
+                confirmSlot.innerHTML = "";
+                confirmSlot.appendChild(el("span", "vitals-reviewed", "✓ Confirmed"));
+              }
+              // Confirm — the affirmative "yes, this is the document" the
+              // release gate requires (every vital item must be confirmed,
+              // dismissed, or reassigned).
+              if (it.reviewed) {
+                showConfirmed();
+              } else {
+                var confirm = el("button", "vitals-act primary", "Confirm");
+                confirm.onclick = function () {
+                  doVerb("/api/vital/confirm", { id: it.id }, "Confirmed vital document")
+                    .then(function (x) { if (x) showConfirmed(); });
+                };
+                confirmSlot.appendChild(confirm);
+              }
+              // Dismiss/Reassign stay available either way — confirming isn't
+              // the only way an item leaves this target.
+              var dismiss = el("button", "vitals-act", "Not a vital document");
+              dismiss.onclick = function () {
+                doVerb("/api/vital/dismiss", { id: it.id }, "Dismissed vital match")
+                  .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
+              };
+              actions.appendChild(dismiss);
+              var reassign = el("button", "vitals-act", "Reassign…");
+              reassign.onclick = function () {
+                pickVitalTarget("Reassign this document", vd.all_targets, t.target, function (to) {
+                  // If the doc matches >1 vital category, ask whether to move
+                  // all of them (global) or just this one (single); a
+                  // single-category doc needs no prompt — the two scopes are
+                  // identical.
+                  var cats = vitalPathTargets(vd, it.path);
+                  function send(scope) {
+                    doVerb("/api/vital/reassign",
+                      { id: it.id, to_target: to, scope: scope }, "Reassigned vital document")
+                      .then(function (x) { if (x) onItemLeft(itemRow, srcBox); });
+                  }
+                  if (cats.length > 1) { pickScope(cats.length, send); } else { send("single"); }
+                });
+              };
+              actions.appendChild(reassign);
+              itemRow.appendChild(actions);
+
+              // The SAME general-purpose toolbar a Detail card shows for this
+              // document — Star/Note/Move/Gather for/Take out. Only for a
+              // REAL browsable document (file_id set): an email/message/
+              // recording-sourced item has no document to star/note/move, and
+              // a synthetic row with file: undefined would silently call
+              // every verb with id/file "undefined".
+              if (it.file_id) {
+                // A minimal synthetic row (just the fields these shared
+                // helpers actually read) stands in for a real
+                // document_rows() row; `file_id` IS the document's path, same
+                // id space panelBtn/noteEditor/movePanel/docsAct already key on.
+                var synRow = { file: it.file_id, name: it.name || label,
+                              category: it.category, subcategory: it.subcategory,
+                              note: it.note, favorite_curation: it.favorite_curation };
+                var toolbar = el("div", "docs-acts vitals-toolbar");
+                var star = el("button", "btn small", synRow.favorite_curation ? "★ Starred" : "☆ Star");
+                star.setAttribute("aria-pressed", synRow.favorite_curation ? "true" : "false");
+                star.onclick = function () {
+                  var on = !synRow.favorite_curation;
+                  docsAct("/api/favorite", { id: synRow.file, on: on }, (on ? "Starred " : "Unstarred ") + synRow.name);
+                };
+                toolbar.appendChild(star);
+                toolbar.appendChild(panelBtn(synRow, "note", synRow.note ? "Edit note" : "Add note"));
+                toolbar.appendChild(panelBtn(synRow, "move", "Move to…"));
+                var ac = el("button", "btn small", "Add to collection…");
+                ac.onclick = function () { addToCollection([synRow.file]); };
+                toolbar.appendChild(ac);
+                var gt = el("button", "btn small", "Gather for…");
+                gt.onclick = function () { addToGather([synRow.file]); };
+                toolbar.appendChild(gt);
+                var tk = el("button", "btn small danger", "Take out…");
+                tk.onclick = function () {
+                  textPrompt("Why is it coming out? (Optional. Nothing is deleted — " +
+                             "reversible from History.)", "", function (reason) {
+                    docsAct("/api/take-out", { file: synRow.file, reason: reason },
+                      "Took out " + synRow.name);
+                  });
+                };
+                toolbar.appendChild(tk);
+                itemRow.appendChild(toolbar);
+                if (OPEN_PANEL[synRow.file] === "note") itemRow.appendChild(noteEditor(synRow));
+                if (OPEN_PANEL[synRow.file] === "move") itemRow.appendChild(movePanel(synRow));
+              }
+            }
+            srcBox = EXAMINER ? vitalProvenance(it, itemRow) : null;   // BACKLOG #43
+            items.appendChild(itemRow);
+            if (srcBox) items.appendChild(srcBox);
+          });
+          row.appendChild(items);
+        } else {
+          row.appendChild(el("div", "vitals-none", "Not found in this collection."));
+        }
+        rows.appendChild(row);
+      });
+      panel.appendChild(rows);
+      main.appendChild(panel);
+    }
+
     function detailView(rows) {
       var list = el("div", "docs-cards");
       rows.forEach(function (r, i) { list.appendChild(card(r, rows, i)); });
@@ -3907,6 +4588,18 @@
         var ac = el("button", "btn small", "Add to collection…");
         ac.onclick = function () { addToCollection([r.file]); };
         acts.appendChild(ac);
+        var gt = el("button", "btn small", "Gather for…");
+        gt.onclick = function () { addToGather([r.file]); };
+        acts.appendChild(gt);
+        var tk = el("button", "btn small danger", "Take out…");
+        tk.onclick = function () {
+          textPrompt("Why is it coming out? (Optional. Nothing is deleted — " +
+                     "reversible from History.)", "", function (reason) {
+            docsAct("/api/take-out", { file: r.file, reason: reason },
+              "Took out " + r.name);
+          });
+        };
+        acts.appendChild(tk);
         if (view.coll) {
           var rm = el("button", "btn small", "Remove from this collection");
           rm.onclick = function () {
@@ -4136,34 +4829,112 @@
     return b;
   }
 
-  // Redraw the significance-banded email list from the accumulated rows (rebuilt
-  // on each Load-more page — the bands regroup the full loaded set).
-  function drawEmailBands(container, rows) {
+  // Unlike Demote/Star, flagging a thread important is NOT examiner-only — both
+  // roles see and can click this (verb_important_email has no require_examiner).
+  function emailImportantBtn(r, onToggled) {
+    var b = el("button", "btn small" + (r.important ? " primary" : ""), r.important ? "★ Important" : "☆ Important");
+    b.title = r.important ? "Unflag as important" : "Flag as important";
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      doVerb("/api/important/email", { thread_id: r.thread_id, on: !r.important },
+        r.important ? "Unflagged" : "Flagged important").then(function (x) {
+          if (x) { r.important = !r.important; onToggled ? onToggled() : render(); }
+        });
+    };
+    return b;
+  }
+
+  // "Name <addr>" → just the name (or the bare address/string when there's no
+  // name) — an inbox row shows who, not their raw header.
+  function _nameOnly(p) {
+    p = (p || "").trim();
+    var i = p.indexOf("<");
+    return (i > 0 ? p.slice(0, i).trim() : p) || p;
+  }
+  // Inbox-style compact date: "Sep 23" this calendar year, "Sep 23, 2024" not.
+  function _inboxDate(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d)) return esc(String(iso).slice(0, 10));
+    var opts = { month: "short", day: "numeric" };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "numeric";
+    return esc(d.toLocaleDateString(undefined, opts));
+  }
+  // The row's "From" line: the actual correspondent when owner-addresses makes
+  // that knowable (see thread_correspondent); otherwise the other participants'
+  // names, since a thread has no single sender without that setting.
+  function _fromLine(r) {
+    if (r.correspondent) return esc(_nameOnly(r.correspondent));
+    var names = (r.participants || []).map(_nameOnly);
+    if (!names.length) return "(no participants)";
+    var shown = names.slice(0, 2).map(esc).join(", ");
+    return names.length > 2 ? shown + " +" + (names.length - 2) : shown;
+  }
+
+  // A clickable From/Subject/Date column header, "usual email browser" style
+  // (2026-10-15) — replaces the old Sort dropdown. `sort` is {by, dir}; a
+  // click on the active column flips direction, a click on another column
+  // switches to it at that column's own natural default (newest-first for
+  // Date, A-Z for From/Subject — same off→asc/desc→reverse convention
+  // sortHead already uses for Documents, just without the third "off" state,
+  // since the Emails list always has SOME order).
+  function _emailColHead(label, key, defaultDesc, sort, onChange) {
+    var b = el("button", "sorth", "");
+    b.type = "button";
+    var on = sort.by === key;
+    // An explicit dir wins; otherwise (including the untouched initial state,
+    // where sort.by already equals key but dir is "") fall back to this
+    // column's own default — "recent" starts descending even before anyone
+    // has clicked it, matching what the backend actually returns by default.
+    var desc = (on && sort.dir) ? sort.dir === "desc" : defaultDesc;
+    b.appendChild(document.createTextNode(label + (on ? (desc ? " ▼" : " ▲") : "")));
+    b.setAttribute("aria-sort", on ? (desc ? "descending" : "ascending") : "none");
+    b.onclick = function () {
+      onChange(!on ? { by: key, dir: defaultDesc ? "desc" : "asc" }
+                   : { by: key, dir: desc ? "asc" : "desc" });
+    };
+    return b;
+  }
+
+  // Redraw the email list from the accumulated rows (rebuilt on each Load-more
+  // page) as a compact, single-line-per-thread inbox — from / subject / date,
+  // the layout a typical mail client uses (2026-10-15 decision). Flat, in
+  // whatever order the server returned (sort/dir control that) — the
+  // pipeline's per-message significance score is unverified for now, so it
+  // drives no grouping or marker here (it DOES drive a separate threshold
+  // filter — see the significance dropdown).
+  function drawEmailBands(container, rows, sort, onSortChange) {
     container.innerHTML = "";
-    // Group into significance bands so the (already significance-sorted) list reads
-    // as organized by importance, not a flat date jumble (#D).
-    var BANDS = [[5, "Major life events"], [4, "Emotionally resonant"], [3, "Personal"],
-                 [2, "Everyday"], [1, "Routine"], [0, "Unranked"]];
-    BANDS.forEach(function (band) {
-      var n = band[0];
-      var group = rows.filter(function (r) { return (parseInt(r.significance, 10) || 0) === n; });
-      if (!group.length) return;
-      container.appendChild(el("h2", null, band[1] + " (" + group.length + ")"));
-      var tbl = el("table");
-      tbl.innerHTML = "<tr><th>Subject</th><th>With</th><th>When</th><th>Msgs</th>" + (EXAMINER ? "<th></th>" : "") + "</tr>";
-      group.forEach(function (r) {
-        var tr = el("tr", "clickable");
-        tr.innerHTML = "<td>" + esc(r.subject) + " " + sig(r.significance) +
-          "</td><td class='preview clamp2'>" + recipients(r.participants) + "</td><td class='preview'>" +
-          esc((r.date_last || "").slice(0, 10)) + "</td><td>" + num(r.message_count) + "</td>" +
-          (EXAMINER ? "<td class='actcell'></td>" : "");
-        tr.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
-        keyable(tr, null);   // F-12
-        if (EXAMINER) tr.lastChild.appendChild(emailDemoteBtn(r));
-        tbl.appendChild(tr);
-      });
-      container.appendChild(tbl);
+    var list = el("div", "inbox");
+    var head = el("div", "inbox-row inbox-head");
+    var fromHead = el("span", "inbox-from");
+    fromHead.appendChild(_emailColHead("From", "sender", false, sort, onSortChange));
+    var subjHead = el("span", "inbox-subj");
+    subjHead.appendChild(_emailColHead("Subject", "subject", false, sort, onSortChange));
+    var dateHead = el("span", "inbox-date");
+    dateHead.appendChild(_emailColHead("Date", "recent", true, sort, onSortChange));
+    head.appendChild(fromHead); head.appendChild(subjHead); head.appendChild(dateHead);
+    head.appendChild(el("span", "inbox-acts"));
+    list.appendChild(head);
+    if (!rows.length) list.appendChild(el("p", "notice", "Nothing here."));
+    rows.forEach(function (r) {
+      var row = el("div", "inbox-row clickable");
+      row.innerHTML =
+        "<span class='inbox-from'>" + _fromLine(r) + "</span>" +
+        "<span class='inbox-subj'>" + (r.important ? "★ " : "") + esc(r.subject) +
+          (r.message_count > 1 ? " <span class='inbox-count'>(" + num(r.message_count) + ")</span>" : "") +
+          (r.has_attachment ? " <span title='Has a delivered attachment'>📎</span>" : "") + "</span>" +
+        "<span class='inbox-date'>" + _inboxDate(r.date_last) + "</span>" +
+        "<span class='inbox-acts'></span>";
+      row.onclick = function () { go({ page: "emails", thread: r.thread_id }); };
+      keyable(row, null);   // F-12
+      var acts = row.querySelector(".inbox-acts");
+      // Important is NOT examiner-only; Demote stays examiner-only.
+      acts.appendChild(emailImportantBtn(r));
+      if (EXAMINER) acts.appendChild(emailDemoteBtn(r));
+      list.appendChild(row);
     });
+    container.appendChild(list);
   }
 
   // G-4: attachment chips under one email message. Inline cid-embedded images
@@ -4254,6 +5025,9 @@
       var holder = el("div", "reading emthread"); main.appendChild(holder);
       getJSON("/api/email/thread?id=" + encodeURIComponent(Q.thread)).then(function (t) {
         var ctrls = head(holder, "Emails", t.subject || "(no subject)", (t.messages || []).length + " message(s).");
+        ctrls.appendChild(emailImportantBtn({ thread_id: Q.thread, important: t.important }, function () {
+          location.reload();
+        }));
         if (EXAMINER) ctrls.appendChild(emailDemoteBtn({ thread_id: Q.thread, subject: t.subject, demoted: t.demoted }));
         drawThreadMessages(holder, t);
       }).catch(function (e) { holder.appendChild(el("p", "notice", "Couldn't load thread: " + esc(e.message))); });
@@ -4265,12 +5039,37 @@
     var participant = Q.participant || "";
     var lead = participant
       ? "Emails with " + participant + " — " + num((data && data.total) || 0) + " conversations."
-      : num((data && data.total) || 0) + " conversations, grouped by significance.";
+      : num((data && data.total) || 0) + " conversations.";
     var controls = head(main, "Emails", "Emails", lead);
     if (participant) {
       var clr = el("button", "btn chip", "✕ Clear filter");
       clr.onclick = function () { location.href = "/emails"; };
       controls.appendChild(clr);
+    }
+    // Received/Sent (2026-10-15): a thread can carry BOTH flags (a real back-
+    // and-forth appears under both tabs, same as Gmail) — direction needs
+    // owner_addresses to mean anything (see thread_direction_flags), so the
+    // tabs only render once that's configured; otherwise every thread would
+    // just vanish from both, which looks broken rather than merely unset.
+    var ownerConfigured = !!(data && data.owner_addresses && data.owner_addresses.length);
+    var direction = ownerConfigured ? (Q.direction === "sent" ? "sent" : "received") : "";
+    if (ownerConfigured) {
+      var dirSeg = el("div", "seg");
+      var dirBtns = {};
+      [["received", "Received"], ["sent", "Sent"]].forEach(function (o) {
+        var b = el("button", null, o[1]); b.type = "button";
+        b.setAttribute("aria-pressed", direction === o[0] ? "true" : "false");
+        b.onclick = function () {
+          direction = o[0];
+          dirBtns.received.setAttribute("aria-pressed", direction === "received" ? "true" : "false");
+          dirBtns.sent.setAttribute("aria-pressed", direction === "sent" ? "true" : "false");
+          setQ({ direction: direction === "received" ? "" : direction });
+          pg.load(true);
+        };
+        dirBtns[o[0]] = b;
+        dirSeg.appendChild(b);
+      });
+      main.appendChild(dirSeg);
     }
     // #11: in-list search (subject/participant) + date range + sort — tens of
     // thousands of threads with no way to narrow beyond "Load more" batches was
@@ -4284,21 +5083,94 @@
     var dTo = el("input"); dTo.type = "date"; dTo.title = "To date";
     if (Q.date_from) dFrom.value = Q.date_from;
     if (Q.date_to) dTo.value = Q.date_to;
-    var sortSel = el("select"); sortSel.setAttribute("aria-label", "Sort emails");
-    [["", "Most significant"], ["recent", "Most recent"], ["subject", "Subject (A–Z)"]]
-      .forEach(function (o) { sortSel.appendChild(new Option(o[1], o[0])); });
-    if (Q.sort) sortSel.value = Q.sort;
+    // Sort is now From/Subject/Date column headers on the list itself (2026-
+    // 10-15, "usual email browser" style) — no dropdown here any more.
+    var sort = { by: Q.sort || "recent", dir: Q.dir || "" };
+    // An EXACT level (2026-10-16, replacing the old "this level and up"
+    // threshold per the user's explicit request): picking "Everyday" shows
+    // only Everyday, not Everyday plus every band above it. Filtering BY the
+    // pipeline score is a deliberate, separate decision from sort/grouping
+    // (which stay off it) — kept independent of the hand-set Important
+    // flag's own filter below.
+    var sigSel = el("select"); sigSel.setAttribute("aria-label", "Significance");
+    [["", "Any significance"], ["5", "Major life events"], ["4", "Emotionally resonant"],
+     ["3", "Personal"], ["2", "Everyday"], ["1", "Routine"]]
+      .forEach(function (o) { sigSel.appendChild(new Option(o[1], o[0])); });
+    sigSel.value = Q.significance || "";
+    var impChk = el("label", "flabel chkflabel");
+    var impBox = el("input"); impBox.type = "checkbox";
+    if (Q.important === "1") impBox.checked = true;
+    impChk.appendChild(impBox); impChk.appendChild(document.createTextNode(" Important"));
+    var attChk = el("label", "flabel chkflabel");
+    var attBox = el("input"); attBox.type = "checkbox";
+    if (Q.has_attachment === "1") attBox.checked = true;
+    attChk.appendChild(attBox); attChk.appendChild(document.createTextNode(" Has attachment"));
     listctrls.appendChild(search);
     listctrls.appendChild(el("span", "flabel", "From")); listctrls.appendChild(dFrom);
     listctrls.appendChild(el("span", "flabel", "To")); listctrls.appendChild(dTo);
-    listctrls.appendChild(sortSel);
-    var hasListFilter = !!(Q.q || Q.date_from || Q.date_to || Q.sort);
+    listctrls.appendChild(sigSel);
+    listctrls.appendChild(impChk);
+    listctrls.appendChild(attChk);
+
+    // Significance count meter: how many threads each exact level would
+    // keep, GIVEN the other active filters (search/date/direction/...) — so it
+    // answers "what would I get if I picked this?" before you pick it. One bar
+    // per level, highest first, clicking a bar jumps straight to that
+    // level (same destination as picking it from the dropdown above).
+    var sigMeter = el("div", "sigmeter"); main.appendChild(sigMeter);
+    var SIG_LABELS = { 5: "Major life events", 4: "Emotionally resonant",
+                       3: "Personal", 2: "Everyday", 1: "Routine" };
+    function drawSigMeter(counts) {
+      sigMeter.innerHTML = "";
+      counts = counts || {};
+      var max = 1;
+      [5, 4, 3, 2, 1].forEach(function (n) { if ((counts[n] || 0) > max) max = counts[n]; });
+      [5, 4, 3, 2, 1].forEach(function (n) {
+        var c = counts[n] || 0;
+        var row = el("button", "sigmeter-row" + (sigSel.value === String(n) ? " active" : ""));
+        row.type = "button";
+        row.innerHTML = "<span class='nm'>" + SIG_LABELS[n] + "</span>" +
+          "<span class='bar'><span style='width:" + Math.max(2, Math.round(100 * c / max)) + "%'></span></span>" +
+          "<span class='ct'>" + num(c) + "</span>";
+        row.onclick = function () {
+          sigSel.value = String(n);
+          setQ({ significance: String(n) });
+          pg.load(true);
+        };
+        sigMeter.appendChild(row);
+      });
+    }
+
+    // Owner-address settings (both roles — see verb_set_owner_addresses). First
+    // settings-style form in this app: a typed value saved for later, not a
+    // one-click verb on an existing item. Collapsed by default; the Sender sort
+    // is a no-op (every row's correspondent is null) until this is filled in.
+    var settingsWrap = el("details", "ownersettings");
+    var summary = el("summary", null, "Whose email is this? (for sender sorting)");
+    settingsWrap.appendChild(summary);
+    var ownerBox = el("div", "ownerbox");
+    ownerBox.appendChild(el("p", "docs-hint",
+      "Sender sorting needs to know which address was the account owner's own, so it " +
+      "can tell them apart from who they were writing to. One or more addresses, comma-separated."));
+    var ownerInput = el("input", "ownerinput");
+    ownerInput.type = "text"; ownerInput.placeholder = "e.g. alex.rendon@example.com";
+    ownerInput.value = (data && (data.owner_addresses || []).join(", ")) || "";
+    var ownerSave = el("button", "btn small", "Save");
+    ownerSave.onclick = function () {
+      var addrs = ownerInput.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+      doVerb("/api/owner-addresses", { addresses: addrs }, "Saved").then(function (x) {
+        if (x) pg.load(true);
+      });
+    };
+    ownerBox.appendChild(ownerInput); ownerBox.appendChild(ownerSave);
+    settingsWrap.appendChild(ownerBox);
+    main.appendChild(settingsWrap);
+
     var body = el("div"); main.appendChild(body);
-    // Load-more paginates the thread list (no more silent 5,000-of-17k cap). A
-    // demoted thread is forced to significance 0 → the Unranked band → reachable on
-    // a later page and flagged demoted:true for its Restore button (no thread
-    // vanishes). Demote/Restore re-render (refetch page 1); the toggled thread
-    // resurfaces in its new band via Load-more.
+    // Load-more paginates the thread list (no more silent 5,000-of-17k cap).
+    // Demote still writes email_demoted and still flags demoted:true for the
+    // Restore button, but since no sort here is significance-based any more
+    // (2026-10-15), it no longer visibly moves anything — see the handoff note.
     var pg = pager("/api/emails", {
       getParams: function () {
         var p = {};
@@ -4306,22 +5178,36 @@
         if (search.value) p.q = search.value;
         if (dFrom.value) p.date_from = dFrom.value;
         if (dTo.value) p.date_to = dTo.value;
-        if (sortSel.value) p.sort = sortSel.value;
+        p.sort = sort.by;
+        if (sort.dir) p.dir = sort.dir;
+        if (sigSel.value) p.significance = sigSel.value;
+        if (impBox.checked) p.important = "1";
+        if (attBox.checked) p.has_attachment = "1";
+        if (direction) p.direction = direction;
         return p;
       },
-      render: function (all) { drawEmailBands(body, all); },
-      // The router's seed `data` above is the UNfiltered total (fetched before we
-      // know a participant/search/date filter is even active) — `lead` was built
-      // from it and is wrong until this fires with the real, server-filtered
-      // total. Without this, "Emails with X" (or a plain search) sits next to the
-      // global count — the exact thing that makes a filter look broken even
-      // though it isn't.
+      render: function (all) {
+        drawEmailBands(body, all, sort, function (next) {
+          sort = next;
+          setQ({ sort: sort.by, dir: sort.dir });
+          pg.load(true);
+        });
+      },
+      // The router's seed `data` above is the UNfiltered total (fetched before
+      // any filter — direction included — is known to be active); we always
+      // pg.load(true) now (see below), so `lead` is wrong until this fires with
+      // the real, server-filtered total. Without this, "Emails with X" (or a
+      // plain search) sits next to the global count — the exact thing that
+      // makes a filter look broken even though it isn't. Same reasoning for the
+      // significance count meter: it needs the real, server-filtered counts.
       onData: function (raw) {
-        if (!participant) return;
         var leadEl = main.querySelector(".pagehead-title .lead");
-        if (!leadEl) return;
-        leadEl.innerHTML = esc("Emails with " + participant + " — " +
-          num((raw && raw.total) || 0) + " conversations.");
+        if (leadEl) {
+          var n = num((raw && raw.total) || 0);
+          leadEl.innerHTML = esc(participant ? "Emails with " + participant + " — " + n + " conversations."
+                                             : n + " conversations.");
+        }
+        drawSigMeter(raw && raw.significance_counts);
       },
     });
     main.appendChild(pg.footer);
@@ -4329,10 +5215,13 @@
     search.oninput = reload;
     function onDate() { setQ({ date_from: dFrom.value, date_to: dTo.value }); pg.load(true); }
     dFrom.onchange = onDate; dTo.onchange = onDate;
-    sortSel.onchange = function () { setQ({ sort: sortSel.value }); pg.load(true); };
-    // The router's seed payload is UNfiltered (/api/emails with no params); when a
-    // participant/search/date/sort filter is active, refetch page 1 through it.
-    if (participant || hasListFilter) pg.load(true); else pg.seed(data);
+    sigSel.onchange = function () { setQ({ significance: sigSel.value }); pg.load(true); };
+    impBox.onchange = function () { setQ({ important: impBox.checked ? "1" : "" }); pg.load(true); };
+    attBox.onchange = function () { setQ({ has_attachment: attBox.checked ? "1" : "" }); pg.load(true); };
+    // The router's seed payload is unsorted (/api/emails with no params, which
+    // server-side still falls back to the unused significance order) — always
+    // fetch explicitly so the default "recent" sort is what actually renders.
+    pg.load(true);
   };
 
   // ── correspondents / relationships (G-6) ──

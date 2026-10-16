@@ -1262,7 +1262,7 @@ def places_data(rows):
 _UNSET = object()
 
 
-def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None):
+def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None, taken_out=None):
     ocr_by_file = {}
     text_kind_by_file = {}
     for rec in ocr_index or []:
@@ -1276,12 +1276,24 @@ def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None):
     rows = []
     excluded_creds = 0
     excluded_email = 0
+    excluded_taken_out = 0
+    taken_out = taken_out or {}
     for d in summary.get("document_classifications", []) or []:
         # Emails are surfaced in their own section (email_rows). Excluding them
         # here keeps Documents/Correspondence from being ~96% email, avoids
         # tripling them across sections, and stops them doubling the search index.
         if (d.get("source") or "").lower() == "email":
             excluded_email += 1
+            continue
+        # Taken out (2026-10-15, DECISIONS OVERLAY doc_taken_out): the document
+        # itself is gone from every family-facing view, never just one folder —
+        # same "statement about the document, not the view" rule account_credentials
+        # and vital_doc_dismissed already follow. The delivered file may also have
+        # been physically moved to family_deleted/ (verb_take_out_document) — this
+        # check hides it from the list either way, including when the move itself
+        # couldn't happen because the bytes were already reaped.
+        if d.get("file") in taken_out:
+            excluded_taken_out += 1
             continue
         derived = d.get("category") or "miscellaneous"
         if role == "family" and derived == "account_credentials":
@@ -1324,6 +1336,8 @@ def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None):
         log(f"documents: excluded {excluded_creds} account_credentials docs from family browse")
     if excluded_email:
         log(f"documents: excluded {excluded_email} email items (surfaced in Emails)")
+    if excluded_taken_out:
+        log(f"documents: excluded {excluded_taken_out} taken-out docs")
     if cap is not None and len(rows) > cap:
         log(f"documents: capping at {cap} of {len(rows)} rows")
         rows = rows[:cap]
@@ -2247,9 +2261,20 @@ def vital_source_email(paths, email_id):
 
 
 def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
-                    per_target_k=None, recordings_delivered=True):
+                    per_target_k=None, recordings_delivered=True, doc_rows=None):
     """The vital-documents checklist (spec G-2): for every document type the
     pipeline searched for, was one actually found?
+
+    `doc_rows` (2026-10-16, the Checklist-redesign the user asked for): the
+    SAME document_rows() output — already curation-decorated with
+    favorite_curation/note/collections, exactly like a Detail card — the
+    Documents page itself builds, passed in so a browsable item can carry its
+    summary/category/significance/star/note/collections too. Checklist can
+    then show the same info and the same general-purpose actions (Star, Note,
+    Move, Gather for, Take out) that Detail already does, without this
+    function re-deriving any of it or opening a second code path for the same
+    facts. Absent (every other caller) → those extra fields are simply omitted,
+    exactly as before.
 
     Reads output/metadata/vital_doc_confirmed.json (a LIST of confirmed items,
     each {path, target, tag, ...}) and vital_doc_candidates.json (a DICT keyed by
@@ -2310,6 +2335,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         f = d.get("file")
         if f and f not in browsable:
             browsable[f] = d.get("filename") or os.path.basename(f)
+    by_file = {r["file"]: r for r in doc_rows or [] if r.get("file")}
 
     # DECISIONS OVERLAY (examiner-only verbs; vital_doc_confirmed.json is NEVER
     # mutated — these are pure family_decisions.json sidecars):
@@ -2337,7 +2363,14 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     retarget = decisions.get("vital_doc_target") or {}
     reviewed = decisions.get("vital_doc_reviewed") or {}
     promoted = decisions.get("vital_doc_promoted") or {}
-    overlay_active = bool(dismissed or retarget or promoted)
+    # 2026-10-15: a taken-out document (doc_taken_out) drops out of the checklist
+    # too — the user's own call (over leaving it independent): the checklist can't
+    # still claim a kind was found once Documents no longer shows the one copy that
+    # satisfied it. Keyed by path, same as vital_doc_dismissed, and checked
+    # alongside it rather than merged into it — "not a vital document" and "taken
+    # out of the archive" are different decisions with different undos.
+    taken_out = decisions.get("doc_taken_out") or {}
+    overlay_active = bool(dismissed or retarget or promoted or taken_out)
 
     # A promoted near-miss becomes an item indistinguishable from a confirmed one
     # (it flows through the same dismiss/reassign/link logic below), except that it
@@ -2368,7 +2401,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         # "Not a vital document" is a statement about the DOCUMENT, so dismissal is
         # keyed by PATH and drops the item from EVERY vital category it matched.
         # (A legacy per-item composite key is still honoured for backward compat.)
-        if overlay_active and (ipath in dismissed or iid in dismissed):
+        if overlay_active and (ipath in dismissed or iid in dismissed or ipath in taken_out):
             continue
         eff_target = (retarget.get(iid) if overlay_active else None) or orig_target
         by_target.setdefault(eff_target, []).append((iid, i))
@@ -2446,6 +2479,18 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 # This item came from the near-miss list, not from the pipeline.
                 "promoted": bool(i.get("_promoted")),
             }
+            # 2026-10-16: same document info + curation Detail already shows for
+            # this file, so Checklist can render the identical card — never
+            # re-derived, just the matching document_rows() row by path.
+            doc = by_file.get(item_row["file_id"]) if item_row["file_id"] else None
+            if doc:
+                item_row["category"] = doc.get("category")
+                item_row["subcategory"] = doc.get("subcategory")
+                item_row["summary"] = doc.get("summary")
+                item_row["significance"] = doc.get("significance")
+                item_row["favorite_curation"] = doc.get("favorite_curation", False)
+                item_row["note"] = doc.get("note")
+                item_row["collections"] = doc.get("collections") or []
             if role == "examiner":
                 prec = prov_idx.get(path)
                 if path in date_idx:
@@ -2518,6 +2563,128 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         # Display order + labels for the Documents tree's vital-kind groups.
         "groups": [{"group": g, "label": label} for g, (label, _ts) in VITAL_DOC_GROUPS.items()],
     }
+
+
+def _pct(part, whole):
+    """Whole-number percentage, or None when there's no honest denominator
+    (0 of 0) — the front end must render that as nothing, never "0%"."""
+    if not whole:
+        return None
+    return round(100 * part / whole)
+
+
+def report_data(index, vital_docs, counts=None):
+    """The Report page's three kept-apart statements (the front-end
+    brainstorm's own framing): what the archive holds, what it couldn't find,
+    and — since 2026-10-16 — what it hasn't resolved yet.
+
+    Section 3 is deliberately NOT the mockup's version: that one had the
+    archive ask a per-document question ("is this the final return?"), which
+    needs AI question-generation the real pipeline has never had — the mockup
+    used invented example documents for it, and this function still never
+    fabricates one. What's real and already computed: a found vital item the
+    examiner hasn't confirmed yet (`reviewed`), and near-miss candidates the
+    pipeline wasn't confident enough to list automatically
+    (`near_miss_count`). Grouped by vital kind, same as Section 2, each count
+    points back to the Checklist rather than claiming to BE the checklist.
+    Examiner-only, gated on `unconfirmed_count` already being role-gated
+    upstream (vital_docs_data) — None for family means Section 3 is empty,
+    not a shorter version of itself.
+
+    `index` is documents_index()'s folder-count tree; `vital_docs` is
+    vital_docs_data()'s output. `counts` is the SAME dict the Overview tiles
+    use (photos/people/places/documents/audio/videos/messages/emails, built
+    once in family_archive.py's "overview" section) — passed in rather than
+    recomputed, so the Report's totals can never drift from what each tab
+    itself shows. All three are already-built, pure structures — report_data
+    only reshapes them, so it stays cheap to call from every GET.
+
+    2026-10-15: added percentages (document categories as a share of all
+    documents; vital kinds found as a share of all tracked kinds) and a
+    "processed" totals block, raised by the user as the evidence base for a
+    separate numbers-backed feedback report to Richard (see memory
+    richard-feedback-report) — every number here must already be real
+    (reused from counts/document_counts), never invented for the occasion.
+    """
+    glabel = {g.get("group"): g.get("label") for g in vital_docs.get("groups") or []}
+    targets = vital_docs.get("targets") or []
+    here_vital = [{"name": t.get("label"), "count": len(t.get("items") or [])}
+                  for t in targets if t.get("found")]
+    not_found = [{"area": glabel.get(t.get("group")) or "Other", "what": t.get("label")}
+                 for t in targets if not t.get("found")]
+    total_docs = sum((c.get("count") or 0) for c in (index or []))
+    here_folders = [{"name": c.get("category"), "count": c.get("count"),
+                     "pct": _pct(c.get("count") or 0, total_docs)} for c in index or []]
+    found_count = vital_docs.get("found_count", 0)
+    total_count = vital_docs.get("total_count", 0)
+    # Section 3: real, un-fabricated open items — see the docstring above for
+    # exactly what this is and isn't. None for family (unconfirmed_count is
+    # already role-gated upstream) means an empty list, not a shorter one.
+    unsure = []
+    if vital_docs.get("unconfirmed_count") is not None:
+        for t in targets:
+            unconfirmed_here = sum(1 for it in (t.get("items") or []) if not it.get("reviewed"))
+            near_miss = t.get("near_miss_count") or 0
+            if unconfirmed_here or near_miss:
+                unsure.append({
+                    "area": glabel.get(t.get("group")) or "Other",
+                    "target": t.get("target"),
+                    "what": t.get("label"),
+                    "unconfirmed": unconfirmed_here,
+                    "near_miss": near_miss,
+                })
+    return {
+        "available": bool(vital_docs.get("available")),
+        "here_folders": here_folders,
+        "here_vital": here_vital,
+        "not_found": not_found,
+        "found_count": found_count,
+        "total_count": total_count,
+        "found_pct": _pct(found_count, total_count),
+        "processed": dict(counts or {}),
+        "unsure": unsure,
+    }
+
+
+def gathers_data(curation_layer, doc_rows):
+    """Gather-for-someone (2026-10-15): every folder plus the saved recipient
+    list, for the /gather page. `doc_rows` is document_rows()'s output — used
+    ONLY to resolve a member id to a display name/category, the same way the
+    Documents page itself would show it; a member whose file no longer
+    resolves (moved out, banished, etc. since it was added) still shows, with
+    `known: False` and no name invented — fail closed on ambiguity, same rule
+    as everywhere else in this codebase, rather than guess or silently drop
+    membership the folder itself still remembers.
+    """
+    by_file = {r["file"]: r for r in doc_rows or [] if r.get("file")}
+    gathers = []
+    for slug, g in (curation_layer.get("gathers") or {}).items():
+        members = []
+        for iid, m in (g.get("members") or {}).items():
+            row = by_file.get(iid)
+            members.append({
+                "id": iid, "status": m.get("status"), "reason": m.get("reason"),
+                "known": row is not None,
+                "name": (row or {}).get("name") or os.path.basename(iid),
+                "category": (row or {}).get("category"),
+            })
+        members.sort(key=lambda m: (m["status"] != "possible", m["name"].lower()))
+        missing = [{"id": mid, "text": mi.get("text"), "ts": mi.get("ts")}
+                   for mid, mi in (g.get("missing") or {}).items()]
+        missing.sort(key=lambda m: m.get("ts") or "")
+        handoffs = sorted(g.get("handoffs") or [], key=lambda h: h.get("ts") or "", reverse=True)
+        gathers.append({
+            "slug": slug, "title": g.get("title") or slug, "recipient": g.get("recipient"),
+            "ask": g.get("ask"), "cover_note": g.get("cover_note"),
+            "ts": g.get("ts"), "actor": g.get("actor"),
+            "members": members,
+            "possible_count": sum(1 for m in members if m["status"] == "possible"),
+            "left_out_count": sum(1 for m in members if m["status"] == "left_out"),
+            "missing": missing,
+            "handoffs": handoffs,
+        })
+    gathers.sort(key=lambda g: (g.get("title") or "").lower())
+    return {"gathers": gathers, "recipients": list(curation_layer.get("recipients") or [])}
 
 
 def review_data(paths, summary):
@@ -3229,6 +3396,126 @@ def documents_index(rows):
     return out
 
 
+def documents_year_index(rows):
+    """Group document rows by year for the By-year arrangement (2026-10-16,
+    built honestly per the user's own call): [{year, count}], years
+    descending, "No date" always last regardless of count.
+
+    The pipeline gives a date to exactly the ~13 vital document kinds (see
+    the undated-ordinary-documents finding, 2026-10-15) — `r["vital"]`
+    carries it when present (same `_attach_vital` join Detail's docDateOf
+    reads), nothing else in this app ever has one. So this index is mostly
+    one large "No date" bucket and a handful of real years holding the vital
+    documents — an honest reflection of what the pipeline actually knows, not
+    a broader by-year feature the data doesn't support. `rows` must already
+    have `.vital` attached (api_section's documents branch does this before
+    calling in); a plain document_rows() row with no `.vital` key reads as
+    undated, same as one that has the key but no date_used.
+    """
+    years = {}
+    nodate = 0
+    for r in rows:
+        y = None
+        for v in r.get("vital") or ():
+            val = str((v.get("date_used") or {}).get("value") or "")
+            if len(val) >= 4 and val[:4].isdigit():
+                y = val[:4]
+                break
+        if y is None:
+            nodate += 1
+        else:
+            years[y] = years.get(y, 0) + 1
+    out = [{"year": y, "count": c} for y, c in years.items()]
+    out.sort(key=lambda e: e["year"], reverse=True)
+    out.append({"year": "nodate", "count": nodate})
+    return out
+
+
+def email_category_counts(email_rows):
+    """{category: count} across every thread's `categories` list — a thread with
+    several categories (different messages classified differently) counts once
+    toward EACH, matching how documents_index tallies one document per category."""
+    counts = {}
+    for r in email_rows or []:
+        for c in r.get("categories") or []:
+            counts[c] = counts.get(c, 0) + 1
+    return counts
+
+
+def significance_bucket_counts(rows):
+    """{N: count} for N in 1..5 — how many `rows` have significance EXACTLY N,
+    i.e. what `?significance=N` would keep. Was CUMULATIVE ("this level and
+    up") until 2026-10-16, when the user asked for an exact filter instead —
+    picking "Everyday" should show only Everyday, not Everyday-and-everything-
+    above-it — so the count meter next to it switched to match. Call on
+    whatever rows already survived the OTHER filters (search/date/direction/
+    ...) but before the significance filter itself narrows them, so the meter
+    reflects "what you'd get at each level, given everything else you've
+    already filtered by"."""
+    counts = {n: 0 for n in range(1, 6)}
+    for r in rows or []:
+        sig = r.get("significance") or 0
+        if 1 <= sig <= 5:
+            counts[sig] += 1
+    return counts
+
+
+def merge_email_category_counts(index, email_counts):
+    """Fold email-thread category counts onto an already-built documents_index()
+    tree, for the Documents view's "include emails" toggle. A category that had
+    no documents at all — only email-sourced matches — gets a new entry; email
+    counts never invent a subcategory split (only documents ever get one, and
+    only for 'financial'). Returns `index` UNCHANGED (same object) when there is
+    nothing to add, so the common "toggle off" path costs nothing."""
+    if not email_counts:
+        return index
+    by_cat = {c["category"]: dict(c) for c in index}
+    for cat, n in email_counts.items():
+        if not n:
+            continue
+        if cat in by_cat:
+            by_cat[cat]["count"] += n
+        else:
+            by_cat[cat] = {"category": cat, "count": n, "subcategories": []}
+    out = list(by_cat.values())
+    out.sort(key=lambda c: -c["count"])
+    return out
+
+
+def email_rows_for_category(email_rows, category):
+    """Email thread rows (as email_rows() shapes them) whose `categories` list
+    includes `category` — the email side of a Documents-view topic folder when
+    "include emails" is on. [] for no category (never dump every thread)."""
+    if not category:
+        return []
+    return [r for r in email_rows or [] if category in (r.get("categories") or [])]
+
+
+def _participant_address(p):
+    """The bare address out of a '<Name> <addr>' or bare-address participant
+    string (the shape _participants_full in gen_email_threads.py writes)."""
+    p = (p or "").strip()
+    if p.endswith(">") and "<" in p:
+        return p[p.rfind("<") + 1:-1].strip()
+    return p
+
+
+def thread_correspondent(participants, owner_addresses):
+    """The thread's primary non-owner participant — the first participant whose
+    address isn't one of the case's configured `owner_addresses` (the account
+    owner's own address(es), a user-supplied setting; see verb_set_owner_addresses
+    and the design note in STATE.md on why this can't be inferred from the
+    pipeline's existing data). None when no owner address is configured (we don't
+    guess) or every participant IS an owner address."""
+    owners = {a.strip().lower() for a in (owner_addresses or []) if a}
+    if not owners:
+        return None
+    for p in participants or []:
+        if _participant_address(p).lower() not in owners:
+            return p
+    return None
+
+
 def email_rows(threads_index, *, cap=None, decisions=None):
     """Thread-grain rows for the Emails section, from email_threads_index.json.
 
@@ -3243,15 +3530,20 @@ def email_rows(threads_index, *, cap=None, decisions=None):
     `demoted: True` so the UI can offer a Restore.
     """
     demoted = set((decisions or {}).get("email_demoted", {}) or {})
+    owner_addresses = (decisions or {}).get("owner_addresses") or []
     threads = (threads_index or {}).get("threads", []) or []
     rows = []
     for t in threads:
         tid = t.get("thread_id")
         is_demoted = str(tid) in demoted
+        participants = t.get("participants") or []
         rows.append({
             "thread_id": tid,
             "subject": (t.get("subject") or "(no subject)").replace("\n", " ").strip(),
-            "participants": t.get("participants") or [],
+            "participants": participants,
+            # "Sort by sender" needs to know which participant ISN'T the account
+            # owner; None (never a guess) until owner_addresses is configured.
+            "correspondent": thread_correspondent(participants, owner_addresses),
             "date_first": t.get("date_first"),
             "date_last": t.get("date_last"),
             "significance": 0 if is_demoted else t.get("significance"),
@@ -3552,6 +3844,64 @@ def _resolve_attachments(entry, attachment_index):
             "is_inline": bool(a.get("is_inline")),
             "file_id": fid,
         })
+    return out
+
+
+def thread_has_delivered_attachment(threads_index, email_by_file, attachment_index):
+    """{thread_id: True} for every thread carrying at least one NON-INLINE
+    attachment that resolves to a delivered item — the exact same G-4 resolution
+    `_resolve_attachments`/thread detail already use. "Has an attachment" here
+    means one that's actually in the pipeline results, not just a raw attachment
+    the .eml carried that was never delivered (inline signature images, junk,
+    quarantined originals) — those would be dead links if surfaced, so they don't
+    count. Threads with none are simply absent (additive, like every overlay
+    stamp in this module)."""
+    threads = (threads_index or {}).get("threads", []) or []
+    out = {}
+    for t in threads:
+        tid = t.get("thread_id")
+        if not tid or tid in out:
+            continue
+        for f in t.get("files") or []:
+            entry = (email_by_file or {}).get(f) or {}
+            for a in _resolve_attachments(entry, attachment_index):
+                if a.get("file_id") and not a.get("is_inline"):
+                    out[tid] = True
+                    break
+            if tid in out:
+                break
+    return out
+
+
+def thread_direction_flags(threads_index, email_by_file, owner_addresses):
+    """{thread_id: {"sent": True?, "received": True?}} from each message's
+    `email_from`, same owner_addresses setting thread_correspondent uses. A
+    thread gets `sent` if ANY message came from an owner address, `received` if
+    ANY came from someone else — a real back-and-forth carries BOTH, matching
+    how Gmail shows one conversation under both Inbox and Sent. A thread no
+    configured owner address ever touches gets neither key (additive; never a
+    guess) — including every thread when owner_addresses is empty."""
+    owners = {a.strip().lower() for a in (owner_addresses or []) if a}
+    if not owners:
+        return {}
+    threads = (threads_index or {}).get("threads", []) or []
+    out = {}
+    for t in threads:
+        tid = t.get("thread_id")
+        if not tid:
+            continue
+        flags = out.setdefault(tid, {})
+        for f in t.get("files") or []:
+            entry = (email_by_file or {}).get(f) or {}
+            addr = _participant_address(entry.get("email_from")).lower()
+            if not addr:
+                continue
+            if addr in owners:
+                flags["sent"] = True
+            else:
+                flags["received"] = True
+        if not flags:
+            del out[tid]
     return out
 
 

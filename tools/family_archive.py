@@ -73,11 +73,14 @@ from tools._archive_data import (  # noqa: E402
     family_block_reasons, correspondents_data, correspondent_duplicate_candidates,
     _duplicate_cluster_id, delivered_basename_index,
     audio_rows, build_doctext_views, build_photo_universe, build_search, build_stacks,
-    confirm_queue_data, conversation_detail, document_rows, documents_index,
+    confirm_queue_data, conversation_detail, document_rows, documents_index, documents_year_index,
     file_identity,
     email_rows, email_thread_detail, event_album_titles, event_albums_data,
+    thread_has_delivered_attachment, thread_direction_flags, _participant_address,
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
+    email_category_counts, merge_email_category_counts, email_rows_for_category,
+    significance_bucket_counts, report_data, gathers_data,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -166,6 +169,10 @@ ASSETS_SRC = _ROOT / "report_assets"
 ACTIONS_FILE = "family_actions.ndjson"
 DECISIONS_FILE = "family_decisions.json"
 BANISHED_DIR = "family_banished"
+# 2026-10-15: documents' own hidden-folder equivalent of BANISHED_DIR, organized
+# by category (output/family_deleted/<category>/...) per the user's own choice —
+# see verb_take_out_document.
+TAKEN_OUT_DIR = "family_deleted"
 EXPORT_DIR = "family_export"
 # Curation layer (docs/specs/family-archive-curation-layer.md): a pure, additive,
 # audited sidecar of examiner favorites / collections / notes, keyed by EXISTING
@@ -184,6 +191,13 @@ MAX_TITLE_LEN = 120
 MAX_NOTE_LEN = 2000
 # A single add call can't stuff an unbounded id list into one collection.
 MAX_COLLECTION_MEMBERS = 20000
+# Gather-for-someone (2026-10-15): same order of magnitude as a collection (a
+# bundle for one recipient is realistically much smaller, but nothing here
+# depends on that) and a small cap on how many recipients/missing-item lines
+# one case accumulates — these are short labels, not a second documents list.
+MAX_GATHER_MEMBERS = 20000
+MAX_RECIPIENTS = 200
+MAX_GATHER_MISSING = 500
 VIEW_DIRS = ("by_person", "all_photos_by_scene", "by_event")
 # G-13 junk rescue: junk-routed images live under extracted/photos_junk/; un-junking
 # moves one back to its original working location and drops a scene view symlink into
@@ -211,6 +225,8 @@ PAGES = [
     ("timeline", "Timeline", "heirloom"),
     ("places", "Places", "heirloom"),
     ("documents", "Documents", "heirloom"),
+    # 2026-10-15: the top-nav Report tab — see report_data in _archive_data.py.
+    ("report", "Report", "heirloom"),
     ("correspondence", "Correspondence", "heirloom"),
     ("emails", "Emails", "heirloom"),
     ("correspondents", "Correspondents", "heirloom"),
@@ -221,6 +237,9 @@ PAGES = [
     # Phase 1 (the curation verbs are require_examiner); a collection opens as a
     # photos grid filtered ?collection_curation=<slug>.
     ("collections", "Collections", "heirloom"),
+    # 2026-10-15: Gather-for-someone — reached from a Documents button, not a
+    # top-nav tab (see HIDDEN_FROM_NAV), same reasoning as Search.
+    ("gather", "Gather for someone", "heirloom"),
     ("review", "Review queue", "heirloom"),
     # G-12 guided first-session review + G-13 junk rescue — examiner power tools.
     ("guided", "Guided review", "heirloom"),
@@ -232,7 +251,7 @@ PAGES = [
     ("search", "Search", "heirloom"),
 ]
 # Pages that route + serve an API but must NOT appear as a nav link in the rail.
-HIDDEN_FROM_NAV = {"search"}
+HIDDEN_FROM_NAV = {"search", "gather"}
 # history is examiner-only: its action entries embed quarantine/canonical paths and
 # sensitivity filter names (release/discard_quarantine record the full entry), which
 # a family session must not read. It is also, today, purely the examiner's curation
@@ -241,7 +260,7 @@ HIDDEN_FROM_NAV = {"search"}
 # guided (G-12) and junk (G-13) are examiner power tools: the guided checklist
 # composes the examiner-only review surfaces, and the junk grid exposes raw internal
 # working paths (a family session sees neither the page nor its /api).
-EXAMINER_ONLY = {"review", "history", "guided", "junk", "collections"}
+EXAMINER_ONLY = {"review", "history", "guided", "junk", "collections", "gather"}
 # Legacy / convenience path aliases resolved before page + api dispatch.
 # quarantine folded into the Review queue (#15) — keep the path working.
 PAGE_ALIASES = {"voicemails": "recordings", "audio": "recordings", "letters": "correspondence",
@@ -360,11 +379,12 @@ def apply_curation(rows, curation, id_key="id"):
         return rows
     favs = curation.get("favorites") or {}
     notes = curation.get("notes") or {}
+    important = curation.get("important") or {}
     membership = {}
     for slug, coll in (curation.get("collections") or {}).items():
         for m in (coll.get("members") or []):
             membership.setdefault(str(m), []).append(slug)
-    if not favs and not notes and not membership:
+    if not favs and not notes and not membership and not important:
         return rows
     out = []
     for r in rows:
@@ -372,11 +392,14 @@ def apply_curation(rows, curation, id_key="id"):
         fav = iid in favs
         cols = membership.get(iid)
         note = (notes.get(iid) or {}).get("text") if iid in notes else None
-        if fav or cols or note:
+        imp = iid in important
+        if fav or cols or note or imp:
             r = dict(r)
             r["favorite_curation"] = fav
             r["collections"] = sorted(cols) if cols else []
             r["note"] = note
+            if imp:
+                r["important"] = True
         out.append(r)
     return out
 
@@ -510,6 +533,18 @@ _DOC_SORTS = {
 }
 
 
+def _document_year(r):
+    """The 4-digit year a document row's vital date_used falls in, or None —
+    the ONLY date any document in this app ever has (see documents_year_index
+    for why this means "no date" for nearly every ordinary document). Reads
+    the row's OWN first vital entry, same source Detail's docDateOf uses."""
+    for v in r.get("vital") or ():
+        val = str((v.get("date_used") or {}).get("value") or "")
+        if len(val) >= 4 and val[:4].isdigit():
+            return val[:4]
+    return None
+
+
 def _filter_documents(rows, params):
     """Server-side filters + sort for Documents, applied BEFORE the page slice so
     a category's tail is reachable (the full category index is computed
@@ -518,7 +553,10 @@ def _filter_documents(rows, params):
     ?cat=/subcat= narrow to a category; ?collection_curation=<slug> to one curation
     collection (needs rows stamped by apply_curation); ?vital=<target> to the documents that are
     a checklist item for that target (`vital=*` → any target; needs rows stamped
-    by _attach_vital); ?sort=name|kind|significance with ?dir=asc|desc reorders."""
+    by _attach_vital); ?year=<YYYY>|nodate narrows by _document_year (the By-year
+    arrangement, 2026-10-16 — mutually exclusive with ?cat/?vital in the UI, but
+    not enforced here, same as every other filter); ?sort=name|kind|significance
+    with ?dir=asc|desc reorders."""
     cat = _one(params, "cat")
     out = rows
     if cat:
@@ -533,6 +571,11 @@ def _filter_documents(rows, params):
     if vital:
         out = [r for r in out
                if any(vital == "*" or v.get("target") == vital for v in r.get("vital") or ())]
+    year = _one(params, "year")
+    if year == "nodate":
+        out = [r for r in out if _document_year(r) is None]
+    elif year:
+        out = [r for r in out if _document_year(r) == year]
     key = _DOC_SORTS.get(_one(params, "sort"))
     if key:
         default_desc = _one(params, "sort") == "significance"
@@ -562,14 +605,19 @@ def _filter_correspondents(rows, params):
 
 
 def _filter_emails_search(rows, params):
-    """Server-side ?q= / date range / ?sort= for the Emails list search box
-    (#11: tens of thousands of threads with no in-list search/sort/date filter
-    was close to unusable for 'find X' without falling back to full-text
-    search first). Applied BEFORE the page slice, alongside (not instead of)
-    the existing ?participant= click-through filter. `q` matches a
-    case-insensitive substring of the subject OR any participant; the date
-    range narrows by the thread's last activity date. `sort` re-orders
-    (default stays email_rows' own significance-desc order)."""
+    """Server-side ?q= / date range / ?important= / ?has_attachment= /
+    ?direction= for the Emails list search box (#11: tens of thousands of
+    threads with no in-list search/date filter was close to unusable for
+    'find X' without falling back to full-text search first). Applied BEFORE
+    the page slice, alongside (not instead of) the existing ?participant=
+    click-through filter. `q` matches a case-insensitive substring of the
+    subject OR any participant; the date range narrows by the thread's last
+    activity date.
+
+    Deliberately NOT significance or sort — see _filter_emails_significance /
+    _sort_emails. The significance filter is split out so the caller can
+    compute significance_bucket_counts (the count meter) on these results
+    BEFORE narrowing to one level."""
     q = _one(params, "q").strip().lower()
     if q:
         rows = [r for r in rows
@@ -580,11 +628,48 @@ def _filter_emails_search(rows, params):
         rows = [r for r in rows if (r.get("date_last") or "")[:10] >= df]
     if dt:
         rows = [r for r in rows if (r.get("date_last") or "")[:10] <= dt]
+    if _one(params, "important") == "1":
+        rows = [r for r in rows if r.get("important")]
+    if _one(params, "has_attachment") == "1":
+        rows = [r for r in rows if r.get("has_attachment")]
+    direction = _one(params, "direction")
+    if direction in ("received", "sent"):
+        rows = [r for r in rows if r.get(direction)]
+    return rows
+
+
+def _filter_emails_significance(rows, params):
+    """An EXACT level on the pipeline's significance score (2026-10-15: the
+    score drives this filter on purpose, unlike sort, which stays off it —
+    see the Important flag for the independent, examiner/family-set signal).
+    2026-10-16: switched from a threshold ("this level and up") to an exact
+    match per the user's explicit request — picking "Everyday" now shows only
+    Everyday, not Everyday plus every level above it."""
+    sig = _one(params, "significance")
+    if not sig:
+        return rows
+    try:
+        want = int(sig)
+    except ValueError:
+        return rows
+    return [r for r in rows if (r.get("significance") or 0) == want]
+
+
+def _sort_emails(rows, params):
+    """?sort=recent|subject|sender with ?dir=asc|desc — clickable From/Subject/
+    Date column headers, like a usual mail client (2026-10-15), replacing the
+    old dropdown. Each column has its own natural default direction (newest
+    first for Date, A-Z for the others) the first time it's clicked; a second
+    click on the same column reverses it — same convention _DOC_SORTS/sortHead
+    already use for Documents."""
     sort = _one(params, "sort")
+    d = _one(params, "dir")
     if sort == "recent":
-        rows = sorted(rows, key=lambda r: (r.get("date_last") or ""), reverse=True)
+        rows = sorted(rows, key=lambda r: (r.get("date_last") or ""), reverse=(d != "asc"))
     elif sort == "subject":
-        rows = sorted(rows, key=lambda r: (r.get("subject") or "").lower())
+        rows = sorted(rows, key=lambda r: (r.get("subject") or "").lower(), reverse=(d == "desc"))
+    elif sort == "sender":
+        rows = sorted(rows, key=lambda r: (r.get("correspondent") or "").lower(), reverse=(d == "desc"))
     return rows
 
 
@@ -930,6 +1015,9 @@ class ArchiveCase:
         cur.setdefault("favorites", {})
         cur.setdefault("collections", {})
         cur.setdefault("notes", {})
+        # 2026-10-15: Gather-for-someone folders + the saved recipient list.
+        cur.setdefault("gathers", {})
+        cur.setdefault("recipients", [])
         return cur
 
     def quarantine_entries(self):
@@ -1106,38 +1194,49 @@ class ArchiveCase:
                  "ref": r.get("h"), "kind": r.get("k")} for r in page]
         return {"hits": hits, "total": total, "building": True}
 
+    def _tab_counts(self, decisions):
+        """The one true per-tab totals dict — Overview's tiles, and (2026-10-15)
+        the Report's "Processed" block, both read this so the two can never
+        show different numbers for the same thing. Each key is scoped to match
+        what that tab itself lists, not a raw pipeline count (see each
+        comment) — a user handing these numbers to Richard as feedback needs
+        them to be the real, filtered totals, not the pre-filter corpus size."""
+        eff_fc = self.effective_face_clustering(decisions)  # G-15 merges folded
+        removed = set((decisions.get("removed_persons", {}) or {}).keys())
+        return {
+            "photos": len(self.universe),
+            "people": len([p for p in (eff_fc.get("person_clusters", {}) or {})
+                           if p not in removed]),
+            "places": len(places_data(self._photo_rows())["trips"]),
+            # Filtered to match the Documents section exactly (excludes
+            # email-sourced classifications and, for family, credentials —
+            # see document_rows). It used to be the raw document_classifications
+            # length, which counted every email as a document too (~66k vs. the
+            # ~1.5k the Documents page actually shows).
+            "documents": len(document_rows(self.summary, self.ocr_index, self.role,
+                                           doc_placements=decisions.get("doc_placements"),
+                                           taken_out=decisions.get("doc_taken_out"))),
+            "audio": len(self.summary.get("audio_classifications", []) or []),
+            "videos": self.summary.get("video_delivered", self.summary.get("total_videos", 0)),
+            # Conversations THIS ROLE may see (matches the Messages section
+            # exactly — it used to count every non-discard conversation, so
+            # the family's count included platform traffic and estate-rescued
+            # conversations the list itself withholds); 0 when message_triage
+            # hasn't run.
+            "messages": sum(1 for c in (self.conversation_index or [])
+                            if can_see_conversation(c, self.role)),
+            # Thread-grain, matching the Emails section exactly (see email_rows) —
+            # emails were excluded from "documents" above but had no Overview
+            # tile of their own at all.
+            "emails": len(email_rows(self.email_threads, decisions=decisions)),
+        }
+
     # ── data sections (thumbs/media are served live, so builders get no thumbs) ──
     def section(self, page):
         if page == "overview":
             decisions = self.decisions
-            removed = set((decisions.get("removed_persons", {}) or {}).keys())
-            eff_fc = self.effective_face_clustering(decisions)  # G-15 merges folded
-            counts = {
-                "photos": len(self.universe),
-                "people": len([p for p in (eff_fc.get("person_clusters", {}) or {})
-                               if p not in removed]),
-                "places": len(places_data(self._photo_rows())["trips"]),
-                # Filtered to match the Documents section exactly (excludes
-                # email-sourced classifications and, for family, credentials —
-                # see document_rows). It used to be the raw document_classifications
-                # length, which counted every email as a document too (~66k vs. the
-                # ~1.5k the Documents page actually shows).
-                "documents": len(document_rows(self.summary, self.ocr_index, self.role,
-                                               doc_placements=decisions.get("doc_placements"))),
-                "audio": len(self.summary.get("audio_classifications", []) or []),
-                "videos": self.summary.get("video_delivered", self.summary.get("total_videos", 0)),
-                # Conversations THIS ROLE may see (matches the Messages section
-                # exactly — it used to count every non-discard conversation, so
-                # the family's count included platform traffic and estate-rescued
-                # conversations the list itself withholds); 0 when message_triage
-                # hasn't run.
-                "messages": sum(1 for c in (self.conversation_index or [])
-                                if can_see_conversation(c, self.role)),
-                # Thread-grain, matching the Emails section exactly (see email_rows) —
-                # emails were excluded from "documents" above but had no Overview
-                # tile of their own at all.
-                "emails": len(email_rows(self.email_threads, decisions=decisions)),
-            }
+            counts = self._tab_counts(decisions)
+            eff_fc = self.effective_face_clustering(decisions)  # G-15 merges folded; needed below too
             # R-7: for the family role, a legitimately ABSENT archive_map.json (the
             # optional build_archive stage was skipped, or no media) leaves the
             # family universe empty — surface a prominent warning in the payload so
@@ -1188,18 +1287,39 @@ class ArchiveCase:
             return d
         if page == "documents":
             rows = document_rows(self.summary, self.ocr_index, self.role,
-                                 doc_placements=self.decisions.get("doc_placements"))
+                                 doc_placements=self.decisions.get("doc_placements"),
+                                 taken_out=self.decisions.get("doc_taken_out"))
+            # 2026-10-16: curated HERE (not only in api_section's later pass) so
+            # vital_docs_data can decorate Checklist items with the same
+            # star/note/collections every Detail card already shows — apply_curation
+            # is additive/idempotent, so api_section's own call on these same rows
+            # is still correct, just a harmless second pass.
+            rows = apply_curation(rows, self.curation_layer, "file")
             return {"index": documents_index(rows), "rows": rows,
                     "vital_docs": vital_docs_data(self.paths, self.summary, self.role,
                                                   decisions=self.decisions,
                                                   threads_index=self.email_threads,
                                                   per_target_k=self.vital_per_target_k(),
-                                                  recordings_delivered=self.recordings_delivered())}
+                                                  recordings_delivered=self.recordings_delivered(),
+                                                  doc_rows=rows)}
+        if page == "report":
+            docs = self.section("documents")      # reuses the same index + vital_docs
+            return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions))
+        if page == "gather":
+            # Gather-for-someone (2026-10-15): examiner-only (EXAMINER_ONLY), so
+            # document_rows's role branch here is always "examiner" in practice —
+            # kept as self.role rather than hardcoded so a future role change to
+            # this page doesn't silently leak the family-gated fields.
+            rows = document_rows(self.summary, self.ocr_index, self.role,
+                                 doc_placements=self.decisions.get("doc_placements"),
+                                 taken_out=self.decisions.get("doc_taken_out"))
+            return gathers_data(self.curation_layer, rows)
         if page == "correspondence":
             # Real (non-email) correspondence docs, grouped by writing medium,
             # plus scanned document/letter IMAGES (not in document_classifications).
             rows = [d for d in document_rows(self.summary, self.ocr_index, self.role,
-                                             doc_placements=self.decisions.get("doc_placements"))
+                                             doc_placements=self.decisions.get("doc_placements"),
+                                             taken_out=self.decisions.get("doc_taken_out"))
                     if d.get("category") in LETTER_CATEGORIES]
             typed, hand = [], []
             for r in rows:
@@ -1280,7 +1400,8 @@ class ArchiveCase:
                             st["summary"], st["universe"], {}, self.role,
                             frame_map=st["video_frame_map"], archive_map=st["archive_map"]),
                 document_rows(st["summary"], st["ocr_index"], self.role,
-                              doc_placements=self.decisions.get("doc_placements")),
+                              doc_placements=self.decisions.get("doc_placements"),
+                              taken_out=self.decisions.get("doc_taken_out")),
                 audio_rows(st["summary"], st["transcription_index"], self.role, self.cfg),
                 email_rows(st["email_threads"]),
                 conversations=message_rows(st["conversation_index"], self.role)))
@@ -1347,9 +1468,22 @@ class ArchiveCase:
             # so a correspondent card's filtered tail is reachable and total is true.
             # #11: ?q=/date_from/date_to/sort layer the in-list search box on top.
             rows = apply_curation(self.section("emails"), curation, "thread_id")
+            rows = self._attach_has_attachment(rows)
+            rows = self._attach_direction(rows)
             rows = _filter_emails_by_participant(rows, params)
             rows = _filter_emails_search(rows, params)
-            return _paginate(rows, offset, limit)
+            # Counts BEFORE the significance filter narrows the list — the
+            # count meter next to the dropdown shows what every option would
+            # yield given the OTHER active filters, not just the chosen one.
+            sig_counts = significance_bucket_counts(rows)
+            rows = _filter_emails_significance(rows, params)
+            rows = _sort_emails(rows, params)
+            page = _paginate(rows, offset, limit)
+            # So the Emails page's owner-address settings form can show what's
+            # currently configured without a second round-trip.
+            page["owner_addresses"] = self.decisions.get("owner_addresses") or []
+            page["significance_counts"] = sig_counts
+            return page
         if name == "messages":
             return _paginate(apply_curation(self.section("messages"), curation,
                                             "conversation_id"), offset, limit)
@@ -1366,9 +1500,34 @@ class ArchiveCase:
             data = self.section("documents")           # {index, rows(full), vital_docs}
             rows = apply_curation(data["rows"], curation, "file")
             rows = _attach_vital(rows, data["vital_docs"], self.vital_candidate_targets())
+            index = data["index"]
+            year_index = documents_year_index(rows)   # By-year arrangement (2026-10-16)
+            # Documents-view topic merge (?include_emails=1): email bodies share
+            # the SAME category taxonomy as documents (case_summary's pipeline
+            # classification, source=="email") but document_rows() routes them
+            # out to the Emails section by design — see its docstring. This flag
+            # folds them back in for browsing BY TOPIC only: folder counts always
+            # pick up email-only categories, but a thread's row is injected only
+            # when a specific, plain category folder is open (not the vital-doc
+            # checklist or a curation collection — those have their own,
+            # separate email linking already).
+            cat = _one(params, "cat")
+            if _one(params, "include_emails") == "1":
+                email_full = apply_curation(self.section("emails"), curation, "thread_id")
+                index = merge_email_category_counts(index, email_category_counts(email_full))
+                if cat and not _one(params, "vital") and not _one(params, "collection_curation"):
+                    rows = list(rows)
+                    for er in email_rows_for_category(email_full, cat):
+                        rows.append({
+                            "kind": "email", "thread_id": er["thread_id"], "file": None,
+                            "name": er["subject"], "category": cat, "subcategory": None,
+                            "text_kind": None, "significance": er.get("significance"),
+                            "summary": None, "preview": None,
+                        })
             rows = _filter_documents(rows, params)
             page = _paginate(rows, offset, limit)
-            page["index"] = data["index"]              # full index (all rows)
+            page["index"] = index                       # full index (all rows)
+            page["year_index"] = year_index
             page["vital_docs"] = data["vital_docs"]    # checklist panel (G-2)
             return page
         if name == "correspondence":
@@ -1477,6 +1636,50 @@ class ArchiveCase:
                                    f["offset"] if f["offset"] is not None else 0.0, f["id"]))
         return {"frames": frames}
 
+    def _email_attachment_index(self):
+        # Shared with thread_messages (same cache key → built once per generation).
+        return self._state_cached(
+            "email_attachment_index",
+            lambda st: delivered_basename_index(st["summary"], st["archive_map"], self.role))
+
+    def _attach_has_attachment(self, rows):
+        """Stamp has_attachment=True on Emails-list rows whose thread carries a
+        delivered (non-inline) attachment — see thread_has_delivered_attachment.
+        Computed live from the already-loaded indexes; no pipeline rerun."""
+        flags = self._state_cached(
+            "email_thread_has_attachment",
+            lambda st: thread_has_delivered_attachment(
+                st["email_threads"], self.email_by_file, self._email_attachment_index()))
+        if not flags:
+            return rows
+        out = []
+        for r in rows:
+            if flags.get(r.get("thread_id")):
+                r = dict(r)
+                r["has_attachment"] = True
+            out.append(r)
+        return out
+
+    def _attach_direction(self, rows):
+        """Stamp sent/received onto Emails-list rows — see thread_direction_flags.
+        NOT _state_cached: it depends on owner_addresses, which verb_set_owner_
+        addresses changes without a case.load() (same as every other decision
+        read in this class), so a cached value could go stale within one
+        generation. The underlying scan is the same cost class as
+        _attach_has_attachment's, just not reused across requests."""
+        flags = thread_direction_flags(
+            self.email_threads, self.email_by_file, self.decisions.get("owner_addresses"))
+        if not flags:
+            return rows
+        out = []
+        for r in rows:
+            f = flags.get(r.get("thread_id"))
+            if f:
+                r = dict(r)
+                r.update(f)
+            out.append(r)
+        return out
+
     def thread_messages(self, thread_id):
         """Threaded conversation for one email thread, resolved server-side (#3)."""
         sig_by_file = {}
@@ -1500,6 +1703,7 @@ class ArchiveCase:
         if detail is None:
             raise VerbError(f"unknown thread {thread_id}", 404)
         detail["demoted"] = str(thread_id) in (self.decisions.get("email_demoted", {}) or {})
+        detail["important"] = str(thread_id) in (self.curation_layer.get("important", {}) or {})
         return detail
 
     def conversation_by_id(self, conversation_id):
@@ -3062,6 +3266,86 @@ def verb_move(case, payload):
     return out
 
 
+def verb_take_out_document(case, payload):
+    """Take a document out of every family-facing view, with an optional reason
+    ({file, reason?}) — the Detail-view "delete" the user asked for on
+    2026-10-15, decided over AskUserQuestion as: physically move the delivered
+    file (when one still exists), organized by the document's own current
+    category, AND record a DECISIONS OVERLAY that is the real source of truth
+    for hiding it — because, per Move's own precondition above, a document's
+    delivered bytes are frequently already reaped, leaving nothing to move.
+
+    "Never destroy": like Banish, this only ever relocates bytes (to
+    output/family_deleted/<category>/), never deletes them, and is fully
+    reversible. Unlike Banish it is NOT restricted to archive_dir, because
+    documents never live there — Banish's own archive-dir check is why it
+    cannot be reused for this (confirmed in this session's investigation).
+
+    The user's own decision (not left independent): taking out a document that
+    satisfies a vital-document kind also drops it from the checklist — see
+    vital_docs_data's doc_taken_out check, which this verb's overlay key feeds
+    directly, no separate write needed here.
+    """
+    require_examiner(case)
+    src = payload.get("file")
+    if not src:
+        raise VerbError("take-out needs file", 400)
+    reason = str(payload.get("reason") or "").strip()[:MAX_NOTE_LEN] or None
+
+    # Membership validation (NOT resolve_media_path — doc bytes are reaped),
+    # same precondition as Move (_move_document_validate) and the same reason.
+    rec = None
+    for d in case.summary.get("document_classifications", []) or []:
+        if d.get("file") == src:
+            rec = d
+            break
+    if rec is None:
+        raise VerbError(f"not a document: {src}", 404)
+    if (rec.get("source") or "").lower() == "email":
+        raise VerbError("email items are not taken out from Documents", 400)
+
+    decisions = case.decisions
+    doc_placements = decisions.get("doc_placements") or {}
+    derived = rec.get("category") or "miscellaneous"
+    p = doc_placements.get(src)
+    if isinstance(p, dict):
+        eff_cat = p.get("category") or derived
+    elif isinstance(p, str):
+        eff_cat = p
+    else:
+        eff_cat = derived
+
+    # Best-effort physical move — absent bytes are not an error (see docstring);
+    # the overlay write below is what actually hides the document either way.
+    canonical = moved_to = None
+    try:
+        canonical = resolve_media_path(case, src)
+        dest = case.paths.output_dir / TAKEN_OUT_DIR / eff_cat / canonical.name
+        final = move_tracked(canonical, dest, reason="family:take_out",
+                             ledger=case.ledger, custody=case.custody)
+        moved_to = str(final)
+    except VerbError:
+        pass
+
+    with _doc_lock(case):
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        fresh = load_json(dpath, {}) or {}
+        taken_out = fresh.setdefault("doc_taken_out", {})
+        before = taken_out.get(src)
+        taken_out[src] = {"ts": _now(), "actor": case.role, "reason": reason,
+                          "category": eff_cat, "moved_to": moved_to,
+                          "canonical": str(canonical) if canonical else None}
+        atomic_write_json(dpath, fresh)
+    if moved_to:
+        case.load()           # the delivered file moved — universe/doc state must reflect it
+    entry = append_action(case, "take_out", src,
+                          {"entry": before},
+                          {"reason": reason, "moved_to": moved_to,
+                           "canonical": str(canonical) if canonical else None},
+                          reversible=True)
+    return {"ok": True, "moved": bool(moved_to), "undo_token": entry["undo_token"]}
+
+
 def verb_rename_folder(case, payload, *, record=True):
     """Rename any view folder (event album, scene, person folder) on disk."""
     require_examiner(case)
@@ -3201,7 +3485,8 @@ def _collection_ids(case, kind, key):
         return out
     if kind == "category":
         docs = document_rows(case.summary, case.ocr_index, case.role,
-                             doc_placements=case.decisions.get("doc_placements"))
+                             doc_placements=case.decisions.get("doc_placements"),
+                             taken_out=case.decisions.get("doc_taken_out"))
         if ":" in str(key):
             cat, sub = str(key).split(":", 1)
             return [r["file"] for r in docs
@@ -3284,6 +3569,15 @@ def _load_curation(case):
     cur.setdefault("favorites", {})
     cur.setdefault("collections", {})
     cur.setdefault("notes", {})
+    cur.setdefault("important", {})
+    # 2026-10-15: Gather-for-someone folders + the saved recipient list — see
+    # verb_gather_* below. Separate from "collections" on purpose: a gather
+    # folder carries a recipient, an optional ask/cover note, a per-member
+    # possible/left-out status, and a couldn't-find list none of which a plain
+    # collection has, and this keeps those fields from leaking onto every
+    # ordinary collection.
+    cur.setdefault("gathers", {})
+    cur.setdefault("recipients", [])
     return cur
 
 
@@ -3306,6 +3600,34 @@ def verb_favorite(case, payload):
             favs.pop(iid, None)
         atomic_write_json(_curation_path(case), cur)
     entry = append_action(case, "favorite", iid,
+                          {"entry": before}, {"on": on}, reversible=True)
+    return {"ok": True, "on": on, "undo_token": entry["undo_token"]}
+
+
+def verb_important_email(case, payload):
+    """Toggle an "important" flag on one email thread ({thread_id, on: true|false}).
+
+    DELIBERATELY NOT require_examiner(): every other curation verb is Phase 1
+    examiner-only (see the section header above), but flagging a thread important
+    is not a decision about what the other role may see — it's a personal marker
+    either side can set for themselves, so both roles may call this one. Same
+    storage/lock/audit shape as verb_favorite; `actor_role` records which role set
+    it (there is no per-person login to record more than that — see STATE.md)."""
+    tid = payload.get("thread_id")
+    if not tid:
+        raise VerbError("important/email needs thread_id")
+    tid = str(tid)
+    on = bool(payload.get("on"))
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        important = cur["important"]
+        before = important.get(tid)
+        if on:
+            important[tid] = {"ts": _now(), "actor_role": case.role}
+        else:
+            important.pop(tid, None)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "important_email", tid,
                           {"entry": before}, {"on": on}, reversible=True)
     return {"ok": True, "on": on, "undo_token": entry["undo_token"]}
 
@@ -3427,6 +3749,358 @@ def verb_collection_remove(case, payload):
                           {"removed": removed}, {"count": len(removed)}, reversible=True)
     return {"ok": True, "slug": slug, "removed": len(removed),
             "undo_token": entry["undo_token"]}
+
+
+# ── Gather-for-someone (2026-10-15; examiner-only, decided over the mockup's
+#    AI-matching variant): a NAMED folder for one recipient, built the same way
+#    as a collection (browse, pick, add) — never a search the archive runs on
+#    the PR's behalf. Each member carries a possible/left-out status so a
+#    deliberately-withheld document still shows on the cover sheet instead of
+#    silently vanishing; "missing" entries record something searched for and
+#    not found, with no file behind them (same shape as the Report's own
+#    "what wasn't found" section). See richard-feedback-report memory for why
+#    this exists, and the AskUserQuestion answers (2026-10-15) this was built
+#    from: manual only, a saved recipient list, examiner-only. ──
+
+def _gather_id():
+    """Short stable id for a gather-folder sub-entry (a missing-item line) that
+    has no natural key of its own (unlike a document, which is keyed by its own
+    path). Collision risk is irrelevant at this volume; this only needs to be
+    unique within one gather folder, not globally."""
+    return hashlib.sha1(f"{_now()}|{os.urandom(8)}".encode()).hexdigest()[:10]
+
+
+def verb_recipient_add(case, payload):
+    """Add a name to the saved, reusable recipient list ({name}) — a plain
+    convenience list for the "who is it for?" field, not a record anything
+    else refers to by id, so there is nothing to keep in sync when it changes."""
+    require_examiner(case)
+    name = str(payload.get("name") or "").strip()[:MAX_TITLE_LEN]
+    if not name:
+        raise VerbError("recipient/add needs a non-empty name")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        recipients = cur["recipients"]
+        if name not in recipients:
+            if len(recipients) >= MAX_RECIPIENTS:
+                raise VerbError("recipient list is full", 409)
+            recipients.append(name)
+            atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "recipient_add", name, {}, {"name": name}, reversible=True)
+    return {"ok": True, "recipients": list(cur["recipients"]), "undo_token": entry["undo_token"]}
+
+
+def verb_recipient_remove(case, payload):
+    """Remove a name from the saved recipient list ({name}). Existing gather
+    folders keep their own recipient text regardless — this only trims the
+    suggestion list, nothing it points at."""
+    require_examiner(case)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise VerbError("recipient/remove needs name")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        recipients = cur["recipients"]
+        was_present = name in recipients
+        if was_present:
+            recipients.remove(name)
+            atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "recipient_remove", name,
+                          {"was_present": was_present}, {}, reversible=True)
+    return {"ok": True, "recipients": list(cur["recipients"]), "undo_token": entry["undo_token"]}
+
+
+def verb_gather_create(case, payload):
+    """Create a new gather-for-someone folder ({title, recipient?, ask?,
+    cover_note?}). `title` is the folder's own label (e.g. "For the CPA");
+    `recipient`/`ask`/`cover_note` are optional free text, same caps as a
+    collection title / document note."""
+    require_examiner(case)
+    title = str(payload.get("title") or "").strip()[:MAX_TITLE_LEN]
+    if not title:
+        raise VerbError("gather/create needs a non-empty title")
+    recipient = str(payload.get("recipient") or "").strip()[:MAX_TITLE_LEN]
+    ask = str(payload.get("ask") or "").strip()[:MAX_NOTE_LEN]
+    cover_note = str(payload.get("cover_note") or "").strip()[:MAX_NOTE_LEN]
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        gathers = cur["gathers"]
+        base = _slugify(title)
+        slug, n = base, 2
+        while slug in gathers:
+            slug = f"{base}-{n}"
+            n += 1
+        gathers[slug] = {"title": title, "recipient": recipient, "ask": ask,
+                         "cover_note": cover_note, "ts": _now(), "actor": case.role,
+                         "members": {}, "missing": {}, "handoffs": []}
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_create", slug, {},
+                          {"title": title, "recipient": recipient}, reversible=True)
+    return {"ok": True, "slug": slug, "title": title, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_update(case, payload):
+    """Edit a gather folder's own fields ({slug, title?, recipient?, ask?,
+    cover_note?}) — only the fields present in payload are changed; omit a
+    field to leave it as it is (distinct from an empty string, which clears
+    it)."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    if not slug:
+        raise VerbError("gather/update needs slug")
+    fields = {}
+    if "title" in payload:
+        t = str(payload.get("title") or "").strip()[:MAX_TITLE_LEN]
+        if not t:
+            raise VerbError("gather/update title cannot be empty")
+        fields["title"] = t
+    if "recipient" in payload:
+        fields["recipient"] = str(payload.get("recipient") or "").strip()[:MAX_TITLE_LEN]
+    if "ask" in payload:
+        fields["ask"] = str(payload.get("ask") or "").strip()[:MAX_NOTE_LEN]
+    if "cover_note" in payload:
+        fields["cover_note"] = str(payload.get("cover_note") or "").strip()[:MAX_NOTE_LEN]
+    if not fields:
+        raise VerbError("gather/update needs at least one field to change")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        before = {k: g.get(k) for k in fields}
+        g.update(fields)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_update", slug, before, fields, reversible=True)
+    return {"ok": True, "slug": slug, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_delete(case, payload):
+    """Delete a gather folder ({slug}) — drops the folder and its own bookkeeping
+    (recipient, cover note, missing list, handoff log) only; the documents it
+    named stay exactly as they were everywhere else. Reversible: undo restores
+    the whole folder dict."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    if not slug:
+        raise VerbError("gather/delete needs slug")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).pop(slug, None)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_delete", slug, {"gather": g}, {}, reversible=True)
+    return {"ok": True, "slug": slug, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_add(case, payload):
+    """Add document ids to a gather folder as "possible" ({slug, ids:[...]}) —
+    the same browse-and-pick motion as Add to collection. Records only the ids
+    that were actually newly added, so undo removes exactly those; an id
+    already present (at either status) is left alone, not reset to possible."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    ids = payload.get("ids") or []
+    if not slug or not isinstance(ids, list):
+        raise VerbError("gather/add needs slug and ids[]")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        members = g.setdefault("members", {})
+        added = []
+        for i in ids:
+            s = str(i)
+            if s and s not in members:
+                if len(members) >= MAX_GATHER_MEMBERS:
+                    break
+                members[s] = {"status": "possible", "ts": _now(), "reason": None}
+                added.append(s)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_add", slug,
+                          {"added": added}, {"count": len(added)}, reversible=True)
+    return {"ok": True, "slug": slug, "added": len(added), "undo_token": entry["undo_token"]}
+
+
+def verb_gather_remove(case, payload):
+    """Remove document ids from a gather folder entirely ({slug, ids:[...]}) —
+    drops membership (and whatever status/reason it carried) only, never the
+    document itself. Records the full prior entry for each removed id so undo
+    restores its exact status and reason, not just bare membership."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    ids = payload.get("ids") or []
+    if not slug or not isinstance(ids, list):
+        raise VerbError("gather/remove needs slug and ids[]")
+    want = {str(i) for i in ids}
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        members = g.setdefault("members", {})
+        removed = {k: v for k, v in members.items() if k in want}
+        for k in removed:
+            members.pop(k, None)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_remove", slug,
+                          {"removed": removed}, {"count": len(removed)}, reversible=True)
+    return {"ok": True, "slug": slug, "removed": len(removed), "undo_token": entry["undo_token"]}
+
+
+def verb_gather_mark(case, payload):
+    """Set one member's status within a gather folder ({slug, id, status,
+    reason?}) — "possible" (back in the bundle) or "left_out" (kept in the
+    folder, visible on the cover sheet, excluded from what's actually saved).
+    Nothing is ever removed by this verb; see gather/remove for that. `reason`
+    is optional free text (e.g. why it's being held back) and is cleared when
+    omitted."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    iid = payload.get("id")
+    status = payload.get("status")
+    if not slug or iid is None or iid == "" or status not in ("possible", "left_out"):
+        raise VerbError('gather/mark needs slug, id, and status "possible" or "left_out"')
+    iid = str(iid)
+    reason = str(payload.get("reason") or "").strip()[:MAX_NOTE_LEN] or None
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        members = g.setdefault("members", {})
+        m = members.get(iid)
+        if m is None:
+            raise VerbError(f"{iid} is not in gather folder {slug}", 404)
+        before = dict(m)
+        m["status"] = status
+        m["reason"] = reason
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_mark", f"{slug}::{iid}",
+                          {"entry": before}, {"status": status, "reason": reason}, reversible=True)
+    return {"ok": True, "slug": slug, "id": iid, "status": status, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_missing_add(case, payload):
+    """Add a "couldn't find" line to a gather folder ({slug, text}) — something
+    that was searched for and isn't in the archive, with no file behind it.
+    Same honesty rule as the Report's "what wasn't found": named, not silent."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    text = str(payload.get("text") or "").strip()[:MAX_NOTE_LEN]
+    if not slug or not text:
+        raise VerbError("gather/missing/add needs slug and non-empty text")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        missing = g.setdefault("missing", {})
+        if len(missing) >= MAX_GATHER_MISSING:
+            raise VerbError("this folder's missing-items list is full", 409)
+        mid = _gather_id()
+        missing[mid] = {"text": text, "ts": _now()}
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_missing_add", f"{slug}::{mid}",
+                          {}, {"text": text}, reversible=True)
+    return {"ok": True, "slug": slug, "id": mid, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_missing_remove(case, payload):
+    """Remove one "couldn't find" line ({slug, id})."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    mid = str(payload.get("id") or "")
+    if not slug or not mid:
+        raise VerbError("gather/missing/remove needs slug and id")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        missing = g.setdefault("missing", {})
+        prev = missing.pop(mid, None)
+        if prev is None:
+            raise VerbError(f"no missing-item {mid} in {slug}", 404)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_missing_remove", f"{slug}::{mid}",
+                          {"entry": prev}, {}, reversible=True)
+    return {"ok": True, "slug": slug, "undo_token": entry["undo_token"]}
+
+
+def _gather_contents_page(g, manifest, skipped):
+    """Human-readable contents-page text for one gather export — the "cover
+    note (goes on the contents page)" the mockup asked for. Plain text, not
+    HTML: this sits next to the copied files for the recipient to open with
+    anything. Lists what's actually included, then — for the PR's own record,
+    not hidden from the recipient — what was deliberately left out and what
+    couldn't be found, so nothing about the bundle is silent."""
+    lines = [f"For: {g.get('recipient') or '(not set)'}", f"Folder: {g.get('title') or ''}"]
+    if g.get("ask"):
+        lines += ["", "What was asked for:", g["ask"]]
+    if g.get("cover_note"):
+        lines += ["", g["cover_note"]]
+    lines += ["", f"Included ({len(manifest)}):"]
+    lines += ["  " + Path(m["dest"]).name for m in manifest]
+    if skipped:
+        lines += ["", f"Could not be delivered this time ({len(skipped)}):"]
+        lines += ["  " + s for s in skipped]
+    left_out = [v for v in (g.get("members") or {}).values() if v.get("status") == "left_out"]
+    if left_out:
+        lines += ["", f"Left out on purpose ({len(left_out)}):"]
+        lines += ["  (reason: " + (v.get("reason") or "no reason given") + ")" for v in left_out]
+    missing = (g.get("missing") or {}).values()
+    if missing:
+        lines += ["", f"Couldn't find ({len(missing)}):"]
+        lines += ["  " + m.get("text", "") for m in missing]
+    return "\n".join(lines) + "\n"
+
+
+def verb_gather_export(case, payload):
+    """"Save to my Mac" — materialize every "possible" member into a folder
+    (same copy-with-manifest mechanism as Export this folder / Export
+    collection) plus a plain-text contents page carrying the cover note, and
+    log the save onto the gather folder itself ("Saved before"). NOT
+    reversible — same as every other export verb, this only copies files, it
+    never changes the case."""
+    require_examiner(case)
+    _assert_family_export_allowed(case)
+    slug = str(payload.get("slug") or "")
+    if not slug:
+        raise VerbError("gather/export needs slug")
+    cur = case.curation_layer
+    g = (cur.get("gathers") or {}).get(slug)
+    if g is None:
+        raise VerbError(f"unknown gather folder {slug}", 404)
+    possible = [iid for iid, m in (g.get("members") or {}).items() if m.get("status") == "possible"]
+    if not possible:
+        raise VerbError("nothing marked possible in this folder yet", 409)
+    label = sanitize_person_name(g.get("title") or slug) or "gather"
+    dest = _export_dest(case, payload.get("dest"),
+                        default=case.paths.output_dir / EXPORT_DIR / f"gather_{label}")
+    canonicals, skipped = [], []
+    for src in possible:
+        try:
+            canonicals.append(resolve_media_path(case, src))
+        except VerbError:
+            skipped.append(src)
+    if not canonicals:
+        raise VerbError("none of this folder's possible items are deliverable", 404)
+    manifest, mpath = _materialize_items(case, canonicals, dest)
+    (dest / "contents.txt").write_text(_gather_contents_page(g, manifest, skipped), encoding="utf-8")
+    handoff = {"ts": _now(), "actor": case.role, "manifest": str(mpath),
+              "count": len(manifest), "skipped": len(skipped)}
+    with _doc_lock(case):
+        cur2 = _load_curation(case)
+        g2 = (cur2["gathers"] or {}).get(slug)
+        if g2 is not None:          # folder could have been deleted mid-export
+            g2.setdefault("handoffs", []).append(handoff)
+            atomic_write_json(_curation_path(case), cur2)
+    append_action(case, "gather_export", slug,
+                 {}, {"count": len(manifest), "skipped": len(skipped), "manifest": str(mpath)},
+                 reversible=False)
+    return {"ok": True, "count": len(manifest), "skipped": len(skipped), "manifest": str(mpath)}
 
 
 def verb_note_set(case, payload):
@@ -3681,6 +4355,32 @@ def verb_demote_email(case, payload):
                           {"subject": payload.get("subject")},
                           {"demoted": not restore}, reversible=True)
     return {"ok": True, "demoted": not restore, "undo_token": entry["undo_token"]}
+
+
+def verb_set_owner_addresses(case, payload):
+    """Set `owner_addresses` — the account owner's own email address(es), the
+    one piece of information the pipeline's existing data cannot supply (see the
+    design note in STATE.md): without it, "sort the Emails list by sender" has no
+    way to tell the owner's own address apart from the other party on a thread
+    (thread_correspondent returns None for every row). Whoever already knows the
+    address — examiner or family — can set it, so DELIBERATELY NOT
+    require_examiner(), same reasoning as verb_important_email. Addresses are
+    normalized to their bare form (the <...> wrapper, if any, stripped) before
+    storage; this is real PII about the deceased, so it is written only into the
+    case's own output/metadata — never into anything this repo commits."""
+    addrs = payload.get("addresses")
+    if not isinstance(addrs, list):
+        raise VerbError("owner-addresses needs a list of addresses")
+    normalized = [a for a in (_participant_address(str(x)) for x in addrs) if a]
+    dpath = case.paths.metadata_dir / DECISIONS_FILE
+    with _doc_lock(case):  # cross-process RMW guard (R-4)
+        decisions = load_json(dpath, {}) or {}
+        before = decisions.get("owner_addresses")
+        decisions["owner_addresses"] = normalized
+        atomic_write_json(dpath, decisions)
+    entry = append_action(case, "set_owner_addresses", "owner_addresses",
+                          {"addresses": before}, {"addresses": normalized}, reversible=True)
+    return {"ok": True, "addresses": normalized, "undo_token": entry["undo_token"]}
 
 
 def verb_promote_vital(case, payload):
@@ -4081,6 +4781,30 @@ def _apply_inverse(case, entry):
             atomic_write_json(dpath, decisions)
         case.load()
         return {"restored": entry["target"]}
+    if action == "take_out":
+        # Inverse of verb_take_out_document: move the file back (when it was
+        # physically moved — a take-out with no delivered bytes has nothing to
+        # move back, only the overlay to clear) and restore/clear the
+        # doc_taken_out entry. Reached only via Undo (reversible=True) — see
+        # verb_take_out_document.
+        src = entry["target"]
+        after = entry.get("after") or {}
+        moved_to, canonical = after.get("moved_to"), after.get("canonical")
+        if moved_to and canonical and os.path.exists(moved_to):
+            move_tracked(Path(moved_to), Path(canonical), reason="family:put_back",
+                        ledger=case.ledger, custody=case.custody)
+        prev = (entry.get("before") or {}).get("entry")
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        with _doc_lock(case):
+            decisions = load_json(dpath, {}) or {}
+            taken_out = decisions.setdefault("doc_taken_out", {})
+            if prev is None:
+                taken_out.pop(src, None)
+            else:
+                taken_out[src] = prev
+            atomic_write_json(dpath, decisions)
+        case.load()
+        return {"restored": src, "moved_back": bool(moved_to)}
     if action == "correspondent_merge_confirm":
         # Restore each loser's PRIOR correspondent_merges entry (or pop → it
         # had none) and drop the suggestion's cluster_id from the confirmed
@@ -4114,6 +4838,17 @@ def _apply_inverse(case, entry):
                 rejected.remove(entry["target"])
             atomic_write_json(dpath, decisions)
         return {"restored": entry["target"]}
+    if action == "set_owner_addresses":
+        before = (entry.get("before") or {}).get("addresses")
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        with _doc_lock(case):  # cross-process RMW guard (R-4)
+            decisions = load_json(dpath, {}) or {}
+            if before is None:
+                decisions.pop("owner_addresses", None)
+            else:
+                decisions["owner_addresses"] = before
+            atomic_write_json(dpath, decisions)
+        return {"restored": before}
     if action in ("demote_email", "restore_email"):
         # Inverse of demote = restore (pop); inverse of restore = re-demote (add).
         dpath = case.paths.metadata_dir / DECISIONS_FILE
@@ -4224,7 +4959,7 @@ def _apply_inverse(case, entry):
             atomic_write_json(dpath, decisions)
         return {"restored": entry["target"]}
     # ── curation layer inverses (sidecar-only; no file moves) ──
-    if action in ("favorite", "collection_create", "collection_rename",
+    if action in ("favorite", "important_email", "collection_create", "collection_rename",
                   "collection_delete", "collection_add", "collection_remove",
                   "note_set", "note_clear"):
         target = entry["target"]
@@ -4237,6 +4972,12 @@ def _apply_inverse(case, entry):
                     cur["favorites"].pop(target, None)
                 else:
                     cur["favorites"][target] = prev
+            elif action == "important_email":
+                prev = before.get("entry")
+                if prev is None:
+                    cur["important"].pop(target, None)
+                else:
+                    cur["important"][target] = prev
             elif action == "collection_create":
                 cur["collections"].pop(target, None)
             elif action == "collection_rename":
@@ -4271,6 +5012,72 @@ def _apply_inverse(case, entry):
                     cur["notes"][target] = prev
             atomic_write_json(_curation_path(case), cur)
         return {"restored": target}
+    # ── Gather-for-someone inverses (2026-10-15) ──
+    if action in ("recipient_add", "recipient_remove"):
+        name = entry["target"]
+        before = entry.get("before") or {}
+        with _doc_lock(case):
+            cur = _load_curation(case)
+            recipients = cur["recipients"]
+            if action == "recipient_add":
+                if name in recipients:
+                    recipients.remove(name)
+            else:                                       # recipient_remove
+                if before.get("was_present") and name not in recipients:
+                    recipients.append(name)
+            atomic_write_json(_curation_path(case), cur)
+        return {"restored": name}
+    if action in ("gather_create", "gather_update", "gather_delete",
+                  "gather_add", "gather_remove"):
+        slug = entry["target"]
+        before = entry.get("before") or {}
+        with _doc_lock(case):
+            cur = _load_curation(case)
+            gathers = cur["gathers"]
+            if action == "gather_create":
+                gathers.pop(slug, None)
+            elif action == "gather_update":
+                g = gathers.get(slug)
+                if g is not None:
+                    g.update(before)                    # before holds exactly the changed keys
+            elif action == "gather_delete":
+                prev = before.get("gather")
+                if prev is not None:
+                    gathers[slug] = prev
+            elif action == "gather_add":
+                g = gathers.get(slug)
+                if g is not None:
+                    drop = set(before.get("added") or [])
+                    members = g.setdefault("members", {})
+                    for k in drop:
+                        members.pop(k, None)
+            elif action == "gather_remove":
+                g = gathers.get(slug)
+                if g is not None:
+                    members = g.setdefault("members", {})
+                    for k, v in (before.get("removed") or {}).items():
+                        members.setdefault(k, v)         # don't clobber a later re-add
+            atomic_write_json(_curation_path(case), cur)
+        return {"restored": slug}
+    if action in ("gather_mark", "gather_missing_add", "gather_missing_remove"):
+        slug, _, sub_id = entry["target"].partition("::")
+        before = entry.get("before") or {}
+        with _doc_lock(case):
+            cur = _load_curation(case)
+            g = (cur["gathers"] or {}).get(slug)
+            if g is not None:
+                if action == "gather_mark":
+                    prev = before.get("entry")
+                    if prev is not None:
+                        g.setdefault("members", {})[sub_id] = prev
+                elif action == "gather_missing_add":
+                    g.setdefault("missing", {}).pop(sub_id, None)
+                else:                                    # gather_missing_remove
+                    prev = before.get("entry")
+                    if prev is not None:
+                        g.setdefault("missing", {})[sub_id] = prev
+                atomic_write_json(_curation_path(case), cur)
+        return {"restored": entry["target"]}
     raise VerbError(f"cannot undo {action}", 409)
 
 
@@ -4673,6 +5480,8 @@ VERBS = {
     "export/collection": verb_export_collection, "release": verb_release,
     "discard/quarantine": verb_discard_quarantine, "demote": verb_demote_ranked,
     "demote/email": verb_demote_email,
+    # Both roles (see verb_set_owner_addresses's docstring for why).
+    "owner-addresses": verb_set_owner_addresses,
     # ── vital-document checklist (examiner-only; DECISIONS OVERLAY, never mutates
     #    vital_doc_confirmed.json) ──
     "vital/dismiss": verb_dismiss_vital, "vital/reassign": verb_reassign_vital,
@@ -4685,14 +5494,27 @@ VERBS = {
     "correspondent/reject": verb_correspondent_merge_reject,
     # ── Move verb (Phase 1, person-only; face_placements overlay) ──
     "move": verb_move,
+    # ── Document take-out ("delete" in Detail view, 2026-10-15; examiner-only) ──
+    "take-out": verb_take_out_document,
     # ── curation layer (examiner-first) ──
     "favorite": verb_favorite,
+    # Both roles (see verb_important_email's docstring for why).
+    "important/email": verb_important_email,
     "collection/create": verb_collection_create,
     "collection/rename": verb_collection_rename,
     "collection/delete": verb_collection_delete,
     "collection/add": verb_collection_add,
     "collection/remove": verb_collection_remove,
     "note/set": verb_note_set, "note/clear": verb_note_clear,
+    # ── Gather-for-someone (2026-10-15; examiner-only) ──
+    "recipient/add": verb_recipient_add, "recipient/remove": verb_recipient_remove,
+    "gather/create": verb_gather_create, "gather/update": verb_gather_update,
+    "gather/delete": verb_gather_delete,
+    "gather/add": verb_gather_add, "gather/remove": verb_gather_remove,
+    "gather/mark": verb_gather_mark,
+    "gather/missing/add": verb_gather_missing_add,
+    "gather/missing/remove": verb_gather_missing_remove,
+    "gather/export": verb_gather_export,
     # ── the examiner release gate ──
     "signoff": verb_signoff, "signoff/revoke": verb_signoff_revoke,
     "review/keep": verb_review_keep, "review/waive": verb_waive_review,

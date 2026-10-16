@@ -1174,6 +1174,114 @@ def test_doc_move_into_account_credentials_refused(tmp_path):
     assert e.value.code == 400
 
 
+def test_take_out_without_delivered_bytes_hides_via_overlay_only(tmp_path):
+    """Most documents have no delivered bytes left to move (reaped — same
+    precondition Move already documents), so the overlay write is what
+    actually hides it; the physical move is best-effort on top."""
+    case, paths = _doc_move_case(tmp_path)
+    assert DOC_MISC in {r["file"] for r in case.section("documents")["rows"]}
+    res = fa.verb_take_out_document(case, {"file": DOC_MISC, "reason": "not theirs"})
+    assert res["ok"] and res["moved"] is False
+    dec = json.loads((paths.metadata_dir / "family_decisions.json").read_text())
+    entry = dec["doc_taken_out"][DOC_MISC]
+    assert entry["reason"] == "not theirs" and entry["category"] == "miscellaneous"
+    assert entry["moved_to"] is None
+    assert DOC_MISC not in {r["file"] for r in case.section("documents")["rows"]}
+    assert "miscellaneous" not in _docs_index(case)
+
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert "doc_taken_out" not in json.loads(
+        (paths.metadata_dir / "family_decisions.json").read_text()) or \
+        DOC_MISC not in json.loads(
+            (paths.metadata_dir / "family_decisions.json").read_text())["doc_taken_out"]
+    assert DOC_MISC in {r["file"] for r in case.section("documents")["rows"]}
+
+
+def test_take_out_moves_real_file_into_family_deleted_by_category_and_undo_restores(tmp_path):
+    case, paths = _doc_move_case(tmp_path)
+    real_src = paths.case_dir / "extracted" / "documents" / "invoice.pdf"
+    real_src.parent.mkdir(parents=True, exist_ok=True)
+    real_src.write_text("the actual bytes")
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": str(real_src), "filename": "invoice.pdf", "category": "financial",
+         "source": "document", "significance": 3, "summary": "An invoice with real bytes."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+
+    res = fa.verb_take_out_document(case, {"file": str(real_src)})
+    assert res["ok"] and res["moved"] is True
+    assert not real_src.exists(), "the delivered copy is gone from its original spot"
+    moved = paths.output_dir / "family_deleted" / "financial" / "invoice.pdf"
+    assert moved.exists() and moved.read_text() == "the actual bytes"
+    assert str(real_src) not in {r["file"] for r in case.section("documents")["rows"]}
+
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert real_src.exists() and not moved.exists(), "undo moves the real bytes back"
+    assert real_src.read_text() == "the actual bytes"
+    assert str(real_src) in {r["file"] for r in case.section("documents")["rows"]}
+
+
+def test_take_out_uses_effective_category_not_pipeline_category(tmp_path):
+    """The family_deleted/<category> subfolder is the document's CURRENT
+    (doc_placements-overridden) category, not its raw pipeline one — matching
+    what the Documents page itself would have shown for it."""
+    case, paths = _doc_move_case(tmp_path)
+    fa.verb_move(case, {"view": "document", "src": DOC_MISC, "to": "legal"})
+    real_src = paths.case_dir / "extracted" / "documents" / "note.pdf"
+    real_src.parent.mkdir(parents=True, exist_ok=True)
+    real_src.write_text("x")
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    for d in summ["document_classifications"]:
+        if d["file"] == DOC_MISC:
+            d["file"] = str(real_src)
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+    fa.verb_move(case, {"view": "document", "src": str(real_src), "to": "legal"})
+
+    res = fa.verb_take_out_document(case, {"file": str(real_src)})
+    assert res["ok"]
+    moved = paths.output_dir / "family_deleted" / "legal" / "note.pdf"
+    assert moved.exists(), "filed under the overlay-effective category (legal), not miscellaneous"
+
+
+def test_take_out_rejects_email_sourced_and_unknown_file(tmp_path):
+    case, paths = _doc_move_case(tmp_path)
+    with pytest.raises(fa.VerbError) as e:
+        fa.verb_take_out_document(case, {"file": DOC_EMAIL})
+    assert e.value.code == 400
+    with pytest.raises(fa.VerbError) as e2:
+        fa.verb_take_out_document(case, {"file": "/not/a/real/document.pdf"})
+    assert e2.value.code == 404
+    with pytest.raises(fa.VerbError):
+        fa.verb_take_out_document(case, {})
+
+
+def test_take_out_drops_document_from_vital_checklist_and_undo_restores_it(tmp_path):
+    """The user's own decision (2026-10-15): taking out a document that
+    satisfies a vital-document kind also drops that kind back to not-found —
+    the checklist can't keep claiming it found something Documents no longer
+    shows."""
+    case, paths = _doc_move_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+    _seed_vitals(paths)
+    row, _vd = _vrow(case, paths, "will_testament")
+    assert row["found"] is True
+
+    res = fa.verb_take_out_document(case, {"file": "/d/will.pdf"})
+    row2, _vd2 = _vrow(case, paths, "will_testament")
+    assert row2["found"] is False
+
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    row3, _vd3 = _vrow(case, paths, "will_testament")
+    assert row3["found"] is True
+
+
 def test_render_seal_family_drops_credential_doc_even_with_forced_placement(tmp_path):
     """§13.3 render-time seal (stale-placement leak): even if a doc_placements entry
     is forced onto disk moving the credential doc to a browsable category, the FAMILY
@@ -1794,6 +1902,36 @@ def _pages(case, name, params_base, limit=10):
     return out, total
 
 
+def test_api_section_documents_year_index_and_year_filter(tmp_path):
+    """By-year arrangement (2026-10-16): year_index rides the envelope
+    alongside the category index, and ?year=/?year=nodate narrow the rows —
+    built from the SAME vital date_used join Detail's docDateOf reads, since
+    that's the only date any document in this app ever has."""
+    case, paths = setup_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"] = [
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."},
+        {"file": "/d/recipe.pdf", "filename": "recipe.pdf", "category": "recipe",
+         "source": "document", "significance": 1, "summary": "A recipe."},
+    ]
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    (paths.metadata_dir / "vital_doc_confirmed.json").write_text(
+        json.dumps([{"path": "/d/will.pdf", "target": "will_testament", "tag": "will"}]))
+    (paths.metadata_dir / "vital_doc_candidates.json").write_text(
+        json.dumps({"will_testament": {"description": "a will", "hits": []}}))
+    (paths.metadata_dir / "date_index.json").write_text(json.dumps(
+        {"items": [{"file": "/d/will.pdf", "date_used": {"value": "2015-02"}}]}))
+    case.load()
+
+    full = case.api_section("documents", {})
+    assert full["year_index"] == [{"year": "2015", "count": 1}, {"year": "nodate", "count": 1}]
+    by_year = case.api_section("documents", {"year": "2015"})
+    assert {r["file"] for r in by_year["rows"]} == {"/d/will.pdf"}
+    undated = case.api_section("documents", {"year": "nodate"})
+    assert {r["file"] for r in undated["rows"]} == {"/d/recipe.pdf"}
+
+
 def test_api_section_paginates_documents_true_total_and_index(tmp_path):
     case, paths = setup_case(tmp_path)
     summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
@@ -1824,6 +1962,71 @@ def test_api_section_paginates_documents_true_total_and_index(tmp_path):
     fin = case.api_section("documents", {"cat": "financial", "offset": "0", "limit": "20"})
     assert fin["total"] == 1 and fin["rows"][0]["file"] == "/d/fin.pdf"
     assert sum(c["count"] for c in fin["index"]) == 51, "index still spans all categories"
+
+
+def test_report_page_combines_folder_counts_and_vital_checklist(tmp_path):
+    case, paths = setup_case(tmp_path)
+    _seed_vitals(paths)
+    case.load()
+    r = case.section("report")
+    assert r["available"] is True
+    # make_case's own fixture seeds one financial document (invoice.pdf).
+    assert {f["name"]: f["count"] for f in r["here_folders"]}.get("financial") == 1
+    found_names = {v["name"] for v in r["here_vital"]}
+    assert found_names == {"Will / testament", "Property deed / title", "Vehicle title"}
+    not_found_names = {m["what"] for m in r["not_found"]}
+    assert "Life insurance" in not_found_names
+    assert "Will / testament" not in not_found_names
+    # Reachable through the normal API path too, not just the pure builder.
+    assert case.api_section("report", {}) == r
+
+
+def test_api_section_documents_include_emails_adds_counts_and_rows(tmp_path):
+    case, paths = setup_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": "/d/policy.pdf", "filename": "policy.pdf", "category": "insurance",
+         "source": "document", "significance": 2, "summary": "A policy."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": [
+        {"thread_id": "t1", "subject": "About the policy", "significance": 4,
+         "categories": ["insurance"]},
+        {"thread_id": "t2", "subject": "Unrelated", "significance": 1, "categories": ["financial"]},
+        {"thread_id": "t3", "subject": "Lawyer thread", "significance": 1, "categories": ["legal"]},
+    ]}))
+    case.load()
+    # Without the flag: emails are invisible, exactly as before.
+    plain = case.api_section("documents", {"cat": "insurance"})
+    assert plain["total"] == 1 and plain["rows"][0]["file"] == "/d/policy.pdf"
+    insurance_count = next(c["count"] for c in plain["index"] if c["category"] == "insurance")
+    assert insurance_count == 1
+
+    # With it: the folder count AND its row list both pick up the matching thread.
+    both = case.api_section("documents", {"cat": "insurance", "include_emails": "1"})
+    assert both["total"] == 2
+    kinds = {r.get("file"): r for r in both["rows"]}
+    email_row = next(r for r in both["rows"] if r.get("kind") == "email")
+    assert email_row["thread_id"] == "t1" and email_row["name"] == "About the policy"
+    assert "/d/policy.pdf" in kinds and kinds["/d/policy.pdf"].get("kind") != "email"
+    insurance_count2 = next(c["count"] for c in both["index"] if c["category"] == "insurance")
+    assert insurance_count2 == 2, "folder count also picks up the email-only category"
+    # make_case's fixture already seeds one financial document (invoice.pdf);
+    # t2 (financial) adds a second, all from the email-side count merging in.
+    financial_count = next(c["count"] for c in both["index"] if c["category"] == "financial")
+    assert financial_count == 2
+    # "legal" had no documents at all — an email-only category gets a new entry.
+    legal_count = next(c["count"] for c in both["index"] if c["category"] == "legal")
+    assert legal_count == 1
+
+    # Browsing a DIFFERENT category only pulls in threads that match THAT
+    # category — t1 (insurance-only) never leaks into the financial folder.
+    financial = case.api_section("documents", {"cat": "financial", "include_emails": "1"})
+    financial_ids = {r.get("thread_id") for r in financial["rows"] if r.get("kind") == "email"}
+    assert financial_ids == {"t2"}
+    # No category selected ("All documents") → no email rows injected, even
+    # though the flag is on (counts in the index still merge).
+    no_cat = case.api_section("documents", {"include_emails": "1"})
+    assert all(r.get("kind") != "email" for r in no_cat["rows"])
 
 
 def test_api_section_photos_sort_date_and_pagination(tmp_path):
@@ -2084,6 +2287,26 @@ def test_api_section_emails_search_date_and_sort(tmp_path):
     # ?q= composes with the existing ?participant= click-through filter.
     combined = case.api_section("emails", {"participant": "dawn@x", "q": "re:"})
     assert combined["total"] == 1 and combined["rows"][0]["thread_id"] == "t3"
+    # ?significance=N keeps only threads at EXACTLY that pipeline score
+    # (2026-10-16: switched from "at or above" to an exact level, per the
+    # user's explicit request) — not grouping/sorting (which stay off it).
+    top_only = case.api_section("emails", {"significance": "5"})
+    assert {r["thread_id"] for r in top_only["rows"]} == {"t2"}
+    mid_only = case.api_section("emails", {"significance": "2"})
+    assert {r["thread_id"] for r in mid_only["rows"]} == {"t1"}, \
+        "exact match: t2 (significance 5) must NOT show up for significance=2"
+    unfiltered = case.api_section("emails", {"significance": ""})
+    assert unfiltered["total"] == 3, "an empty value is a no-op — same as no filter at all"
+    # significance_counts rides on every envelope — the count meter next to the
+    # dropdown — and reflects the OTHER active filters (q= here), not the
+    # significance filter itself. EXACT per-bucket tallies (2026-10-16).
+    assert default["significance_counts"] == {1: 1, 2: 1, 3: 0, 4: 0, 5: 1}
+    assert by_subject["significance_counts"] == {1: 1, 2: 1, 3: 0, 4: 0, 5: 0}
+    # ?dir= toggles direction per column, "usual email browser" header-click style.
+    recent_asc = case.api_section("emails", {"sort": "recent", "dir": "asc"})
+    assert [r["thread_id"] for r in recent_asc["rows"]] == ["t3", "t1", "t2"]
+    subject_desc = case.api_section("emails", {"sort": "subject", "dir": "desc"})
+    assert [r["thread_id"] for r in subject_desc["rows"]] == ["t2", "t3", "t1"]
 
 
 def test_thread_messages_attaches_resolved_attachments(tmp_path):
@@ -2111,6 +2334,91 @@ def test_thread_messages_attaches_resolved_attachments(tmp_path):
     assert atts["invoice.pdf"]["file_id"] == "/work/docs/invoice.pdf"  # unique doc basename
     assert atts["nope.zip"]["file_id"] is None                         # unmatched → name-only
     assert atts["logo.png"]["is_inline"] is True
+    # The thread-detail page needs its own important flag too (the list stamps
+    # it via apply_curation, which this single-thread lookup bypasses).
+    assert detail["important"] is False
+    fa.verb_important_email(case, {"thread_id": "t1", "on": True})
+    assert case.thread_messages("t1")["important"] is True
+
+
+def test_api_section_emails_sort_by_sender_uses_owner_addresses_setting(tmp_path):
+    case, paths = setup_case(tmp_path)
+    threads = [
+        {"thread_id": "t1", "subject": "A", "participants": ["Owner <owner@x>", "Zed <zed@x>"]},
+        {"thread_id": "t2", "subject": "B", "participants": ["Owner <owner@x>", "Ann <ann@x>"]},
+    ]
+    (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": threads}))
+    case.load()
+    fa.verb_set_owner_addresses(case, {"addresses": ["owner@x"]})
+    sorted_rows = case.api_section("emails", {"sort": "sender"})["rows"]
+    assert [r["thread_id"] for r in sorted_rows] == ["t2", "t1"], "Ann before Zed"
+    # The settings form reads the current value off the same envelope, no extra call.
+    assert case.api_section("emails", {})["owner_addresses"] == ["owner@x"]
+
+
+def test_emails_list_flags_and_filters_by_delivered_attachment(tmp_path):
+    # "Has an attachment" for the Emails LIST means the same thing it means in
+    # thread detail: a non-inline attachment that resolves to something the
+    # pipeline actually delivered (G-4) — not just a raw attachment on the .eml.
+    # t1's invoice.pdf resolves; t2's inline logo and unmatched zip do not; t3 has
+    # no attachments at all.
+    case, paths = setup_case(tmp_path)
+    (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": [
+        {"thread_id": "t1", "subject": "Invoice", "files": ["/work/mail/1.eml"]},
+        {"thread_id": "t2", "subject": "Logo only", "files": ["/work/mail/2.eml"]},
+        {"thread_id": "t3", "subject": "No attachments", "files": ["/work/mail/3.eml"]},
+    ]}))
+    (paths.metadata_dir / "email_index.json").write_text(json.dumps([
+        {"file": "/work/mail/1.eml", "email_from": "a@x", "email_subject": "Invoice",
+         "attachments": [{"filename": "invoice.pdf", "is_inline": False}]},
+        {"file": "/work/mail/2.eml", "email_from": "a@x", "email_subject": "Logo only",
+         "attachments": [{"filename": "logo.png", "is_inline": True},
+                         {"filename": "nope.zip", "is_inline": False}]},
+        {"file": "/work/mail/3.eml", "email_from": "a@x", "email_subject": "No attachments"},
+    ]))
+    case.load()
+    all_rows = case.api_section("emails", {})["rows"]
+    by = {r["thread_id"]: r for r in all_rows}
+    assert by["t1"]["has_attachment"] is True
+    assert "has_attachment" not in by["t2"], "inline + undelivered don't count"
+    assert "has_attachment" not in by["t3"]
+    filtered = case.api_section("emails", {"has_attachment": "1"})
+    assert filtered["total"] == 1 and filtered["rows"][0]["thread_id"] == "t1"
+
+
+def test_emails_list_flags_and_filters_by_direction(tmp_path):
+    # t1: owner wrote out, no reply — sent-only, must NOT show under Received
+    # (this is the exact case the user flagged: a note with no reply showing up
+    # under "From <them>" when it was never from them at all).
+    # t2: owner received a note, never answered — received-only, not under Sent.
+    # t3: a real back-and-forth — belongs under BOTH tabs, like Gmail does it.
+    case, paths = setup_case(tmp_path)
+    (paths.metadata_dir / "email_threads_index.json").write_text(json.dumps({"threads": [
+        {"thread_id": "t1", "subject": "Out, no reply", "files": ["/work/mail/1.eml"]},
+        {"thread_id": "t2", "subject": "In, no reply", "files": ["/work/mail/2.eml"]},
+        {"thread_id": "t3", "subject": "Back and forth", "files": ["/work/mail/3.eml", "/work/mail/3b.eml"]},
+    ]}))
+    (paths.metadata_dir / "email_index.json").write_text(json.dumps([
+        {"file": "/work/mail/1.eml", "email_from": "Owner <owner@x>", "email_subject": "Out, no reply"},
+        {"file": "/work/mail/2.eml", "email_from": "Dawn <dawn@x>", "email_subject": "In, no reply"},
+        {"file": "/work/mail/3.eml", "email_from": "Dawn <dawn@x>", "email_subject": "Back and forth"},
+        {"file": "/work/mail/3b.eml", "email_from": "Owner <owner@x>", "email_subject": "Re: Back and forth"},
+    ]))
+    case.load()
+    # Before owner_addresses is configured, nobody can be classified — no guess.
+    bare = {r["thread_id"]: r for r in case.api_section("emails", {})["rows"]}
+    assert all("sent" not in r and "received" not in r for r in bare.values())
+
+    fa.verb_set_owner_addresses(case, {"addresses": ["owner@x"]})
+    rows = {r["thread_id"]: r for r in case.api_section("emails", {})["rows"]}
+    assert rows["t1"]["sent"] is True and "received" not in rows["t1"]
+    assert rows["t2"]["received"] is True and "sent" not in rows["t2"]
+    assert rows["t3"]["sent"] is True and rows["t3"]["received"] is True
+
+    received = case.api_section("emails", {"direction": "received"})
+    assert {r["thread_id"] for r in received["rows"]} == {"t2", "t3"}
+    sent = case.api_section("emails", {"direction": "sent"})
+    assert {r["thread_id"] for r in sent["rows"]} == {"t1", "t3"}
 
 
 def test_api_section_wraps_videos_and_correspondence_scanned(tmp_path):
@@ -4255,6 +4563,145 @@ def test_collection_remove_and_undo(tmp_path):
     assert set(_curation(paths)["collections"][slug]["members"]) == {SRC_A, SRC_B}
 
 
+# ── Gather-for-someone (2026-10-15) ───────────────────────────────────────────
+
+def test_recipient_add_remove_dedup_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    fa.verb_recipient_add(case, {"name": "CPA"})
+    again = fa.verb_recipient_add(case, {"name": "CPA"})  # no duplicate
+    assert _curation(paths)["recipients"] == ["CPA"]
+    assert again["recipients"] == ["CPA"]
+    rm = fa.verb_recipient_remove(case, {"name": "CPA"})
+    assert _curation(paths)["recipients"] == []
+    fa.verb_undo(case, {"undo_token": rm["undo_token"]})
+    assert _curation(paths)["recipients"] == ["CPA"]
+    # Removing a name that was never there is a no-op, not an error, and its
+    # own undo doesn't resurrect a name that was genuinely absent.
+    rm2 = fa.verb_recipient_remove(case, {"name": "Estate attorney"})
+    fa.verb_undo(case, {"undo_token": rm2["undo_token"]})
+    assert "Estate attorney" not in _curation(paths)["recipients"]
+
+
+def test_gather_create_update_delete_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    created = fa.verb_gather_create(case, {"title": "For the CPA", "recipient": "CPA",
+                                           "ask": "tax returns"})
+    slug = created["slug"]
+    assert slug == "for-the-cpa"
+    g = _curation(paths)["gathers"][slug]
+    assert g["title"] == "For the CPA" and g["recipient"] == "CPA" and g["ask"] == "tax returns"
+    assert g["members"] == {} and g["missing"] == {} and g["handoffs"] == []
+
+    upd = fa.verb_gather_update(case, {"slug": slug, "cover_note": "Here you go"})
+    assert _curation(paths)["gathers"][slug]["cover_note"] == "Here you go"
+    assert _curation(paths)["gathers"][slug]["title"] == "For the CPA", \
+        "a field left out of the payload is untouched, not cleared"
+    fa.verb_undo(case, {"undo_token": upd["undo_token"]})
+    assert _curation(paths)["gathers"][slug].get("cover_note") == ""
+
+    dele = fa.verb_gather_delete(case, {"slug": slug})
+    assert slug not in _curation(paths)["gathers"]
+    fa.verb_undo(case, {"undo_token": dele["undo_token"]})
+    assert _curation(paths)["gathers"][slug]["recipient"] == "CPA"
+
+
+def test_gather_create_slug_uniqueness(tmp_path):
+    case, paths = setup_case(tmp_path)
+    a = fa.verb_gather_create(case, {"title": "Docs"})
+    b = fa.verb_gather_create(case, {"title": "Docs"})
+    assert a["slug"] == "docs" and b["slug"] == "docs-2"
+
+
+def test_gather_add_remove_members_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    add = fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A, SRC_B, SRC_A]})
+    assert add["added"] == 2, "a repeated id in one call is still added once"
+    members = _curation(paths)["gathers"][slug]["members"]
+    assert set(members) == {SRC_A, SRC_B}
+    assert all(m["status"] == "possible" for m in members.values())
+
+    rm = fa.verb_gather_remove(case, {"slug": slug, "ids": [SRC_A]})
+    assert rm["removed"] == 1
+    assert set(_curation(paths)["gathers"][slug]["members"]) == {SRC_B}
+    fa.verb_undo(case, {"undo_token": rm["undo_token"]})
+    assert set(_curation(paths)["gathers"][slug]["members"]) == {SRC_A, SRC_B}
+
+    fa.verb_undo(case, {"undo_token": add["undo_token"]})
+    assert _curation(paths)["gathers"][slug]["members"] == {}
+
+
+def test_gather_mark_possible_and_left_out_with_reason(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A]})
+    mark = fa.verb_gather_mark(case, {"slug": slug, "id": SRC_A, "status": "left_out",
+                                      "reason": "too sensitive"})
+    m = _curation(paths)["gathers"][slug]["members"][SRC_A]
+    assert m["status"] == "left_out" and m["reason"] == "too sensitive"
+    fa.verb_undo(case, {"undo_token": mark["undo_token"]})
+    m2 = _curation(paths)["gathers"][slug]["members"][SRC_A]
+    assert m2["status"] == "possible" and m2["reason"] is None
+    # Marking an id that was never added to the folder is an error, not silent.
+    with pytest.raises(fa.VerbError):
+        fa.verb_gather_mark(case, {"slug": slug, "id": SRC_B, "status": "possible"})
+
+
+def test_gather_missing_add_remove_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    added = fa.verb_gather_missing_add(case, {"slug": slug, "text": "2019 tax return"})
+    mid = added["id"]
+    assert _curation(paths)["gathers"][slug]["missing"][mid]["text"] == "2019 tax return"
+    rm = fa.verb_gather_missing_remove(case, {"slug": slug, "id": mid})
+    assert mid not in _curation(paths)["gathers"][slug]["missing"]
+    fa.verb_undo(case, {"undo_token": rm["undo_token"]})
+    assert _curation(paths)["gathers"][slug]["missing"][mid]["text"] == "2019 tax return"
+    fa.verb_undo(case, {"undo_token": added["undo_token"]})
+    assert mid not in _curation(paths)["gathers"][slug]["missing"]
+
+
+def test_gather_export_materializes_possible_only_and_logs_handoff(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "For the CPA", "recipient": "CPA",
+                                        "cover_note": "Here's what you asked for"})["slug"]
+    fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A, SRC_B]})
+    fa.verb_gather_mark(case, {"slug": slug, "id": SRC_B, "status": "left_out",
+                               "reason": "not relevant"})
+    fa.verb_gather_missing_add(case, {"slug": slug, "text": "2019 tax return"})
+
+    with pytest.raises(fa.VerbError):
+        fa.verb_gather_export(case, {})  # needs slug
+    res = fa.verb_gather_export(case, {"slug": slug})
+    assert res["ok"] and res["count"] == 1, "only the possible member is materialized"
+
+    dest = Path(res["manifest"]).parent
+    names = {p.name for p in dest.iterdir()}
+    assert "a.jpg" in names and "b.jpg" not in names, "left-out member is never copied"
+    contents = (dest / "contents.txt").read_text()
+    assert "CPA" in contents and "Here's what you asked for" in contents
+    assert "not relevant" in contents, "a left-out reason still appears on the contents page"
+    assert "2019 tax return" in contents, "a couldn't-find line still appears on the contents page"
+
+    handoffs = _curation(paths)["gathers"][slug]["handoffs"]
+    assert len(handoffs) == 1 and handoffs[0]["count"] == 1
+    # Export is not reversible, same as every other export verb.
+    actions = [json.loads(l) for l in _actions(paths)]
+    export_entry = [a for a in actions if a["action"] == "gather_export"][0]
+    assert export_entry["reversible"] is False
+    with pytest.raises(fa.VerbError):
+        fa.verb_undo(case, {"undo_token": export_entry["undo_token"]})
+
+
+def test_gather_export_nothing_possible_is_an_error(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A]})
+    fa.verb_gather_mark(case, {"slug": slug, "id": SRC_A, "status": "left_out"})
+    with pytest.raises(fa.VerbError):
+        fa.verb_gather_export(case, {"slug": slug})
+
+
 def test_overlay_stamps_rows_favorite_note_collections(tmp_path):
     case, paths = setup_case(tmp_path)
     fa.verb_favorite(case, {"id": SRC_A, "on": True})
@@ -4267,6 +4714,87 @@ def test_overlay_stamps_rows_favorite_note_collections(tmp_path):
     assert a["favorite_curation"] is True and a["note"] == "note A" and a["collections"] == [slug]
     # Uncurated row carries NO curation keys (additive, default absent).
     assert "favorite_curation" not in b and "note" not in b and "collections" not in b
+
+
+def test_set_owner_addresses_both_roles_and_undo(tmp_path):
+    case_fam, paths = setup_case(tmp_path, role="family")
+    res = fa.verb_set_owner_addresses(case_fam, {"addresses": ["Alex Rendon <a.rendon@example.com>"]})
+    assert res["ok"]
+    decisions = json.loads((paths.metadata_dir / fa.DECISIONS_FILE).read_text())
+    assert decisions["owner_addresses"] == ["a.rendon@example.com"]
+    case_ex = fa.ArchiveCase(paths, "examiner", {})
+    fa.verb_set_owner_addresses(case_ex, {"addresses": ["b@example.com", "a.rendon@example.com"]})
+    decisions = json.loads((paths.metadata_dir / fa.DECISIONS_FILE).read_text())
+    assert decisions["owner_addresses"] == ["b@example.com", "a.rendon@example.com"]
+    # Undo (examiner-only, like every other audit entry) restores the prior list.
+    res2 = fa.verb_set_owner_addresses(case_ex, {"addresses": []})
+    fa.verb_undo(case_ex, {"undo_token": res2["undo_token"]})
+    decisions = json.loads((paths.metadata_dir / fa.DECISIONS_FILE).read_text())
+    assert decisions["owner_addresses"] == ["b@example.com", "a.rendon@example.com"]
+
+
+def test_email_rows_sort_by_sender_uses_owner_addresses_to_find_correspondent():
+    ti = {"threads": [
+        {"thread_id": "t1", "subject": "A",
+         "participants": ["Owner <owner@x>", "Zed Correspondent <zed@x>"]},
+        {"thread_id": "t2", "subject": "B",
+         "participants": ["Owner <owner@x>", "Ann Correspondent <ann@x>"]},
+        {"thread_id": "t3", "subject": "C", "participants": ["Owner <owner@x>"]},
+    ]}
+    rows = fa.email_rows(ti, decisions={"owner_addresses": ["owner@x"]})
+    by = {r["thread_id"]: r for r in rows}
+    assert by["t1"]["correspondent"] == "Zed Correspondent <zed@x>"
+    assert by["t2"]["correspondent"] == "Ann Correspondent <ann@x>"
+    assert by["t3"]["correspondent"] is None, "no participant left once the owner is excluded"
+    # Without any configured owner address, we can't tell who's "the other
+    # party" at all (see the design discussion in STATE.md) — correspondent is
+    # always None rather than guessing.
+    rows_noconfig = fa.email_rows(ti)
+    assert all(r["correspondent"] is None for r in rows_noconfig)
+
+
+def test_important_email_toggle_works_for_both_roles(tmp_path):
+    # Unlike every other curation verb, flagging a thread important is NOT
+    # examiner-only — both roles may mark their own "this matters" items.
+    case_ex, paths = setup_case(tmp_path, role="examiner")
+    res = fa.verb_important_email(case_ex, {"thread_id": "t1", "on": True})
+    assert res["ok"] and res["on"] is True
+    cur = _curation(paths)
+    assert cur["important"]["t1"]["actor_role"] == "examiner"
+    assert len(_actions(paths)) == 1
+
+    case_fam = fa.ArchiveCase(paths, "family", {})
+    res2 = fa.verb_important_email(case_fam, {"thread_id": "t2", "on": True})
+    assert res2["ok"] and res2["on"] is True
+    cur2 = _curation(paths)
+    assert cur2["important"]["t2"]["actor_role"] == "family"
+    assert "t1" in cur2["important"], "the examiner's flag on t1 is untouched"
+
+    # verb_undo itself stays examiner-only (it is not a curation verb, it's the
+    # whole audit-log reverser) — family removes their own flag by toggling it
+    # off directly, the same verb they set it with.
+    fa.verb_important_email(case_fam, {"thread_id": "t2", "on": False})
+    assert "t2" not in _curation(paths)["important"]
+    # The examiner's flag, however, IS reversible through Undo like any other
+    # curation verb's audit entry.
+    fa.verb_undo(case_ex, {"undo_token": res["undo_token"]})
+    assert "t1" not in _curation(paths)["important"]
+
+
+def test_important_email_needs_thread_id(tmp_path):
+    case, _ = setup_case(tmp_path, role="family")
+    with pytest.raises(fa.VerbError):
+        fa.verb_important_email(case, {"on": True})
+
+
+def test_important_stamped_on_email_rows_via_apply_curation():
+    rows = [{"thread_id": "t1", "subject": "A"}, {"thread_id": "t2", "subject": "B"}]
+    curation = {"important": {"t1": {"ts": "x", "actor_role": "family"}}}
+    out = fa.apply_curation(rows, curation, "thread_id")
+    by = {r["thread_id"]: r for r in out}
+    assert by["t1"]["important"] is True
+    # Uncurated row carries no key at all (additive, default absent).
+    assert "important" not in by["t2"]
 
 
 def test_favorites_filter_narrows_and_paginates(tmp_path):
@@ -4402,6 +4930,40 @@ def _vrow(case, paths, target):
         if r["target"] == target:
             return r, vd
     return None, vd
+
+
+def test_checklist_item_carries_document_info_and_curation_when_doc_rows_passed(tmp_path):
+    """2026-10-16 Checklist redesign: a browsable vital item gets the same
+    summary/category/significance/star/note/collections a Detail card already
+    shows for it, when the caller passes doc_rows (the Documents page itself
+    does, via section("documents")'s apply_curation pass). Every other
+    caller omits doc_rows and gets exactly the old, undecorated item — no
+    behavior change for them."""
+    case, paths = setup_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+    _seed_vitals(paths)
+    fa.verb_favorite(case, {"id": "/d/will.pdf", "on": True})
+    fa.verb_note_set(case, {"id": "/d/will.pdf", "text": "Check with attorney"})
+
+    docs = case.section("documents")   # already curation-decorated by the fix
+    vd = _ad.vital_docs_data(paths, case.summary, "examiner", decisions=case.decisions,
+                             doc_rows=docs["rows"])
+    item = [t for t in vd["targets"] if t["target"] == "will_testament"][0]["items"][0]
+    assert item["category"] == "legal"
+    assert item["summary"] == "A will."
+    assert item["significance"] == 5
+    assert item["favorite_curation"] is True
+    assert item["note"] == "Check with attorney"
+    assert item["collections"] == []
+
+    vd2 = _ad.vital_docs_data(paths, case.summary, "examiner", decisions=case.decisions)
+    item2 = [t for t in vd2["targets"] if t["target"] == "will_testament"][0]["items"][0]
+    assert "category" not in item2 and "summary" not in item2 and "favorite_curation" not in item2
 
 
 def test_dismiss_vital_flips_target_and_undo(tmp_path):

@@ -1,16 +1,20 @@
 /* Wyeast Family Archive — local-server UI.
-   Mix-by-context theming via body[data-theme]: heirloom (warm keepsake),
-   atlas (cool utility), gallery (reading room). Vendored fonts from ../fonts.css. */
+   Default look (2026-10-14 decision, from the front-end brainstorm mockup
+   canvas): "law office navy" — Source Serif 4 + Source Sans 3, navy #1f3a5f on
+   white/paper. Still keyed as data-theme="heirloom" (every PAGES entry names
+   that key; renaming it is a bigger, separate change) — only the palette
+   under it changed. atlas/gallery stay as alternate themes, unused by any
+   page today but left in place. Vendored fonts from ../fonts.css. */
 @import url("../fonts.css");
 
 :root {
-  --serif: "Fraunces", Georgia, "Times New Roman", serif;
-  --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --sans: "Source Sans 3", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  /* defaults (heirloom) */
-  --bg: #faf6ee; --panel: #ffffff; --ink: #2c2520; --muted: #7c7464;
-  --line: #ece2d0; --accent: #9c4f3a; --accent-ink: #fff; --rail: #f3ebdb;
-  --head: #221d17; --chip: #f3ebdb;
+  /* defaults ("heirloom" key, navy palette) */
+  --bg: #f4f5f7; --panel: #ffffff; --ink: #1d2433; --muted: #626b7b;
+  --line: #d9dde4; --accent: #1f3a5f; --accent-ink: #fff; --rail: #ffffff;
+  --head: #1d2433; --chip: #e8edf4;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -54,6 +58,28 @@ body[data-theme="atlas"] .rail .brand .mark, body[data-theme="atlas"] .rail .nav
 .rail .spacer { margin-top: auto; }
 .rail .casemeta { padding: 12px 10px 0; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; color: var(--muted); }
 .role-pill { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-size: 10px; text-transform: uppercase; letter-spacing: .1em; }
+
+/* Top nav (2026-10-15): replaces the .rail sidebar — a slim horizontal bar
+   scoped to just Documents/Emails/Messages(/Report), not the full PAGES list. */
+.shell.topnav { display: block; min-height: 100vh; }
+.topbar {
+  display: flex; align-items: center; gap: 18px; background: var(--rail);
+  border-bottom: 3px double var(--accent); padding: 10px 20px; position: sticky; top: 0; z-index: 5;
+}
+body[data-theme="atlas"] .topbar { color: #cfe0f5; }
+body[data-theme="atlas"] .topbar .brand .mark, body[data-theme="atlas"] .topbar .navlink { color: #eaf1fb; }
+.topbar .brand { padding: 0; }
+.topbar-links { display: flex; align-items: center; gap: 4px; }
+.topbar .navlink.disabled { color: var(--muted); cursor: default; }
+.topbar .navlink.disabled:hover { background: transparent; }
+.topbar .railsearch { padding: 0; flex: 1 1 260px; max-width: 320px; }
+.topbar .casemeta { padding: 0; margin-left: auto; font-family: var(--mono); font-size: 10px;
+  letter-spacing: .08em; color: var(--muted); text-align: right; white-space: nowrap; }
+.shell.topnav .main { max-width: 1440px; margin: 0 auto; padding: 24px 32px 90px; }
+@media (max-width: 760px) {
+  .topbar { flex-wrap: wrap; }
+  .topbar .railsearch { order: 10; flex-basis: 100%; max-width: none; }
+}
 
 .main { flex: 1; min-width: 0; padding: 0 40px 90px; max-width: 1180px; }
 /* Section header stays visible while the content below scrolls (#6). */
@@ -245,6 +271,15 @@ a { color: var(--accent); }
 /* #11: the Correspondents / Emails in-list search box (find-person-X / find-by-subject) */
 .listsearch { padding: 7px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
   color: inherit; font: inherit; min-width: 220px; flex: 1 1 220px; }
+.filterbar .chkflabel { font: inherit; color: inherit; text-transform: none; letter-spacing: normal;
+  display: inline-flex; align-items: center; gap: 4px; }
+
+/* Emails: owner-address settings (first typed-value settings form in the app) */
+.ownersettings { margin: 10px 0; }
+.ownersettings summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.ownerbox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.ownerinput { padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel);
+  color: inherit; font: inherit; min-width: 280px; flex: 1 1 280px; }
 
 /* selectable file tables (Documents / Correspondence) */
 .filetable .rowpick { width: 16px; height: 16px; cursor: pointer; }
@@ -380,6 +415,8 @@ a.attchip:hover { text-decoration: underline; }
 .pickmodal { background: var(--panel, #fff); color: inherit; border-radius: 10px; padding: 20px 22px; max-width: 92vw; width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
 .pickmodal h3 { margin: 0 0 12px; }
 .pickmodal-sel { width: 100%; padding: 8px; margin-bottom: 14px; }
+.pickmodal label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+.pickmodal textarea.pickmodal-sel { min-height: 56px; font: inherit; resize: vertical; }
 .pickmodal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .lightbox { position: fixed; inset: 0; background: rgba(20,16,12,.86); display: none; align-items: center; justify-content: center; z-index: 1000; }
 .lightbox.show { display: flex; }
@@ -544,7 +581,16 @@ body.lb-open { overflow: hidden; }
 .vitals-list { list-style: none; margin: 6px 0 0; padding: 0;
   display: grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap: 6px 14px; }
 .vitals-item { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.vitals-item-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .vitals-item.missing { color: var(--muted); }
+/* 2026-10-16 Checklist redesign: a browsable item ("-rich" — see the JS
+   comment at its class) carries the same summary/meta/note/toolbar a Detail
+   card does, so IT is a stacked mini-card, not the one-line flex row an
+   email/message/recording-linked or stub item still uses (plain
+   .vitals-item, untouched above) — these overrides apply only to it. */
+.vitals-item.vitals-item-rich { display: block; padding: 8px 0; }
+.vitals-item-rich .vitals-item-actions { display: flex; flex-wrap: wrap; margin-left: 0; margin-top: 8px; }
+.vitals-toolbar { margin-top: 6px; }
 .vitals-rows { display: flex; flex-direction: column; gap: 10px; }
 .vitals-row { border-top: 1px solid var(--line); padding-top: 10px; }
 .vitals-row:first-child { border-top: 0; padding-top: 0; }
@@ -802,7 +848,59 @@ body.selecting .jgrid .jcard, body.selecting .jgrid .jcard img { cursor: crossha
   max-height: calc(100vh - 130px); overflow-y: auto; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; padding: 10px 8px; }
 .docs-pane { flex: 999 1 560px; min-width: 0; }
-.docs-treetools { display: flex; justify-content: flex-end; margin: 0 4px 6px; }
+.docs-treetools { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin: 0 4px 6px; }
+.docs-treetools .incemails { font-size: 12px; color: var(--muted); }
+.docs-emails-head { font-family: var(--serif); font-size: 15px; margin: 18px 0 6px; }
+.docs-email-list { display: flex; flex-direction: column; gap: 2px; }
+.docs-email-row { display: flex; align-items: baseline; gap: 8px; padding: 6px 8px; border-radius: 5px;
+  border: 1px solid var(--line); background: var(--panel); }
+.docs-email-row:hover { background: var(--chip); }
+.docs-email-row .nm { flex: 1 1 auto; }
+
+/* Emails list: a compact, single-line-per-thread inbox (2026-10-15) —
+   from / subject / date, like a typical mail client, not a data table. */
+.inbox { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+.inbox-row {
+  display: flex; align-items: center; gap: 14px; padding: 10px 14px;
+  border-bottom: 1px solid var(--line); cursor: pointer;
+}
+.inbox-row:last-child { border-bottom: 0; }
+.inbox-row:hover { background: var(--chip); }
+.inbox-from { flex: 0 0 180px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-subj { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-count { color: var(--muted); font-weight: 400; }
+.inbox-date { flex: 0 0 auto; color: var(--muted); font-size: 13px; font-family: var(--mono); }
+.inbox-acts { flex: 0 0 auto; display: flex; gap: 6px; }
+@media (max-width: 640px) {
+  .inbox-row { flex-wrap: wrap; }
+  .inbox-from { flex-basis: 100%; }
+  .inbox-acts { flex-basis: 100%; justify-content: flex-end; }
+}
+/* Clickable From/Subject/Date column headers (2026-10-15) — replaces the old
+   Sort dropdown, "usual email browser" style. */
+.inbox-head { cursor: default; background: var(--chip); font-size: 12px; color: var(--muted);
+  font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.inbox-head:hover { background: var(--chip); }
+.inbox-head .sorth {
+  border: 0; background: transparent; padding: 0; margin: 0; font: inherit; color: inherit;
+  cursor: pointer; text-transform: inherit; letter-spacing: inherit;
+}
+.inbox-head .sorth:hover { color: var(--ink); }
+.inbox-head .sorth[aria-sort]:not([aria-sort="none"]) { color: var(--accent); }
+
+/* Significance count meter (2026-10-15): one bar per threshold option, so the
+   dropdown's choices are legible at a glance before picking one. */
+.sigmeter { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 14px; max-width: 420px; }
+.sigmeter-row {
+  display: flex; align-items: center; gap: 8px; border: 0; background: transparent;
+  padding: 3px 4px; border-radius: 5px; cursor: pointer; font: inherit; color: inherit; text-align: left;
+}
+.sigmeter-row:hover { background: var(--chip); }
+.sigmeter-row.active { background: var(--chip); font-weight: 600; }
+.sigmeter-row .nm { flex: 0 0 150px; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sigmeter-row .bar { flex: 1 1 auto; height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.sigmeter-row .bar span { display: block; height: 100%; background: var(--accent); opacity: .55; }
+.sigmeter-row .ct { flex: 0 0 auto; font-size: 12px; color: var(--muted); min-width: 32px; text-align: right; }
 .tlist { list-style: none; margin: 0; padding: 0; }
 .tsep { border-top: 1px solid var(--line); margin: 8px 4px; }
 .tcap { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 2px 8px 4px; }
@@ -822,6 +920,19 @@ body.selecting .jgrid .jcard, body.selecting .jgrid .jcard img { cursor: crossha
 .trow.drop-on, .docs-dragging .trow.drop-on { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--chip); }
 .docs-hint { font-size: 12px; color: var(--muted); margin: 10px 4px 0; }
 .docs-hint.inline { margin: 0; }
+
+/* Report (2026-10-15): plain key/value "sheet" rows, matching the mockup's
+   summary style — distinct from the ruled/numbered document-list style. */
+.lede { color: var(--muted); font-size: 16px; max-width: 64ch; margin: 0 0 14px; }
+h2.sec { font: 600 22px/1.2 var(--serif); margin: 28px 0 8px; color: var(--head); }
+h3.sec3 { font: 600 18px/1.3 var(--serif); margin: 20px 0 6px; color: var(--head); }
+.sheet { margin-top: 10px; background: var(--panel); box-shadow: 0 1px 2px rgba(20,30,50,.08), 0 6px 20px rgba(20,30,50,.06); border-radius: 4px; overflow: hidden; }
+.rr { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 12px 18px; border-bottom: 1px solid var(--line); align-items: baseline; }
+.rr:last-child { border-bottom: 0; }
+.rr .k { flex: 0 0 200px; font-size: 14px; color: var(--muted); }
+.rr .v { flex: 1 1 280px; }
+.rr .v a { color: var(--accent); }
+.rr .v .pct { color: var(--muted); font-size: 13px; }
 .linkbtn { border: 0; background: transparent; color: var(--accent); text-decoration: underline; padding: 0; font: inherit; font-size: 13px; cursor: pointer; }
 .docs-undo { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; background: var(--head); color: #fff;
   padding: 8px 10px 8px 14px; border-radius: 6px; margin-bottom: 14px; font-size: 14px; }

@@ -339,6 +339,24 @@ def test_document_rows_excludes_email_and_carries_text_kind():
     assert by_file["/d/tax.pdf"]["text_kind"] is None
 
 
+def test_document_rows_excludes_taken_out_documents():
+    """2026-10-15: doc_taken_out hides a document ENTIRELY, the same
+    "statement about the document, not one view" rule account_credentials
+    already follows — keyed by path, same id space as doc_placements."""
+    summary = {"document_classifications": [
+        {"file": "/d/a.pdf", "filename": "a.pdf", "category": "miscellaneous",
+         "source": "document", "significance": 3, "summary": "A note."},
+        {"file": "/d/b.pdf", "filename": "b.pdf", "category": "miscellaneous",
+         "source": "document", "significance": 2, "summary": "Another note."},
+    ]}
+    rows = ad.document_rows(summary, [], "examiner",
+                            taken_out={"/d/a.pdf": {"ts": "t", "reason": "not theirs"}})
+    files = [r["file"] for r in rows]
+    assert files == ["/d/b.pdf"]
+    # No taken_out argument at all is the same as an empty one — never an error.
+    assert len(ad.document_rows(summary, [], "examiner")) == 2
+
+
 def test_doc_placements_overrides_document_rows_category():
     """§13.2: a doc_placements entry re-buckets a row's effective category, and the
     derived documents_index counts move with it (browse counts are derived from the
@@ -361,6 +379,196 @@ def test_doc_placements_overrides_document_rows_category():
     assert by["/d/b.pdf"]["category"] == "miscellaneous"
     idx = {c["category"]: c["count"] for c in ad.documents_index(rows)}
     assert idx == {"legal": 1, "miscellaneous": 1}, "documents_index counts are DERIVED"
+
+
+def test_report_data_splits_found_and_not_found_vital_targets():
+    # Section 1 ("what's here") gets folder counts + the FOUND vital kinds;
+    # Section 2 ("what wasn't found") gets everything else, grouped by the
+    # same group label the Documents tree already uses. Deliberately no
+    # Section 3 ("where the archive isn't sure") — no real question-generation
+    # feature exists yet; report_data never fabricates one.
+    index = [{"category": "financial", "count": 10, "subcategories": []},
+             {"category": "legal", "count": 3, "subcategories": []}]
+    vital_docs = {
+        "available": True, "found_count": 1, "total_count": 2,
+        "groups": [{"group": "estate_legal", "label": "Estate & legal"}],
+        "targets": [
+            {"target": "will_testament", "label": "Will / testament", "group": "estate_legal",
+             "found": True, "items": [{"id": "a"}, {"id": "b"}]},
+            {"target": "trust_instrument", "label": "Trust agreement", "group": "estate_legal",
+             "found": False, "items": []},
+        ],
+    }
+    r = ad.report_data(index, vital_docs, counts={"documents": 13, "emails": 4})
+    assert r["available"] is True
+    # pct is each folder's share of ALL documents (10 + 3 = 13), not of some
+    # other total — financial 10/13 rounds to 77%, legal 3/13 to 23%.
+    assert r["here_folders"] == [{"name": "financial", "count": 10, "pct": 77},
+                                 {"name": "legal", "count": 3, "pct": 23}]
+    assert r["here_vital"] == [{"name": "Will / testament", "count": 2}]
+    assert r["not_found"] == [{"area": "Estate & legal", "what": "Trust agreement"}]
+    assert r["found_count"] == 1 and r["total_count"] == 2
+    assert r["found_pct"] == 50
+    # "processed" is passed straight through — report_data never recomputes
+    # a tab's own totals, it only reuses what the caller already built.
+    assert r["processed"] == {"documents": 13, "emails": 4}
+
+
+def test_report_data_unavailable_when_vital_doc_stage_never_ran():
+    r = ad.report_data([], {"available": False, "targets": [], "found_count": 0, "total_count": 0})
+    assert r["available"] is False
+    assert r["here_vital"] == [] and r["not_found"] == []
+    # 0 of 0 is not an honest 0% — no denominator means no percentage, ever.
+    assert r["found_pct"] is None
+    assert r["processed"] == {}
+
+
+def test_report_data_here_folders_pct_is_none_when_no_documents():
+    index = [{"category": "miscellaneous", "count": 0, "subcategories": []}]
+    r = ad.report_data(index, {"available": False, "targets": [], "found_count": 0, "total_count": 0})
+    assert r["here_folders"] == [{"name": "miscellaneous", "count": 0, "pct": None}]
+
+
+def test_report_data_unsure_section_from_real_unconfirmed_and_near_miss_counts():
+    """Section 3, 2026-10-16: real open items only — a found-but-unconfirmed
+    item and a near-miss count, never a fabricated question. Grouped by
+    target like Section 2, each carrying both numbers so the UI can say
+    which is which."""
+    vital_docs = {
+        "available": True, "found_count": 2, "total_count": 3,
+        "unconfirmed_count": 1,   # non-None → examiner role, Section 3 active
+        "groups": [{"group": "estate_legal", "label": "Estate & legal"}],
+        "targets": [
+            {"target": "will_testament", "label": "Will / testament", "group": "estate_legal",
+             "found": True, "near_miss_count": 2,
+             "items": [{"reviewed": True}, {"reviewed": False}]},
+            {"target": "trust_instrument", "label": "Trust agreement", "group": "estate_legal",
+             "found": True, "near_miss_count": 0,
+             "items": [{"reviewed": True}]},
+            {"target": "deed_title", "label": "Deed", "group": "estate_legal",
+             "found": False, "near_miss_count": 0, "items": []},
+        ],
+    }
+    r = ad.report_data([], vital_docs)
+    assert r["unsure"] == [
+        {"area": "Estate & legal", "target": "will_testament", "what": "Will / testament",
+         "unconfirmed": 1, "near_miss": 2},
+    ], "fully-confirmed/no-near-miss targets (trust) and not-found ones (deed) are left out"
+
+
+def test_report_data_unsure_empty_for_family_even_with_real_gaps():
+    """unconfirmed_count is already role-gated to None for family upstream
+    (vital_docs_data) — Section 3 must read that as "nothing to show", not
+    recompute its own, un-gated version from the same target data."""
+    vital_docs = {
+        "available": True, "found_count": 1, "total_count": 1,
+        "unconfirmed_count": None,
+        "groups": [],
+        "targets": [{"target": "will_testament", "label": "Will / testament", "group": None,
+                    "found": True, "near_miss_count": 5,
+                    "items": [{"reviewed": False}]}],
+    }
+    assert ad.report_data([], vital_docs)["unsure"] == []
+
+
+def test_gathers_data_resolves_known_and_unknown_members():
+    curation_layer = {
+        "recipients": ["CPA", "Estate attorney"],
+        "gathers": {
+            "for-the-cpa": {
+                "title": "For the CPA", "recipient": "CPA", "ask": "tax returns",
+                "cover_note": "", "ts": "t1", "actor": "examiner",
+                "members": {
+                    "/a/return.pdf": {"status": "possible", "ts": "t1", "reason": None},
+                    "/a/gone.pdf": {"status": "left_out", "ts": "t1", "reason": "withheld"},
+                },
+                "missing": {"m1": {"text": "2019 tax return", "ts": "t1"}},
+                "handoffs": [{"ts": "t2", "count": 1, "skipped": 0}],
+            },
+        },
+    }
+    doc_rows = [{"file": "/a/return.pdf", "name": "2022 return.pdf", "category": "financial"}]
+    # "/a/gone.pdf" deliberately has no matching row — e.g. moved out since it
+    # was added to the folder.
+    r = ad.gathers_data(curation_layer, doc_rows)
+    assert r["recipients"] == ["CPA", "Estate attorney"]
+    assert len(r["gathers"]) == 1
+    g = r["gathers"][0]
+    assert g["slug"] == "for-the-cpa" and g["recipient"] == "CPA"
+    assert g["possible_count"] == 1 and g["left_out_count"] == 1
+    by_id = {m["id"]: m for m in g["members"]}
+    known = by_id["/a/return.pdf"]
+    assert known["known"] is True and known["name"] == "2022 return.pdf"
+    assert known["category"] == "financial"
+    unknown = by_id["/a/gone.pdf"]
+    assert unknown["known"] is False and unknown["reason"] == "withheld", \
+        "a member whose file no longer resolves still shows, never silently dropped"
+    assert unknown["name"] == "gone.pdf", "falls back to the raw basename, never a guess"
+    assert g["missing"] == [{"id": "m1", "text": "2019 tax return", "ts": "t1"}]
+    assert g["handoffs"] == [{"ts": "t2", "count": 1, "skipped": 0}]
+
+
+def test_gathers_data_empty_when_no_gathers_yet():
+    r = ad.gathers_data({}, [])
+    assert r == {"gathers": [], "recipients": []}
+
+
+def test_significance_bucket_counts_matches_each_filter_option():
+    # Each key N is "how many rows ?significance=N would keep" — an EXACT,
+    # per-bucket tally (2026-10-16: switched from the old cumulative "X and
+    # up" count to match the filter's own switch to an exact level).
+    rows = [{"significance": 5}, {"significance": 5}, {"significance": 3},
+           {"significance": 1}, {"significance": 0}, {}]
+    assert ad.significance_bucket_counts(rows) == {5: 2, 4: 0, 3: 1, 2: 0, 1: 1}
+
+
+def test_documents_year_index_groups_by_vital_date_nodate_always_last():
+    rows = [
+        {"file": "/d/will.pdf", "vital": [{"date_used": {"value": "2015-02"}}]},
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}}]},
+        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}}]},
+        {"file": "/d/recipe.pdf"},                              # no .vital at all
+        {"file": "/d/deed.pdf", "vital": [{}]},                  # .vital present, no date_used
+        {"file": "/d/odd.pdf", "vital": [{"date_used": {"value": "unreadable"}}]},
+    ]
+    assert ad.documents_year_index(rows) == [
+        {"year": "2023", "count": 2},
+        {"year": "2015", "count": 1},
+        {"year": "nodate", "count": 3},
+    ]
+
+
+def test_email_category_counts_tallies_every_category_on_a_thread():
+    rows = [{"thread_id": "t1", "categories": ["financial", "insurance"]},
+           {"thread_id": "t2", "categories": ["financial"]},
+           {"thread_id": "t3", "categories": []}]
+    assert ad.email_category_counts(rows) == {"financial": 2, "insurance": 1}
+
+
+def test_merge_email_category_counts_adds_and_creates_entries():
+    index = [{"category": "financial", "count": 3, "subcategories": [{"name": "banking", "count": 3}]},
+             {"category": "miscellaneous", "count": 1, "subcategories": []}]
+    merged = ad.merge_email_category_counts(index, {"financial": 2, "insurance": 5})
+    by = {c["category"]: c for c in merged}
+    assert by["financial"]["count"] == 5
+    assert by["financial"]["subcategories"] == [{"name": "banking", "count": 3}], \
+        "email counts never invent a subcategory split"
+    assert by["insurance"] == {"category": "insurance", "count": 5, "subcategories": []}
+    assert by["miscellaneous"]["count"] == 1, "untouched when no email matched it"
+    assert merged[0]["category"] in ("financial", "insurance")  # sorted desc by count
+    # Empty/absent email counts is a no-op (same object back, no accidental copy cost).
+    assert ad.merge_email_category_counts(index, None) is index
+    assert ad.merge_email_category_counts(index, {}) is index
+
+
+def test_email_rows_for_category_filters_by_membership():
+    rows = [{"thread_id": "t1", "categories": ["financial"]},
+           {"thread_id": "t2", "categories": ["financial", "insurance"]},
+           {"thread_id": "t3", "categories": ["insurance"]}]
+    assert [r["thread_id"] for r in ad.email_rows_for_category(rows, "financial")] == ["t1", "t2"]
+    assert [r["thread_id"] for r in ad.email_rows_for_category(rows, "insurance")] == ["t2", "t3"]
+    assert ad.email_rows_for_category(rows, "") == []
+    assert ad.email_rows_for_category(rows, "nonexistent") == []
 
 
 def test_doc_move_into_letter_category_appears_on_correspondence_and_leaves_documents():
