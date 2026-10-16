@@ -244,7 +244,8 @@
     ["person", "scene", "place", "event", "thread", "media", "cat", "subcat", "vital", "docview",
      "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
-     "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug"]
+     "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug",
+     "year", "arrange"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
     return location.pathname + (q.length ? "?" + q.join("&") : "");
   }
@@ -3662,12 +3663,17 @@
 
   P.documents = function (main, data) {
     var index = data.index || [];
+    var yearIndex = data.year_index || [];
     var vd = data.vital_docs || {};
     var total = 0;
     index.forEach(function (c) { total += c.count; });
     var ROWS = {};          // file → row, for drops and the viewer
     var view = { cat: Q.cat || "", subcat: Q.subcat || "", vital: Q.vital || "", docview: Q.docview || "",
-                 coll: Q.collection_curation || "" };
+                 coll: Q.collection_curation || "", year: Q.year || "" };
+    // By-year arrangement (2026-10-16): a separate axis from the folder tree
+    // itself, like layout — which PRIMARY list the tree shows (subject
+    // categories vs. years), not which one is selected within it.
+    var arrange = Q.arrange || prefGet("arrange", "subject");
     var COLLS = null;       // [{slug,title,count}] once fetched (examiner)
     var layout = Q.layout || prefGet("layout", "list");
     var sort = { by: Q.sort || "", dir: Q.dir || "" };
@@ -3694,6 +3700,7 @@
     function refreshIndex() {
       getJSON("/api/documents?limit=1" + (includeEmails ? "&include_emails=1" : "")).then(function (d) {
         index = d.index || [];
+        yearIndex = d.year_index || [];
         total = 0; index.forEach(function (c) { total += c.count; });
         maxCount = 1; index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
         drawTree();
@@ -3705,13 +3712,13 @@
     function isCurrent(spec) {
       return (spec.docview || "") === view.docview && (spec.cat || "") === view.cat &&
              (spec.subcat || "") === view.subcat && (spec.vital || "") === view.vital &&
-             (spec.coll || "") === view.coll;
+             (spec.coll || "") === view.coll && (spec.year || "") === view.year;
     }
     function pick(spec) {
       view = { cat: spec.cat || "", subcat: spec.subcat || "", vital: spec.vital || "", docview: spec.docview || "",
-               coll: spec.coll || "" };
+               coll: spec.coll || "", year: spec.year || "" };
       setQ({ cat: view.cat, subcat: view.subcat, vital: view.vital, docview: view.docview,
-             collection_curation: view.coll });
+             collection_curation: view.coll, year: view.year });
       clearSel();
       drawTree(); drawPane(true);
     }
@@ -3773,6 +3780,27 @@
       emChk.appendChild(emBox); emChk.appendChild(document.createTextNode(" Include emails"));
       tools.appendChild(emChk);
       tree.appendChild(tools);
+
+      // By-year arrangement (2026-10-16): which PRIMARY list the tree shows
+      // below Vital documents — subject categories (the only one before
+      // today) or years. Vital documents/Checklist above are unaffected
+      // either way. Built honestly: most cases will show a handful of real
+      // years and one large "No date" bucket, because the pipeline gives a
+      // date to only the ~13 vital document kinds — see documents_year_index.
+      var arr = el("div", "seg");
+      arr.setAttribute("role", "group"); arr.setAttribute("aria-label", "Arrange by");
+      [["subject", "By subject"], ["year", "By year"]].forEach(function (o) {
+        var b = el("button", null, o[1]); b.type = "button";
+        b.setAttribute("aria-pressed", arrange === o[0] ? "true" : "false");
+        b.onclick = function () {
+          if (arrange === o[0]) return;
+          arrange = o[0]; prefSet("arrange", arrange); setQ({ arrange: arrange });
+          pick({});   // the two lists are different folders — start from the root
+        };
+        arr.appendChild(b);
+      });
+      tree.appendChild(arr);
+
       var ul = el("ul", "tlist");
       trow(ul, { label: "All documents", count: total, spec: {} });
 
@@ -3814,6 +3842,17 @@
       }
 
       sep(ul);
+      if (arrange === "year") {
+        // Flat, not nested by subject within a year (the mockup's richer
+        // version) — a deliberate v1 simplification given how few documents
+        // have a year at all. "No date" always sorts last server-side,
+        // regardless of how large it is — it's usually the biggest folder.
+        yearIndex.forEach(function (y) {
+          trow(ul, { label: y.year === "nodate" ? "No date" : y.year, count: y.count,
+                     spec: { year: y.year } });
+        });
+        if (!yearIndex.length) ul.appendChild(el("li", "tnone", "No documents yet."));
+      } else {
       index.forEach(function (c) {
         var subs = c.subcategories || [];
         trow(ul, { label: pretty(c.category), count: c.count, key: subs.length ? c.category : null,
@@ -3833,6 +3872,7 @@
           });
         }
       });
+      }
 
       if (EXAMINER) {
         sep(ul);
@@ -3893,6 +3933,7 @@
         return ["Vital documents", t ? t.label : pretty(view.vital)];
       }
       if (view.cat) return view.subcat ? [pretty(view.cat), pretty(view.subcat)] : ["Documents", pretty(view.cat)];
+      if (view.year) return ["Documents", view.year === "nodate" ? "No date" : view.year];
       return [null, "All documents"];
     }
     function drawPane(fetch) {
@@ -3990,13 +4031,14 @@
       pg = pager("/api/documents", {
         getParams: function () {
           return { cat: view.cat, subcat: view.subcat, vital: view.vital, collection_curation: view.coll,
-                   sort: sort.by, dir: sort.dir, include_emails: includeEmails ? "1" : "" };
+                   year: view.year, sort: sort.by, dir: sort.dir,
+                   include_emails: includeEmails ? "1" : "" };
         },
         render: function () { drawBody(); },
       });
       pg.limit = 300;
       pane.appendChild(pg.footer);
-      if (fetch || view.cat || view.vital || view.coll || sort.by) pg.load(true); else pg.seed(data);
+      if (fetch || view.cat || view.vital || view.coll || view.year || sort.by) pg.load(true); else pg.seed(data);
     }
 
     // Vital items with no document file (email/message/recording sourced) can't
