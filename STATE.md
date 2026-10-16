@@ -23,6 +23,53 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15, later yet — demo-vs-built gap check, by reading code (not trusting the brainstorm memory)
+
+**Why this entry exists:** the user asked for a side-by-side of what the 2026-10-09–14 mockup
+canvas (`claude.ai/artifact/TavXkZ66bs5hJ3cXYj2gA1`, both its "TODAY" and "WISHLIST" boards) shows
+versus what's actually in this repo today. The front-end brainstorm memory already claimed an
+answer to this; it was checked against the real code rather than trusted, and one of its claims
+turned out to be wrong (see below) — that memory file has been corrected.
+
+**Built and matching a mockup:** top nav (Documents/Emails/**Messages**/Report), List/Detail
+toggle, vital-doc classification confirm ("Yes, that's right" / "Different kind…"), per-document
+notes, Move to…/Add to collection…, Report Sections 1–2, and — corrected from this memory's prior
+claim — **drag-and-drop between folders IS built** (`docDragStart`/`docDropTarget` in
+`report_assets/family/family.js`, examiner-role-gated same as the rest of curation).
+
+**Built but NOT matching any mockup (a local decision, not from the demo):** the "Include emails"
+checkbox on Documents, the significance-threshold filter + count meter and Received/Sent tabs on
+Emails, the "Flag important" toggle. None of this was wrong to build — the Emails section itself
+postdates every mockup (both boards call it "later"/absent) — just worth knowing these aren't
+demo-derived if someone goes looking for them on the canvas.
+
+**Confirmed still not built, by reading the code (not by trusting the old note):**
+- Report Section 3 ("where the archive isn't sure") — correctly deferred; needs AI question-
+  generation the real pipeline doesn't have.
+- By-year document arrangement (mockup has a By subject/By year toggle; only "by subject" exists
+  here).
+- A per-document Vital on/off switch on ordinary documents (don't confuse with the checklist's
+  near-miss "Mark as vital"/"Not a vital document" bulk action, which is a different, narrower
+  thing scoped to checklist candidates only — that one IS built).
+- The "Gather for someone…" helper and its "Handed over" bundle tracking — absent entirely.
+- The mockup's ruled/numbered-sheet document-row style — only typography/color were applied.
+
+**A real naming/behavior drift worth a decision, not just a note:** both mockups ("TODAY" and
+"WISHLIST" alike) replaced the star with one three-way **Important / Normal / Less important**
+control (decided 2026-10-11) — the real build never made that change and still has a binary ☆
+star (`favorite_curation`) plus a separate significance score driving a different filter. Also,
+the final 2026-10-14 tab decision said "Texts"; the shipped code says "Messages". Neither is fixed
+in this round — flagging for a decision (intentional rename vs. drift) before anyone treats either
+mockup as the current spec for either of these two points.
+
+**Blocked:** nothing.
+
+**Next action:** none required; this was a status check, not new work. If the Important/star
+divergence or the Messages/Texts naming should be reconciled, that's a product decision, not a
+bug fix — ask before picking a direction.
+
+---
+
 ### 2026-10-15, even later — why ordinary documents carry no date: confirmed upstream, not a bug here
 
 **What this means for the product:** a recipe, a piece of creative writing, an ordinary letter —
