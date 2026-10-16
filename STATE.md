@@ -81,6 +81,61 @@ touching anything; nothing is pushed or PR'd yet from this session.
 
 ---
 
+### 2026-10-15, newest — Take-out ("delete") built; Checklist-redesign sketched; a new to-do
+
+**What shipped (on `documents-view`, committed, not pushed — three commits, newest first: front
+end, backend, and this entry; `git log --oneline -6` for the exact set):**
+
+- **A real "delete" for documents, called Take out.** Examiner-only button on every Detail card,
+  next to Gather for…, with an optional reason. Decided over two rounds of AskUserQuestion: the
+  delivered file physically moves to `output/family_deleted/<category>/` (the user's own choice —
+  organized by the document's current category, mirroring Banish's pattern for photos) when a
+  delivered copy still exists; a new `doc_taken_out` overlay is the real source of truth hiding it
+  either way, because most documents have no delivered bytes left to move (same "frequently
+  reaped" precondition the Move verb already documented). Taking out a document that satisfies a
+  vital-checklist kind also drops that kind back to not-found (the user's choice over leaving the
+  two independent). Fully reversible via the existing Undo/History mechanism — no new "Taken out"
+  browsing page was built, matching Banish's own precedent (it doesn't have one either). Verified
+  live: took out a document, confirmed the real file move on disk, confirmed Undo moved it back.
+- **Why Banish itself couldn't be reused:** confirmed by reading it — `_banish_one` hard-requires
+  the canonical path to live under `output/archive/`, which is photo/video-only; no document ever
+  resolves there. This is a new, parallel mechanism, not a generalization of Banish.
+
+**Sketched, not built: a richer Checklist row.** The user asked how Checklist and Detail view
+differ (goal-first/thin-actions vs. document-first/full-toolbar — see the mockup comparison shown
+inline this session) and whether Checklist should look more like Detail. Recommendation given:
+pull Detail's per-document info (summary/date/kind) and action bar (Star/Note/Move/Gather) into
+Checklist's item rows, keeping the grouping-by-kind and classification actions (Confirm/Dismiss/
+Reassign) as they are, rather than rebuilding Checklist as Detail cards outright. Not started —
+needs the user's go-ahead first.
+
+**New to-do, not started — Emails' significance filter should be exclusive, not cumulative.**
+Today picking a level in the Emails significance dropdown (`?min_significance=N`) shows that level
+AND EVERY LEVEL ABOVE IT ("N and up") — deliberate, and covered by its own test
+(`test_significance_threshold_counts_matches_each_filter_option`). The user wants picking one
+level to show ONLY that level (e.g. "Everyday" hides "Personal"/"Emotionally resonant"/"Major life
+events" instead of including them). This is a real behavior CHANGE to a tested, deliberate
+default, not a bug — before building it, decide whether "and up" should still exist as an option
+(a second control?) or whether exclusive fully replaces it, and whether the "N and up" count meter
+(`sigmeter`) stays cumulative or also switches to per-bucket. Not investigated further this round.
+
+**A recurring gotcha, worth repeating because it bit again this session:** the user looked for the
+Report page's new percentages and didn't see them — port 7766 was still the pinned
+`~/wyeast_documents_only` Desktop-launcher copy from before this session even started, which
+(a) has none of today's code and (b) runs `--documents-only`, which hides Report entirely. Gave
+the user `./family_archive.sh oct7_mf --cases-root /Volumes/oct7_mf_case --port 7767` (no
+`--documents-only`) as the fix. If this keeps recurring, the real fix is probably syncing or
+re-pinning `~/wyeast_documents_only` itself — ask the user before touching that checkout, it's
+intentionally separate.
+
+**Blocked:** nothing on Take-out. The Checklist redesign and the Emails-filter change both need
+the user's decision/go-ahead before building.
+
+**Next action:** `cd ~/mac_family_archive && git log --oneline -6 && ./run_tests.sh` before
+touching anything; nothing pushed or PR'd yet.
+
+---
+
 ### 2026-10-15, later yet — demo-vs-built gap check, by reading code (not trusting the brainstorm memory)
 
 **Why this entry exists:** the user asked for a side-by-side of what the 2026-10-09–14 mockup
