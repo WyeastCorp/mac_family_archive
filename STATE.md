@@ -23,6 +23,79 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-16, newest — PR #15 merged; handoff with five new to-dos from the user
+
+**PR #15 merged to `main`** (merge commit, not squashed — `git log --oneline -3` for the hash). Full
+detail of what it carried is the entry directly below this one and in the PR description itself
+(`gh pr view 15 --repo WyeastCorp/mac_family_archive`); not re-derived here since none of it is a
+number safe to restate later. `date-index-as-of-date` / PR #14 (as_of_date wording, unrelated scope)
+is still open and unmerged as of this entry — check its own status before assuming it landed too.
+
+**Five new to-dos from the user, none started, none investigated beyond what's noted below.** Read
+each note before starting — several point at a concrete function or file so the next session doesn't
+re-derive it from scratch, but none of them is a finished design:
+
+1. **An email-side "Documents at a glance"** — same shape as the one just built for Documents ("x
+   emails found by pipeline, y considered vital, z near-miss, a neither"), for the Report page.
+   `email_triage_summary.json` is the email-side equivalent of `collect_dedup_summary.json` (it has
+   its own `email_count`, `triage.kept`, `triage.discarded_bulk`, etc. — read it fresh, don't trust
+   this sentence's shape of it to still be current). The "vital"/"near-miss" half of this depends on
+   to-do #3 below being answered first — don't build this one until that's understood, or the email
+   counts in it will likely be as wrong as the user suspects they already are.
+
+2. **A dedicated Near-Miss browsing view in Documents** — today a near-miss list only exists as a
+   per-target drawer inside the Checklist (`near_miss_rows()` in `tools/_archive_data.py`, already
+   examiner-only and target-scoped); there is no single page listing near-misses across every
+   target. Scope this as a real design decision (one list with a target filter? grouped by target
+   like the Checklist already groups things?) before building — don't assume "just reuse the
+   drawer's rows in a bigger list" is sufficient without checking what the drawer currently leaves
+   out at that larger scale (pagination, the `truncated_at_k` cap each target already has).
+
+3. **Investigate: why do no emails show up as "documents" in the Vital Docs checklist (and maybe
+   none in Near-Misses either)?** The user's specific suspicion: some EMAIL THREADS (a discussion,
+   not an attachment) are plausibly vital on their own and should be checklist candidates. What's
+   already known, not yet connected to an answer: `vital_doc_candidates.json` hits in `oct7_mf` DO
+   include a real share of email-sourced paths (`.eml` under `original_files/`) — checked directly
+   this session, read `vital_doc_candidates.json` fresh rather than trust a fraction quoted here.
+   `near_miss_rows()` and `vital_docs_data()` both accept a `threads_index` and already resolve
+   email-sourced CONFIRMED vital items to a thread deep-link (`_vital_thread_links`) — so the
+   plumbing for "an email can be vital" exists on the confirmed side. What's NOT yet checked: does
+   that same resolution actually fire for NEAR-MISS rows specifically (read `near_miss_rows()` end to
+   end, don't assume it mirrors `vital_docs_data()`'s item-building), and — separately, upstream of
+   this repo entirely — does `vital_doc_candidates.json`'s retrieval stage even search EMAIL BODY
+   TEXT for a vital-document match in the first place, or only attachments/extracted documents? That
+   second question may need Wyeast's own stage code (`wyeast/stages/`, private repo), not this one.
+
+4. **By-year should un-nest categories within each year, matching the original mockup** — e.g. under
+   2023, show the vital tax documents and vital property documents that fall in that year, broken out
+   by category/subject, not just a flat per-year document count. The current build (`arrange=year`
+   in `report_assets/family/family.js`, `documents_year_index()` in `tools/_archive_data.py`) was
+   explicitly built as "a flat list of years... not nested by subject the way the mockup showed it —
+   a deliberate v1 simplification" (see the 2026-10-16 entry below, "PR #12 merged"). The user is now
+   asking for the un-simplified version. Reference the mockup before building:
+   `memory/wyeast-frontend-brainstorm.md` points at the canvas (`claude.ai/artifact/
+   TavXkZ66bs5hJ3cXYj2gA1`) that showed the nested version.
+
+5. **A fuller report on what the pipeline COULD do for sorting/filtering emails**, building on this
+   session's research (summarized in this session's own chat, not re-derived in full here — the
+   short version: the pipeline's significance score is known-unreliable by its OWN team's
+   benchmarking, documented in Wyeast's `docs/specs/drop-model-significance.md`, which proposes
+   replacing it with deterministic signals this case's data already mostly has —
+   `estate_materiality_index.json`, `subject_mentions_index.json`, `vital_doc_provenance.json`
+   thread links, thread length/bidirectionality, pipeline category). The user wants this turned into
+   an actual written report, not just a chat list — consider whether that belongs as a proper
+   document (this session answered in chat only, given low remaining budget) before building
+   anything.
+
+**Blocked:** on the user for a decision on #1 (wait for #3) and #2 (scope the near-miss view) before
+writing code; #4 and #5 can start independently.
+
+**Next action:** `cd ~/mac_family_archive && git checkout main && git pull && git log --oneline -5`,
+confirm PR #15's merge commit is there, then pick one of the five to-dos above — #3 (the email/
+near-miss investigation) is the one two other to-dos depend on, so it's the natural place to start.
+
+---
+
 ### 2026-10-16, newest — Emails fixes (state-reset, year, demote-hide, delete), Report document-count block, Operative View built
 
 **Branched from `main`** (not from the then-open `date-index-as-of-date`/PR #14 — unrelated scope,
