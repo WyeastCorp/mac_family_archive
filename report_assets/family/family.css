@@ -415,6 +415,8 @@ a.attchip:hover { text-decoration: underline; }
 .pickmodal { background: var(--panel, #fff); color: inherit; border-radius: 10px; padding: 20px 22px; max-width: 92vw; width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
 .pickmodal h3 { margin: 0 0 12px; }
 .pickmodal-sel { width: 100%; padding: 8px; margin-bottom: 14px; }
+.pickmodal label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+.pickmodal textarea.pickmodal-sel { min-height: 56px; font: inherit; resize: vertical; }
 .pickmodal-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .lightbox { position: fixed; inset: 0; background: rgba(20,16,12,.86); display: none; align-items: center; justify-content: center; z-index: 1000; }
 .lightbox.show { display: flex; }

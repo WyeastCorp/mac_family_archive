@@ -205,7 +205,7 @@
     var url = "/" + (target.page || "overview"), q = [];
     ["person", "scene", "place", "event", "thread", "conversation", "venue", "tab",
      "media", "vperson", "vscene", "favorite_curation", "collection_curation", "people",
-     "rec"].forEach(function (k) {
+     "rec", "gslug"].forEach(function (k) {
       var v = target[k] != null ? target[k] : target[k + "_id"];
       if (v != null && v !== "") q.push(k + "=" + encodeURIComponent(v));
     });
@@ -244,7 +244,7 @@
     ["person", "scene", "place", "event", "thread", "media", "cat", "subcat", "vital", "docview",
      "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
-     "vperson", "vscene", "favorite_curation", "collection_curation", "people"]
+     "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
     return location.pathname + (q.length ? "?" + q.join("&") : "");
   }
@@ -1733,6 +1733,48 @@
       });
       try { sel.focus(); } catch (e) { /* no focus */ }
     }).catch(function (e) { toast("Couldn't load collections: " + (e && e.message)); });
+  }
+
+  // Same shape as addToCollection, for a Gather-for-someone folder: pick an
+  // existing one or type a new folder name (recipient/ask/cover note are set
+  // afterward on the /gather page's Edit — this picker only decides WHICH
+  // folder gets the document, same one-click motion as Add to collection).
+  function addToGather(ids) {
+    getJSON("/api/gather").then(function (d) {
+      var folders = (d && d.gathers) || [];
+      var body = el("div");
+      body.appendChild(el("p", "pickmodal-note",
+        esc("Add " + ids.length + " item(s) to a gather-for-someone folder.")));
+      var sel = el("select", "pickmodal-sel");
+      sel.appendChild(new Option("— New folder —", ""));
+      folders.forEach(function (g) {
+        sel.appendChild(new Option(g.title + (g.recipient ? " (" + g.recipient + ")" : ""), g.slug));
+      });
+      var input = el("input", "pickmodal-sel");
+      input.type = "text"; input.placeholder = "New folder name, e.g. “For the CPA”";
+      function sync() { input.style.display = sel.value ? "none" : ""; }
+      sel.onchange = sync; sync();
+      body.appendChild(sel); body.appendChild(input);
+      pickmodal("Gather for someone", body, {
+        onConfirm: function (close) {
+          var slug = sel.value, name = input.value.trim();
+          if (slug) {
+            var picked = folders.filter(function (g) { return g.slug === slug; })[0];
+            close();
+            doVerb("/api/gather/add", { slug: slug, ids: ids }, "Added to " + (picked ? picked.title : slug));
+          } else if (name) {
+            close();
+            postJSON("/api/gather/create", { title: name }).then(function (res) {
+              if (!res.ok) { toast((res.j && res.j.error) || "Couldn't create folder"); return; }
+              doVerb("/api/gather/add", { slug: res.j.slug, ids: ids }, "Added to " + name);
+            });
+          } else {
+            toast("Pick a folder or type a new name.");
+          }
+        },
+      });
+      try { sel.focus(); } catch (e) { /* no focus */ }
+    }).catch(function (e) { toast("Couldn't load gather folders: " + (e && e.message)); });
   }
 
   // Per-photo actions shown in the zoom/lightbox (#13).
@@ -3545,6 +3587,273 @@
     }
   };
 
+  // ── Gather-for-someone (2026-10-15): manual folders for one recipient at a
+  // time, built like Collections (browse, pick, add — never a search the
+  // archive runs on the PR's behalf). A member's status is possible or
+  // left_out; "left_out" is never a removal, and shows on the saved contents
+  // page with its reason, same honesty rule as a "couldn't find" line having
+  // no file behind it. See memory richard-feedback-report for why this
+  // exists, and STATE.md 2026-10-15 for the decisions it was built from. ──
+
+  function openGatherEditor(existing, recipients) {
+    var body = el("div");
+    var titleInput = el("input", "pickmodal-sel");
+    titleInput.type = "text"; titleInput.placeholder = "Folder name, e.g. “For the CPA”";
+    titleInput.value = existing ? existing.title : "";
+
+    var sel = el("select", "pickmodal-sel");
+    sel.appendChild(new Option("— No recipient set —", ""));
+    recipients.forEach(function (name) { sel.appendChild(new Option(name, name)); });
+    var recInput = el("input", "pickmodal-sel");
+    recInput.type = "text"; recInput.placeholder = "Or type a new recipient";
+    if (existing && existing.recipient) {
+      if (recipients.indexOf(existing.recipient) >= 0) sel.value = existing.recipient;
+      else recInput.value = existing.recipient;
+    }
+
+    var askInput = el("textarea", "pickmodal-sel");
+    askInput.placeholder = "What did they ask for? (optional)";
+    askInput.value = (existing && existing.ask) || "";
+
+    var noteInput = el("textarea", "pickmodal-sel");
+    noteInput.placeholder = "Cover note — goes on the contents page (optional)";
+    noteInput.value = (existing && existing.cover_note) || "";
+
+    body.appendChild(el("label", null, "Folder name"));
+    body.appendChild(titleInput);
+    body.appendChild(el("label", null, "Who is it for?"));
+    body.appendChild(sel);
+    body.appendChild(recInput);
+    body.appendChild(el("label", null, "What did they ask for?"));
+    body.appendChild(askInput);
+    body.appendChild(el("label", null, "Cover note"));
+    body.appendChild(noteInput);
+
+    pickmodal(existing ? "Edit folder" : "New folder for someone", body, {
+      confirmLabel: existing ? "Save" : "Create",
+      onConfirm: function (close) {
+        var title = titleInput.value.trim();
+        if (!title) { toast("Give the folder a name."); return; }
+        var recipient = recInput.value.trim() || sel.value;
+        var ask = askInput.value.trim();
+        var note = noteInput.value.trim();
+        close();
+        var saved = (recipient && recipients.indexOf(recipient) === -1)
+          ? postJSON("/api/recipient/add", { name: recipient }) : Promise.resolve();
+        saved.then(function () {
+          if (existing) {
+            doVerb("/api/gather/update",
+              { slug: existing.slug, title: title, recipient: recipient, ask: ask, cover_note: note },
+              "Folder updated").then(function (x) { if (x) render(); });
+          } else {
+            postJSON("/api/gather/create", { title: title, recipient: recipient, ask: ask, cover_note: note })
+              .then(function (res) {
+                if (!res.ok) { toast((res.j && res.j.error) || "Couldn't create folder"); return; }
+                toast("Folder created");
+                render();
+              });
+          }
+        });
+      },
+    });
+    try { titleInput.focus(); } catch (e) { /* no focus */ }
+  }
+
+  function gatherMemberRow(g, m) {
+    var row = el("div", "rr");
+    var k = el("span", "k");
+    k.appendChild(document.createTextNode(m.name));
+    if (!m.known) k.appendChild(txt("span", "docs-hint inline", " (no longer in Documents)"));
+    row.appendChild(k);
+    var v = el("span", "v");
+    if (m.category) v.appendChild(txt("span", "docs-hint inline", pretty(m.category) + " · "));
+    if (m.status === "possible") {
+      var hold = el("button", "linkbtn", "Leave out");
+      hold.onclick = function () {
+        textPrompt("Why is it being held back? (optional, shown on the contents page)", "", function (reason) {
+          doVerb("/api/gather/mark", { slug: g.slug, id: m.id, status: "left_out", reason: reason },
+            m.name + " held back").then(function (x) { if (x) render(); });
+        });
+      };
+      v.appendChild(hold);
+    } else {
+      if (m.reason) v.appendChild(txt("span", "docs-hint inline", "(" + m.reason + ") "));
+      var back = el("button", "linkbtn", "Make possible");
+      back.onclick = function () {
+        doVerb("/api/gather/mark", { slug: g.slug, id: m.id, status: "possible" },
+          m.name + " back in").then(function (x) { if (x) render(); });
+      };
+      v.appendChild(back);
+    }
+    v.appendChild(document.createTextNode(" · "));
+    var rm = el("button", "linkbtn", "Remove");
+    rm.onclick = function () {
+      doVerb("/api/gather/remove", { slug: g.slug, ids: [m.id] }, "Removed " + m.name)
+        .then(function (x) { if (x) render(); });
+    };
+    v.appendChild(rm);
+    row.appendChild(v);
+    return row;
+  }
+
+  function renderGatherDetail(main, g, recipients) {
+    backLink(main, "Gather for someone", { page: "gather" });
+    head(main, "Gather for someone", g.title,
+      (g.recipient ? "For " + g.recipient + ". " : "") +
+      num(g.possible_count) + " document(s) to include.");
+
+    var tools = el("div", "docs-acts");
+    var editBtn = el("button", "btn small", "Edit folder");
+    editBtn.onclick = function () { openGatherEditor(g, recipients); };
+    tools.appendChild(editBtn);
+    var delBtn = el("button", "btn small danger", "Delete folder");
+    delBtn.onclick = function () {
+      if (!confirm("Delete “" + g.title + "”? The documents are kept. Reversible from History."))
+        return;
+      doVerb("/api/gather/delete", { slug: g.slug }, "Folder deleted")
+        .then(function (x) { if (x) go({ page: "gather" }); });
+    };
+    tools.appendChild(delBtn);
+    main.appendChild(tools);
+
+    if (g.ask) main.appendChild(el("p", "docs-hint", "Asked for: " + esc(g.ask)));
+    if (g.cover_note) main.appendChild(el("p", "docs-hint", "Cover note: " + esc(g.cover_note)));
+
+    main.appendChild(el("h3", "sec3", "Possible (" + num(g.possible_count) + ")"));
+    var possible = g.members.filter(function (m) { return m.status === "possible"; });
+    var sheetP = el("div", "sheet"); main.appendChild(sheetP);
+    possible.forEach(function (m) { sheetP.appendChild(gatherMemberRow(g, m)); });
+    if (!possible.length) sheetP.appendChild(el("p", "notice",
+      "Nothing yet. Browse Documents, then “Gather for…” on a document."));
+
+    if (g.left_out_count) {
+      main.appendChild(el("h3", "sec3", "Left out on purpose (" + num(g.left_out_count) + ")"));
+      var sheetL = el("div", "sheet"); main.appendChild(sheetL);
+      g.members.filter(function (m) { return m.status === "left_out"; })
+        .forEach(function (m) { sheetL.appendChild(gatherMemberRow(g, m)); });
+    }
+
+    main.appendChild(el("h3", "sec3", "Couldn't find (" + num(g.missing.length) + ")"));
+    var sheetM = el("div", "sheet"); main.appendChild(sheetM);
+    g.missing.forEach(function (mi) {
+      var row = el("div", "rr");
+      row.appendChild(txt("span", "k", mi.text));
+      var v = el("span", "v");
+      var rm = el("button", "linkbtn", "Remove");
+      rm.onclick = function () {
+        doVerb("/api/gather/missing/remove", { slug: g.slug, id: mi.id }, "Removed")
+          .then(function (x) { if (x) render(); });
+      };
+      v.appendChild(rm);
+      row.appendChild(v);
+      sheetM.appendChild(row);
+    });
+    if (!g.missing.length) sheetM.appendChild(el("p", "notice", "Nothing missing, yet."));
+    var addMiss = el("button", "btn small", "Add a couldn't-find line");
+    addMiss.onclick = function () {
+      textPrompt("Something searched for and not found:", "", function (text) {
+        if (!text.trim()) return;
+        doVerb("/api/gather/missing/add", { slug: g.slug, text: text.trim() }, "Added")
+          .then(function (x) { if (x) render(); });
+      });
+    };
+    main.appendChild(addMiss);
+
+    var saveBtn = el("button", "btn primary", "Save to my Mac");
+    saveBtn.disabled = !g.possible_count;
+    saveBtn.onclick = function () {
+      if (!confirm("Save " + num(g.possible_count) + " document(s) to a new folder on your Mac?")) return;
+      doVerb("/api/gather/export", { slug: g.slug }, "Saved").then(function (x) {
+        if (x) { if (x.skipped) toast(x.skipped + " item(s) skipped — see History"); render(); }
+      });
+    };
+    main.appendChild(saveBtn);
+
+    main.appendChild(el("h3", "sec3", "Saved before"));
+    if (!g.handoffs.length) {
+      main.appendChild(el("p", "notice", "Not saved yet."));
+    } else {
+      var sheetH = el("div", "sheet"); main.appendChild(sheetH);
+      g.handoffs.forEach(function (h) {
+        sheetH.appendChild(reportRow(String(h.ts || "").replace("T", " "),
+          num(h.count) + " document(s)" + (h.skipped ? ", " + num(h.skipped) + " skipped" : "")));
+      });
+    }
+  }
+
+  P.gather = function (main, data) {
+    var folders = data.gathers || [];
+    var recipients = data.recipients || [];
+
+    if (Q.gslug) {
+      var g = folders.filter(function (x) { return x.slug === Q.gslug; })[0];
+      if (!g) {
+        backLink(main, "Gather for someone", { page: "gather" });
+        main.appendChild(el("p", "notice", "That folder no longer exists."));
+        return;
+      }
+      renderGatherDetail(main, g, recipients);
+      return;
+    }
+
+    head(main, "Gather for someone", "Gather for someone",
+      "A folder for one recipient — what's in it, what's held back, and what " +
+      "couldn't be found, all visible on its own cover sheet when you save it.");
+
+    var nf = el("button", "btn primary", "New folder for someone");
+    nf.onclick = function () { openGatherEditor(null, recipients); };
+    main.appendChild(nf);
+
+    if (recipients.length) {
+      var rl = el("p", "docs-hint");
+      rl.appendChild(document.createTextNode("Saved recipients: "));
+      recipients.forEach(function (name, i) {
+        if (i) rl.appendChild(document.createTextNode(" · "));
+        rl.appendChild(document.createTextNode(name + " ("));
+        var x = el("button", "linkbtn", "remove");
+        x.onclick = function () {
+          doVerb("/api/recipient/remove", { name: name }, "Removed " + name)
+            .then(function (r) { if (r) render(); });
+        };
+        rl.appendChild(x);
+        rl.appendChild(document.createTextNode(")"));
+      });
+      main.appendChild(rl);
+    }
+
+    if (!folders.length) {
+      main.appendChild(el("p", "notice",
+        "No folders yet. Browse Documents, then “Gather for…” on a document, " +
+        "or start one here."));
+      return;
+    }
+    var grid = el("div", "collgrid"); main.appendChild(grid);
+    folders.forEach(function (g) {
+      var card = el("div", "collcard");
+      card.appendChild(el("h2", "collcard-h", esc(g.title)));
+      if (g.recipient) card.appendChild(el("p", "collcard-n", "For " + esc(g.recipient)));
+      var counts = num(g.possible_count) + " to include";
+      if (g.left_out_count) counts += " · " + num(g.left_out_count) + " left out";
+      if (g.missing.length) counts += " · " + num(g.missing.length) + " couldn't find";
+      card.appendChild(el("p", "collcard-n", counts));
+      card.appendChild(el("p", "collcard-n",
+        g.handoffs.length ? "Saved " + num(g.handoffs.length) + " time(s)" : "Not saved yet"));
+      var tools = el("div", "collcard-tools");
+      var open = el("button", "btn", "Open");
+      open.onclick = function () { go({ page: "gather", gslug: g.slug }); };
+      tools.appendChild(open);
+      var del = el("button", "btn danger", "Delete");
+      del.onclick = function () {
+        if (!confirm("Delete “" + g.title + "”? The documents are kept. Reversible from History."))
+          return;
+        doVerb("/api/gather/delete", { slug: g.slug }, "Folder deleted").then(function (x) { if (x) render(); });
+      };
+      tools.appendChild(del);
+      card.appendChild(tools);
+      grid.appendChild(card);
+    });
+  };
+
   P.documents = function (main, data) {
     var index = data.index || [];
     var vd = data.vital_docs || {};
@@ -3856,6 +4165,11 @@
         doVerb("/api/export", { items: pg.rows.map(function (r) { return r.file; }) }, "Exported " + pg.rows.length + " document(s)");
       };
       ctl.appendChild(exp);
+      if (EXAMINER) {
+        var gth = el("button", "btn small", "Gather for someone…");
+        gth.onclick = function () { go({ page: "gather" }); };
+        ctl.appendChild(gth);
+      }
       pane.appendChild(ctl);
 
       if (view.vital && view.vital !== "*" && DOC_OPERATIVE[view.vital]) {
@@ -4107,6 +4421,9 @@
         var ac = el("button", "btn small", "Add to collection…");
         ac.onclick = function () { addToCollection([r.file]); };
         acts.appendChild(ac);
+        var gt = el("button", "btn small", "Gather for…");
+        gt.onclick = function () { addToGather([r.file]); };
+        acts.appendChild(gt);
         if (view.coll) {
           var rm = el("button", "btn small", "Remove from this collection");
           rm.onclick = function () {
