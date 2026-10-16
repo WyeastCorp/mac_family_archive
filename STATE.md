@@ -23,6 +23,53 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-15, end of session — handoff: dates on ordinary documents, a List/Detail bug, demo work to reference
+
+**Where this session's work landed:** three commits on `documents-view`, nothing pushed, no PR
+yet. `git log --oneline -5` from this branch for the exact set — the two entries directly below
+this one describe each in plain language (top nav/Report/navy look + the Emails rebuild, then the
+checklist-jump fix).
+
+**New to-do, not started: why do ordinary (non-vital) documents carry no dates?**
+Raised by the user this session, using the "recipe" folder as the concrete example — nothing in it
+shows a date. Per the 2026-10-13 front-end brainstorm note (`memory/wyeast-frontend-brainstorm.md`),
+as of that check against upstream main, only vital documents, photos, emails and texts carry dates
+from the pipeline; ordinary documents get none, and categories fold unknowns into "miscellaneous."
+That note is now two days old and was **never re-verified against current main** — treat it as a
+lead, not an answer. Next session: re-check from scratch (`grep -rn "date_index" wyeast/ tools/` is
+a reasonable start), and find out whether this is a gap in the upstream pipeline or something
+fixable in this repo's own export/consume layer before proposing a fix.
+
+**New to-do, not started: the List/Detail toggle buttons don't show which one is active.**
+Root cause already found (not fixed): `report_assets/family/family.js`, the `.seg` buttons built
+around `[["list","List"],["detail","Detail"]].forEach(...)` (search for that literal) set each
+button's `aria-pressed` — which drives the dark-blue "active" styling — only once, when the
+buttons are first built. Clicking either button updates the `layout` variable and calls
+`drawBody()` to redraw the content, but never rebuilds the `seg` control itself, so the attribute
+never updates again. Detail view itself works correctly; only the button's own highlight is stuck
+on List. Fix: update both buttons' `aria-pressed` (or rebuild `seg`) inside the `onclick` handler.
+
+**Demo/brainstorm work to refer to before touching the front end, not yet (all) applied:**
+- `memory/wyeast-frontend-brainstorm.md` — the full decision history behind the current
+  Documents/Emails/Messages/Report top nav, the Report page's three-section design, and the
+  "law office navy" look.
+- The mockup canvas itself: `claude.ai/artifact/TavXkZ66bs5hJ3cXYj2gA1` — read it with the
+  Artifact tool, list its files, and read `project/Navy.dc.html` / `project/Documents.dc.html`
+  directly for the actual CSS/markup — the memory note is a summary, not a substitute.
+- **Specifically not yet built, so nobody re-derives it from scratch:** the mockup's "ruled
+  numbered sheet" document-row treatment (a pink margin line + numbered rows, legal-pad style) —
+  only the typography/color/top-bar pieces of the look were applied, not this. And the Report
+  page's Section 3 ("where the archive isn't sure") — needs a real question-generation feature
+  that doesn't exist anywhere in the pipeline; the mockup used invented example documents for it,
+  so don't build it from vibes if asked for "the rest of the Report."
+
+**Blocked:** nothing.
+
+**Next action:** `cd ~/mac_family_archive && git log --oneline -5 && ./run_tests.sh` before
+touching anything.
+
+---
+
 ### 2026-10-15, later — Top nav, inbox redesign, Report page, "law office navy" look
 
 **What shipped (on branch `documents-view`, not yet committed — see Next action)**
