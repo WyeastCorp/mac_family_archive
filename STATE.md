@@ -23,7 +23,56 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
-### 2026-10-16, newest — PR #12 merged; Report Section 3 + By-year built; another accidental server kill
+### 2026-10-16, newest — oct7_mf's date_index refreshed to tier 2 (Richard); PR #14 open
+
+**Richard handed over refreshed `date_index.json` + `vital_doc_provenance.json`** for `oct7_mf`
+(per PR #11's contract — see the entry below this one), with instructions to replace the files in
+the case's `output/metadata/` directly. Done: the originals are kept at
+`output/metadata/_backup_2026-10-16/` on the case volume (not in this repo — the case tree is
+outside the checkout, per `.gitignore`), should anything need to be compared back. The new file is
+tier 2 (the old one was tier 1 — no `account_views` key at all) and has 18 more documents with a
+usable date (139 vs 121) — confirmed by reading both files directly, not assumed from the PR
+description. This needs no code change to take effect: `_date_used_index()` already reads
+`items[].date_used` generically, so Checklist/By-year/Report all picked up the richer dates the
+moment the file was swapped — verified live (a new `as_of_date`-based pair of 2006 documents now
+appears in By-year, which had no 2006 entry before).
+
+**PR #14 open:** [WyeastCorp/mac_family_archive#14](https://github.com/WyeastCorp/mac_family_archive/pull/14) —
+`as_of_date` is a genuinely new basis value in the refreshed file (2 real documents use it); the
+front end's wording table didn't have a case for it, so it fell through to the generic "Dated X"
+instead of the contract's "As of X". Fixed and verified live. Not reviewed yet as of this entry.
+
+**Two real integration opportunities, NOT built — both need a decision, not just data plumbing:**
+- **`operative_views[]`** (wills/POA/trusts/beneficiary forms, tier 1): Documents already shows a
+  banner ("Newest date first, not the governing one") for these kinds, but it's a naive client-side
+  sort, not the pipeline's own ranking — which adds a real "lead" instrument
+  (`latest_by_date`), an "order unclear" flag, "refers to an instrument dated X" text for
+  codicils, and a "N copies" chip for duplicate text. This is an upgrade to something half-built,
+  not new scope. Decision needed: replace the existing sort outright, or layer the richer fields
+  on top of it?
+- **`account_views[]`** (financial statements by account, tier 2, brand new — `oct7_mf` has 11
+  groups: 10 real accounts + one "not grouped" bucket): no UI anywhere today. A natural fit would
+  be a third arrangement next to "By subject / By year", scoped to financial statements only.
+  Decision needed on that scoping before building — it would be the first arrangement that doesn't
+  apply to every document.
+- Full field-by-field rendering rules for both are in `docs/date_index_contract.md` (merged via
+  PR #11) — read that before building either, it's already thorough.
+
+**Yet another server restart on port 7783** (the user's own, previously restarted twice this
+session already) — needed to pick up both the new data files and the `as_of_date` fix, since the
+backend caches everything in memory at startup. Restarted with its original arguments each time;
+flagged clearly before doing it, this time.
+
+**Blocked:** nothing on the fix. The two bigger integration points need a decision before
+building.
+
+**Next action:** `cd ~/mac_family_archive && git log --oneline -5 && ./run_tests.sh`. Check
+`gh pr view 14 --repo WyeastCorp/mac_family_archive` for review/merge status before assuming
+nothing has happened since this was written.
+
+---
+
+### 2026-10-16, later — PR #12 merged; Report Section 3 + By-year built; another accidental server kill
 
 **PR #12 merged** ([WyeastCorp/mac_family_archive#12](https://github.com/WyeastCorp/mac_family_archive/pull/12),
 `documents-view` → `main`) — the user merged it themselves once CI passed (4 checks: macOS/Ubuntu
