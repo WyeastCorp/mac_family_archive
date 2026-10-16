@@ -411,6 +411,48 @@ def test_report_data_here_folders_pct_is_none_when_no_documents():
     assert r["here_folders"] == [{"name": "miscellaneous", "count": 0, "pct": None}]
 
 
+def test_gathers_data_resolves_known_and_unknown_members():
+    curation_layer = {
+        "recipients": ["CPA", "Estate attorney"],
+        "gathers": {
+            "for-the-cpa": {
+                "title": "For the CPA", "recipient": "CPA", "ask": "tax returns",
+                "cover_note": "", "ts": "t1", "actor": "examiner",
+                "members": {
+                    "/a/return.pdf": {"status": "possible", "ts": "t1", "reason": None},
+                    "/a/gone.pdf": {"status": "left_out", "ts": "t1", "reason": "withheld"},
+                },
+                "missing": {"m1": {"text": "2019 tax return", "ts": "t1"}},
+                "handoffs": [{"ts": "t2", "count": 1, "skipped": 0}],
+            },
+        },
+    }
+    doc_rows = [{"file": "/a/return.pdf", "name": "2022 return.pdf", "category": "financial"}]
+    # "/a/gone.pdf" deliberately has no matching row — e.g. moved out since it
+    # was added to the folder.
+    r = ad.gathers_data(curation_layer, doc_rows)
+    assert r["recipients"] == ["CPA", "Estate attorney"]
+    assert len(r["gathers"]) == 1
+    g = r["gathers"][0]
+    assert g["slug"] == "for-the-cpa" and g["recipient"] == "CPA"
+    assert g["possible_count"] == 1 and g["left_out_count"] == 1
+    by_id = {m["id"]: m for m in g["members"]}
+    known = by_id["/a/return.pdf"]
+    assert known["known"] is True and known["name"] == "2022 return.pdf"
+    assert known["category"] == "financial"
+    unknown = by_id["/a/gone.pdf"]
+    assert unknown["known"] is False and unknown["reason"] == "withheld", \
+        "a member whose file no longer resolves still shows, never silently dropped"
+    assert unknown["name"] == "gone.pdf", "falls back to the raw basename, never a guess"
+    assert g["missing"] == [{"id": "m1", "text": "2019 tax return", "ts": "t1"}]
+    assert g["handoffs"] == [{"ts": "t2", "count": 1, "skipped": 0}]
+
+
+def test_gathers_data_empty_when_no_gathers_yet():
+    r = ad.gathers_data({}, [])
+    assert r == {"gathers": [], "recipients": []}
+
+
 def test_significance_threshold_counts_matches_each_filter_option():
     # Each key N is "how many rows ?min_significance=N would keep" — a
     # CUMULATIVE count, matching the dropdown's "X and up" semantics exactly,

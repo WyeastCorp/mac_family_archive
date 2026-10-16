@@ -80,7 +80,7 @@ from tools._archive_data import (  # noqa: E402
     active_rebaser, install_rebaser, load_json, log,
     message_rows, overview_data, people_rows, person_detail, photo_rows,
     email_category_counts, merge_email_category_counts, email_rows_for_category,
-    significance_threshold_counts, report_data,
+    significance_threshold_counts, report_data, gathers_data,
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
@@ -187,6 +187,13 @@ MAX_TITLE_LEN = 120
 MAX_NOTE_LEN = 2000
 # A single add call can't stuff an unbounded id list into one collection.
 MAX_COLLECTION_MEMBERS = 20000
+# Gather-for-someone (2026-10-15): same order of magnitude as a collection (a
+# bundle for one recipient is realistically much smaller, but nothing here
+# depends on that) and a small cap on how many recipients/missing-item lines
+# one case accumulates — these are short labels, not a second documents list.
+MAX_GATHER_MEMBERS = 20000
+MAX_RECIPIENTS = 200
+MAX_GATHER_MISSING = 500
 VIEW_DIRS = ("by_person", "all_photos_by_scene", "by_event")
 # G-13 junk rescue: junk-routed images live under extracted/photos_junk/; un-junking
 # moves one back to its original working location and drops a scene view symlink into
@@ -226,6 +233,9 @@ PAGES = [
     # Phase 1 (the curation verbs are require_examiner); a collection opens as a
     # photos grid filtered ?collection_curation=<slug>.
     ("collections", "Collections", "heirloom"),
+    # 2026-10-15: Gather-for-someone — reached from a Documents button, not a
+    # top-nav tab (see HIDDEN_FROM_NAV), same reasoning as Search.
+    ("gather", "Gather for someone", "heirloom"),
     ("review", "Review queue", "heirloom"),
     # G-12 guided first-session review + G-13 junk rescue — examiner power tools.
     ("guided", "Guided review", "heirloom"),
@@ -237,7 +247,7 @@ PAGES = [
     ("search", "Search", "heirloom"),
 ]
 # Pages that route + serve an API but must NOT appear as a nav link in the rail.
-HIDDEN_FROM_NAV = {"search"}
+HIDDEN_FROM_NAV = {"search", "gather"}
 # history is examiner-only: its action entries embed quarantine/canonical paths and
 # sensitivity filter names (release/discard_quarantine record the full entry), which
 # a family session must not read. It is also, today, purely the examiner's curation
@@ -246,7 +256,7 @@ HIDDEN_FROM_NAV = {"search"}
 # guided (G-12) and junk (G-13) are examiner power tools: the guided checklist
 # composes the examiner-only review surfaces, and the junk grid exposes raw internal
 # working paths (a family session sees neither the page nor its /api).
-EXAMINER_ONLY = {"review", "history", "guided", "junk", "collections"}
+EXAMINER_ONLY = {"review", "history", "guided", "junk", "collections", "gather"}
 # Legacy / convenience path aliases resolved before page + api dispatch.
 # quarantine folded into the Review queue (#15) — keep the path working.
 PAGE_ALIASES = {"voicemails": "recordings", "audio": "recordings", "letters": "correspondence",
@@ -978,6 +988,9 @@ class ArchiveCase:
         cur.setdefault("favorites", {})
         cur.setdefault("collections", {})
         cur.setdefault("notes", {})
+        # 2026-10-15: Gather-for-someone folders + the saved recipient list.
+        cur.setdefault("gathers", {})
+        cur.setdefault("recipients", [])
         return cur
 
     def quarantine_entries(self):
@@ -1256,6 +1269,14 @@ class ArchiveCase:
         if page == "report":
             docs = self.section("documents")      # reuses the same index + vital_docs
             return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions))
+        if page == "gather":
+            # Gather-for-someone (2026-10-15): examiner-only (EXAMINER_ONLY), so
+            # document_rows's role branch here is always "examiner" in practice —
+            # kept as self.role rather than hardcoded so a future role change to
+            # this page doesn't silently leak the family-gated fields.
+            rows = document_rows(self.summary, self.ocr_index, self.role,
+                                 doc_placements=self.decisions.get("doc_placements"))
+            return gathers_data(self.curation_layer, rows)
         if page == "correspondence":
             # Real (non-email) correspondence docs, grouped by writing medium,
             # plus scanned document/letter IMAGES (not in document_classifications).
@@ -3427,6 +3448,14 @@ def _load_curation(case):
     cur.setdefault("collections", {})
     cur.setdefault("notes", {})
     cur.setdefault("important", {})
+    # 2026-10-15: Gather-for-someone folders + the saved recipient list — see
+    # verb_gather_* below. Separate from "collections" on purpose: a gather
+    # folder carries a recipient, an optional ask/cover note, a per-member
+    # possible/left-out status, and a couldn't-find list none of which a plain
+    # collection has, and this keeps those fields from leaking onto every
+    # ordinary collection.
+    cur.setdefault("gathers", {})
+    cur.setdefault("recipients", [])
     return cur
 
 
@@ -3598,6 +3627,358 @@ def verb_collection_remove(case, payload):
                           {"removed": removed}, {"count": len(removed)}, reversible=True)
     return {"ok": True, "slug": slug, "removed": len(removed),
             "undo_token": entry["undo_token"]}
+
+
+# ── Gather-for-someone (2026-10-15; examiner-only, decided over the mockup's
+#    AI-matching variant): a NAMED folder for one recipient, built the same way
+#    as a collection (browse, pick, add) — never a search the archive runs on
+#    the PR's behalf. Each member carries a possible/left-out status so a
+#    deliberately-withheld document still shows on the cover sheet instead of
+#    silently vanishing; "missing" entries record something searched for and
+#    not found, with no file behind them (same shape as the Report's own
+#    "what wasn't found" section). See richard-feedback-report memory for why
+#    this exists, and the AskUserQuestion answers (2026-10-15) this was built
+#    from: manual only, a saved recipient list, examiner-only. ──
+
+def _gather_id():
+    """Short stable id for a gather-folder sub-entry (a missing-item line) that
+    has no natural key of its own (unlike a document, which is keyed by its own
+    path). Collision risk is irrelevant at this volume; this only needs to be
+    unique within one gather folder, not globally."""
+    return hashlib.sha1(f"{_now()}|{os.urandom(8)}".encode()).hexdigest()[:10]
+
+
+def verb_recipient_add(case, payload):
+    """Add a name to the saved, reusable recipient list ({name}) — a plain
+    convenience list for the "who is it for?" field, not a record anything
+    else refers to by id, so there is nothing to keep in sync when it changes."""
+    require_examiner(case)
+    name = str(payload.get("name") or "").strip()[:MAX_TITLE_LEN]
+    if not name:
+        raise VerbError("recipient/add needs a non-empty name")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        recipients = cur["recipients"]
+        if name not in recipients:
+            if len(recipients) >= MAX_RECIPIENTS:
+                raise VerbError("recipient list is full", 409)
+            recipients.append(name)
+            atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "recipient_add", name, {}, {"name": name}, reversible=True)
+    return {"ok": True, "recipients": list(cur["recipients"]), "undo_token": entry["undo_token"]}
+
+
+def verb_recipient_remove(case, payload):
+    """Remove a name from the saved recipient list ({name}). Existing gather
+    folders keep their own recipient text regardless — this only trims the
+    suggestion list, nothing it points at."""
+    require_examiner(case)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise VerbError("recipient/remove needs name")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        recipients = cur["recipients"]
+        was_present = name in recipients
+        if was_present:
+            recipients.remove(name)
+            atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "recipient_remove", name,
+                          {"was_present": was_present}, {}, reversible=True)
+    return {"ok": True, "recipients": list(cur["recipients"]), "undo_token": entry["undo_token"]}
+
+
+def verb_gather_create(case, payload):
+    """Create a new gather-for-someone folder ({title, recipient?, ask?,
+    cover_note?}). `title` is the folder's own label (e.g. "For the CPA");
+    `recipient`/`ask`/`cover_note` are optional free text, same caps as a
+    collection title / document note."""
+    require_examiner(case)
+    title = str(payload.get("title") or "").strip()[:MAX_TITLE_LEN]
+    if not title:
+        raise VerbError("gather/create needs a non-empty title")
+    recipient = str(payload.get("recipient") or "").strip()[:MAX_TITLE_LEN]
+    ask = str(payload.get("ask") or "").strip()[:MAX_NOTE_LEN]
+    cover_note = str(payload.get("cover_note") or "").strip()[:MAX_NOTE_LEN]
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        gathers = cur["gathers"]
+        base = _slugify(title)
+        slug, n = base, 2
+        while slug in gathers:
+            slug = f"{base}-{n}"
+            n += 1
+        gathers[slug] = {"title": title, "recipient": recipient, "ask": ask,
+                         "cover_note": cover_note, "ts": _now(), "actor": case.role,
+                         "members": {}, "missing": {}, "handoffs": []}
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_create", slug, {},
+                          {"title": title, "recipient": recipient}, reversible=True)
+    return {"ok": True, "slug": slug, "title": title, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_update(case, payload):
+    """Edit a gather folder's own fields ({slug, title?, recipient?, ask?,
+    cover_note?}) — only the fields present in payload are changed; omit a
+    field to leave it as it is (distinct from an empty string, which clears
+    it)."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    if not slug:
+        raise VerbError("gather/update needs slug")
+    fields = {}
+    if "title" in payload:
+        t = str(payload.get("title") or "").strip()[:MAX_TITLE_LEN]
+        if not t:
+            raise VerbError("gather/update title cannot be empty")
+        fields["title"] = t
+    if "recipient" in payload:
+        fields["recipient"] = str(payload.get("recipient") or "").strip()[:MAX_TITLE_LEN]
+    if "ask" in payload:
+        fields["ask"] = str(payload.get("ask") or "").strip()[:MAX_NOTE_LEN]
+    if "cover_note" in payload:
+        fields["cover_note"] = str(payload.get("cover_note") or "").strip()[:MAX_NOTE_LEN]
+    if not fields:
+        raise VerbError("gather/update needs at least one field to change")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        before = {k: g.get(k) for k in fields}
+        g.update(fields)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_update", slug, before, fields, reversible=True)
+    return {"ok": True, "slug": slug, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_delete(case, payload):
+    """Delete a gather folder ({slug}) — drops the folder and its own bookkeeping
+    (recipient, cover note, missing list, handoff log) only; the documents it
+    named stay exactly as they were everywhere else. Reversible: undo restores
+    the whole folder dict."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    if not slug:
+        raise VerbError("gather/delete needs slug")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).pop(slug, None)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_delete", slug, {"gather": g}, {}, reversible=True)
+    return {"ok": True, "slug": slug, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_add(case, payload):
+    """Add document ids to a gather folder as "possible" ({slug, ids:[...]}) —
+    the same browse-and-pick motion as Add to collection. Records only the ids
+    that were actually newly added, so undo removes exactly those; an id
+    already present (at either status) is left alone, not reset to possible."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    ids = payload.get("ids") or []
+    if not slug or not isinstance(ids, list):
+        raise VerbError("gather/add needs slug and ids[]")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        members = g.setdefault("members", {})
+        added = []
+        for i in ids:
+            s = str(i)
+            if s and s not in members:
+                if len(members) >= MAX_GATHER_MEMBERS:
+                    break
+                members[s] = {"status": "possible", "ts": _now(), "reason": None}
+                added.append(s)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_add", slug,
+                          {"added": added}, {"count": len(added)}, reversible=True)
+    return {"ok": True, "slug": slug, "added": len(added), "undo_token": entry["undo_token"]}
+
+
+def verb_gather_remove(case, payload):
+    """Remove document ids from a gather folder entirely ({slug, ids:[...]}) —
+    drops membership (and whatever status/reason it carried) only, never the
+    document itself. Records the full prior entry for each removed id so undo
+    restores its exact status and reason, not just bare membership."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    ids = payload.get("ids") or []
+    if not slug or not isinstance(ids, list):
+        raise VerbError("gather/remove needs slug and ids[]")
+    want = {str(i) for i in ids}
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        members = g.setdefault("members", {})
+        removed = {k: v for k, v in members.items() if k in want}
+        for k in removed:
+            members.pop(k, None)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_remove", slug,
+                          {"removed": removed}, {"count": len(removed)}, reversible=True)
+    return {"ok": True, "slug": slug, "removed": len(removed), "undo_token": entry["undo_token"]}
+
+
+def verb_gather_mark(case, payload):
+    """Set one member's status within a gather folder ({slug, id, status,
+    reason?}) — "possible" (back in the bundle) or "left_out" (kept in the
+    folder, visible on the cover sheet, excluded from what's actually saved).
+    Nothing is ever removed by this verb; see gather/remove for that. `reason`
+    is optional free text (e.g. why it's being held back) and is cleared when
+    omitted."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    iid = payload.get("id")
+    status = payload.get("status")
+    if not slug or iid is None or iid == "" or status not in ("possible", "left_out"):
+        raise VerbError('gather/mark needs slug, id, and status "possible" or "left_out"')
+    iid = str(iid)
+    reason = str(payload.get("reason") or "").strip()[:MAX_NOTE_LEN] or None
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        members = g.setdefault("members", {})
+        m = members.get(iid)
+        if m is None:
+            raise VerbError(f"{iid} is not in gather folder {slug}", 404)
+        before = dict(m)
+        m["status"] = status
+        m["reason"] = reason
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_mark", f"{slug}::{iid}",
+                          {"entry": before}, {"status": status, "reason": reason}, reversible=True)
+    return {"ok": True, "slug": slug, "id": iid, "status": status, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_missing_add(case, payload):
+    """Add a "couldn't find" line to a gather folder ({slug, text}) — something
+    that was searched for and isn't in the archive, with no file behind it.
+    Same honesty rule as the Report's "what wasn't found": named, not silent."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    text = str(payload.get("text") or "").strip()[:MAX_NOTE_LEN]
+    if not slug or not text:
+        raise VerbError("gather/missing/add needs slug and non-empty text")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        missing = g.setdefault("missing", {})
+        if len(missing) >= MAX_GATHER_MISSING:
+            raise VerbError("this folder's missing-items list is full", 409)
+        mid = _gather_id()
+        missing[mid] = {"text": text, "ts": _now()}
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_missing_add", f"{slug}::{mid}",
+                          {}, {"text": text}, reversible=True)
+    return {"ok": True, "slug": slug, "id": mid, "undo_token": entry["undo_token"]}
+
+
+def verb_gather_missing_remove(case, payload):
+    """Remove one "couldn't find" line ({slug, id})."""
+    require_examiner(case)
+    slug = str(payload.get("slug") or "")
+    mid = str(payload.get("id") or "")
+    if not slug or not mid:
+        raise VerbError("gather/missing/remove needs slug and id")
+    with _doc_lock(case):
+        cur = _load_curation(case)
+        g = (cur["gathers"] or {}).get(slug)
+        if g is None:
+            raise VerbError(f"unknown gather folder {slug}", 404)
+        missing = g.setdefault("missing", {})
+        prev = missing.pop(mid, None)
+        if prev is None:
+            raise VerbError(f"no missing-item {mid} in {slug}", 404)
+        atomic_write_json(_curation_path(case), cur)
+    entry = append_action(case, "gather_missing_remove", f"{slug}::{mid}",
+                          {"entry": prev}, {}, reversible=True)
+    return {"ok": True, "slug": slug, "undo_token": entry["undo_token"]}
+
+
+def _gather_contents_page(g, manifest, skipped):
+    """Human-readable contents-page text for one gather export — the "cover
+    note (goes on the contents page)" the mockup asked for. Plain text, not
+    HTML: this sits next to the copied files for the recipient to open with
+    anything. Lists what's actually included, then — for the PR's own record,
+    not hidden from the recipient — what was deliberately left out and what
+    couldn't be found, so nothing about the bundle is silent."""
+    lines = [f"For: {g.get('recipient') or '(not set)'}", f"Folder: {g.get('title') or ''}"]
+    if g.get("ask"):
+        lines += ["", "What was asked for:", g["ask"]]
+    if g.get("cover_note"):
+        lines += ["", g["cover_note"]]
+    lines += ["", f"Included ({len(manifest)}):"]
+    lines += ["  " + Path(m["dest"]).name for m in manifest]
+    if skipped:
+        lines += ["", f"Could not be delivered this time ({len(skipped)}):"]
+        lines += ["  " + s for s in skipped]
+    left_out = [v for v in (g.get("members") or {}).values() if v.get("status") == "left_out"]
+    if left_out:
+        lines += ["", f"Left out on purpose ({len(left_out)}):"]
+        lines += ["  (reason: " + (v.get("reason") or "no reason given") + ")" for v in left_out]
+    missing = (g.get("missing") or {}).values()
+    if missing:
+        lines += ["", f"Couldn't find ({len(missing)}):"]
+        lines += ["  " + m.get("text", "") for m in missing]
+    return "\n".join(lines) + "\n"
+
+
+def verb_gather_export(case, payload):
+    """"Save to my Mac" — materialize every "possible" member into a folder
+    (same copy-with-manifest mechanism as Export this folder / Export
+    collection) plus a plain-text contents page carrying the cover note, and
+    log the save onto the gather folder itself ("Saved before"). NOT
+    reversible — same as every other export verb, this only copies files, it
+    never changes the case."""
+    require_examiner(case)
+    _assert_family_export_allowed(case)
+    slug = str(payload.get("slug") or "")
+    if not slug:
+        raise VerbError("gather/export needs slug")
+    cur = case.curation_layer
+    g = (cur.get("gathers") or {}).get(slug)
+    if g is None:
+        raise VerbError(f"unknown gather folder {slug}", 404)
+    possible = [iid for iid, m in (g.get("members") or {}).items() if m.get("status") == "possible"]
+    if not possible:
+        raise VerbError("nothing marked possible in this folder yet", 409)
+    label = sanitize_person_name(g.get("title") or slug) or "gather"
+    dest = _export_dest(case, payload.get("dest"),
+                        default=case.paths.output_dir / EXPORT_DIR / f"gather_{label}")
+    canonicals, skipped = [], []
+    for src in possible:
+        try:
+            canonicals.append(resolve_media_path(case, src))
+        except VerbError:
+            skipped.append(src)
+    if not canonicals:
+        raise VerbError("none of this folder's possible items are deliverable", 404)
+    manifest, mpath = _materialize_items(case, canonicals, dest)
+    (dest / "contents.txt").write_text(_gather_contents_page(g, manifest, skipped), encoding="utf-8")
+    handoff = {"ts": _now(), "actor": case.role, "manifest": str(mpath),
+              "count": len(manifest), "skipped": len(skipped)}
+    with _doc_lock(case):
+        cur2 = _load_curation(case)
+        g2 = (cur2["gathers"] or {}).get(slug)
+        if g2 is not None:          # folder could have been deleted mid-export
+            g2.setdefault("handoffs", []).append(handoff)
+            atomic_write_json(_curation_path(case), cur2)
+    append_action(case, "gather_export", slug,
+                 {}, {"count": len(manifest), "skipped": len(skipped), "manifest": str(mpath)},
+                 reversible=False)
+    return {"ok": True, "count": len(manifest), "skipped": len(skipped), "manifest": str(mpath)}
 
 
 def verb_note_set(case, payload):
@@ -4485,6 +4866,72 @@ def _apply_inverse(case, entry):
                     cur["notes"][target] = prev
             atomic_write_json(_curation_path(case), cur)
         return {"restored": target}
+    # ── Gather-for-someone inverses (2026-10-15) ──
+    if action in ("recipient_add", "recipient_remove"):
+        name = entry["target"]
+        before = entry.get("before") or {}
+        with _doc_lock(case):
+            cur = _load_curation(case)
+            recipients = cur["recipients"]
+            if action == "recipient_add":
+                if name in recipients:
+                    recipients.remove(name)
+            else:                                       # recipient_remove
+                if before.get("was_present") and name not in recipients:
+                    recipients.append(name)
+            atomic_write_json(_curation_path(case), cur)
+        return {"restored": name}
+    if action in ("gather_create", "gather_update", "gather_delete",
+                  "gather_add", "gather_remove"):
+        slug = entry["target"]
+        before = entry.get("before") or {}
+        with _doc_lock(case):
+            cur = _load_curation(case)
+            gathers = cur["gathers"]
+            if action == "gather_create":
+                gathers.pop(slug, None)
+            elif action == "gather_update":
+                g = gathers.get(slug)
+                if g is not None:
+                    g.update(before)                    # before holds exactly the changed keys
+            elif action == "gather_delete":
+                prev = before.get("gather")
+                if prev is not None:
+                    gathers[slug] = prev
+            elif action == "gather_add":
+                g = gathers.get(slug)
+                if g is not None:
+                    drop = set(before.get("added") or [])
+                    members = g.setdefault("members", {})
+                    for k in drop:
+                        members.pop(k, None)
+            elif action == "gather_remove":
+                g = gathers.get(slug)
+                if g is not None:
+                    members = g.setdefault("members", {})
+                    for k, v in (before.get("removed") or {}).items():
+                        members.setdefault(k, v)         # don't clobber a later re-add
+            atomic_write_json(_curation_path(case), cur)
+        return {"restored": slug}
+    if action in ("gather_mark", "gather_missing_add", "gather_missing_remove"):
+        slug, _, sub_id = entry["target"].partition("::")
+        before = entry.get("before") or {}
+        with _doc_lock(case):
+            cur = _load_curation(case)
+            g = (cur["gathers"] or {}).get(slug)
+            if g is not None:
+                if action == "gather_mark":
+                    prev = before.get("entry")
+                    if prev is not None:
+                        g.setdefault("members", {})[sub_id] = prev
+                elif action == "gather_missing_add":
+                    g.setdefault("missing", {}).pop(sub_id, None)
+                else:                                    # gather_missing_remove
+                    prev = before.get("entry")
+                    if prev is not None:
+                        g.setdefault("missing", {})[sub_id] = prev
+                atomic_write_json(_curation_path(case), cur)
+        return {"restored": entry["target"]}
     raise VerbError(f"cannot undo {action}", 409)
 
 
@@ -4911,6 +5358,15 @@ VERBS = {
     "collection/add": verb_collection_add,
     "collection/remove": verb_collection_remove,
     "note/set": verb_note_set, "note/clear": verb_note_clear,
+    # ── Gather-for-someone (2026-10-15; examiner-only) ──
+    "recipient/add": verb_recipient_add, "recipient/remove": verb_recipient_remove,
+    "gather/create": verb_gather_create, "gather/update": verb_gather_update,
+    "gather/delete": verb_gather_delete,
+    "gather/add": verb_gather_add, "gather/remove": verb_gather_remove,
+    "gather/mark": verb_gather_mark,
+    "gather/missing/add": verb_gather_missing_add,
+    "gather/missing/remove": verb_gather_missing_remove,
+    "gather/export": verb_gather_export,
     # ── the examiner release gate ──
     "signoff": verb_signoff, "signoff/revoke": verb_signoff_revoke,
     "review/keep": verb_review_keep, "review/waive": verb_waive_review,

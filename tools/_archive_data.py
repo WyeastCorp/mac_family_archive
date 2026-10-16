@@ -2574,6 +2574,47 @@ def report_data(index, vital_docs, counts=None):
     }
 
 
+def gathers_data(curation_layer, doc_rows):
+    """Gather-for-someone (2026-10-15): every folder plus the saved recipient
+    list, for the /gather page. `doc_rows` is document_rows()'s output — used
+    ONLY to resolve a member id to a display name/category, the same way the
+    Documents page itself would show it; a member whose file no longer
+    resolves (moved out, banished, etc. since it was added) still shows, with
+    `known: False` and no name invented — fail closed on ambiguity, same rule
+    as everywhere else in this codebase, rather than guess or silently drop
+    membership the folder itself still remembers.
+    """
+    by_file = {r["file"]: r for r in doc_rows or [] if r.get("file")}
+    gathers = []
+    for slug, g in (curation_layer.get("gathers") or {}).items():
+        members = []
+        for iid, m in (g.get("members") or {}).items():
+            row = by_file.get(iid)
+            members.append({
+                "id": iid, "status": m.get("status"), "reason": m.get("reason"),
+                "known": row is not None,
+                "name": (row or {}).get("name") or os.path.basename(iid),
+                "category": (row or {}).get("category"),
+            })
+        members.sort(key=lambda m: (m["status"] != "possible", m["name"].lower()))
+        missing = [{"id": mid, "text": mi.get("text"), "ts": mi.get("ts")}
+                   for mid, mi in (g.get("missing") or {}).items()]
+        missing.sort(key=lambda m: m.get("ts") or "")
+        handoffs = sorted(g.get("handoffs") or [], key=lambda h: h.get("ts") or "", reverse=True)
+        gathers.append({
+            "slug": slug, "title": g.get("title") or slug, "recipient": g.get("recipient"),
+            "ask": g.get("ask"), "cover_note": g.get("cover_note"),
+            "ts": g.get("ts"), "actor": g.get("actor"),
+            "members": members,
+            "possible_count": sum(1 for m in members if m["status"] == "possible"),
+            "left_out_count": sum(1 for m in members if m["status"] == "left_out"),
+            "missing": missing,
+            "handoffs": handoffs,
+        })
+    gathers.sort(key=lambda g: (g.get("title") or "").lower())
+    return {"gathers": gathers, "recipients": list(curation_layer.get("recipients") or [])}
+
+
 def review_data(paths, summary):
     """EXAMINER-ONLY review surfaces. Read directly from the case (never family)."""
     md = paths.metadata_dir

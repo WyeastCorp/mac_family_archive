@@ -4423,6 +4423,145 @@ def test_collection_remove_and_undo(tmp_path):
     assert set(_curation(paths)["collections"][slug]["members"]) == {SRC_A, SRC_B}
 
 
+# ── Gather-for-someone (2026-10-15) ───────────────────────────────────────────
+
+def test_recipient_add_remove_dedup_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    fa.verb_recipient_add(case, {"name": "CPA"})
+    again = fa.verb_recipient_add(case, {"name": "CPA"})  # no duplicate
+    assert _curation(paths)["recipients"] == ["CPA"]
+    assert again["recipients"] == ["CPA"]
+    rm = fa.verb_recipient_remove(case, {"name": "CPA"})
+    assert _curation(paths)["recipients"] == []
+    fa.verb_undo(case, {"undo_token": rm["undo_token"]})
+    assert _curation(paths)["recipients"] == ["CPA"]
+    # Removing a name that was never there is a no-op, not an error, and its
+    # own undo doesn't resurrect a name that was genuinely absent.
+    rm2 = fa.verb_recipient_remove(case, {"name": "Estate attorney"})
+    fa.verb_undo(case, {"undo_token": rm2["undo_token"]})
+    assert "Estate attorney" not in _curation(paths)["recipients"]
+
+
+def test_gather_create_update_delete_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    created = fa.verb_gather_create(case, {"title": "For the CPA", "recipient": "CPA",
+                                           "ask": "tax returns"})
+    slug = created["slug"]
+    assert slug == "for-the-cpa"
+    g = _curation(paths)["gathers"][slug]
+    assert g["title"] == "For the CPA" and g["recipient"] == "CPA" and g["ask"] == "tax returns"
+    assert g["members"] == {} and g["missing"] == {} and g["handoffs"] == []
+
+    upd = fa.verb_gather_update(case, {"slug": slug, "cover_note": "Here you go"})
+    assert _curation(paths)["gathers"][slug]["cover_note"] == "Here you go"
+    assert _curation(paths)["gathers"][slug]["title"] == "For the CPA", \
+        "a field left out of the payload is untouched, not cleared"
+    fa.verb_undo(case, {"undo_token": upd["undo_token"]})
+    assert _curation(paths)["gathers"][slug].get("cover_note") == ""
+
+    dele = fa.verb_gather_delete(case, {"slug": slug})
+    assert slug not in _curation(paths)["gathers"]
+    fa.verb_undo(case, {"undo_token": dele["undo_token"]})
+    assert _curation(paths)["gathers"][slug]["recipient"] == "CPA"
+
+
+def test_gather_create_slug_uniqueness(tmp_path):
+    case, paths = setup_case(tmp_path)
+    a = fa.verb_gather_create(case, {"title": "Docs"})
+    b = fa.verb_gather_create(case, {"title": "Docs"})
+    assert a["slug"] == "docs" and b["slug"] == "docs-2"
+
+
+def test_gather_add_remove_members_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    add = fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A, SRC_B, SRC_A]})
+    assert add["added"] == 2, "a repeated id in one call is still added once"
+    members = _curation(paths)["gathers"][slug]["members"]
+    assert set(members) == {SRC_A, SRC_B}
+    assert all(m["status"] == "possible" for m in members.values())
+
+    rm = fa.verb_gather_remove(case, {"slug": slug, "ids": [SRC_A]})
+    assert rm["removed"] == 1
+    assert set(_curation(paths)["gathers"][slug]["members"]) == {SRC_B}
+    fa.verb_undo(case, {"undo_token": rm["undo_token"]})
+    assert set(_curation(paths)["gathers"][slug]["members"]) == {SRC_A, SRC_B}
+
+    fa.verb_undo(case, {"undo_token": add["undo_token"]})
+    assert _curation(paths)["gathers"][slug]["members"] == {}
+
+
+def test_gather_mark_possible_and_left_out_with_reason(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A]})
+    mark = fa.verb_gather_mark(case, {"slug": slug, "id": SRC_A, "status": "left_out",
+                                      "reason": "too sensitive"})
+    m = _curation(paths)["gathers"][slug]["members"][SRC_A]
+    assert m["status"] == "left_out" and m["reason"] == "too sensitive"
+    fa.verb_undo(case, {"undo_token": mark["undo_token"]})
+    m2 = _curation(paths)["gathers"][slug]["members"][SRC_A]
+    assert m2["status"] == "possible" and m2["reason"] is None
+    # Marking an id that was never added to the folder is an error, not silent.
+    with pytest.raises(fa.VerbError):
+        fa.verb_gather_mark(case, {"slug": slug, "id": SRC_B, "status": "possible"})
+
+
+def test_gather_missing_add_remove_and_undo(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    added = fa.verb_gather_missing_add(case, {"slug": slug, "text": "2019 tax return"})
+    mid = added["id"]
+    assert _curation(paths)["gathers"][slug]["missing"][mid]["text"] == "2019 tax return"
+    rm = fa.verb_gather_missing_remove(case, {"slug": slug, "id": mid})
+    assert mid not in _curation(paths)["gathers"][slug]["missing"]
+    fa.verb_undo(case, {"undo_token": rm["undo_token"]})
+    assert _curation(paths)["gathers"][slug]["missing"][mid]["text"] == "2019 tax return"
+    fa.verb_undo(case, {"undo_token": added["undo_token"]})
+    assert mid not in _curation(paths)["gathers"][slug]["missing"]
+
+
+def test_gather_export_materializes_possible_only_and_logs_handoff(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "For the CPA", "recipient": "CPA",
+                                        "cover_note": "Here's what you asked for"})["slug"]
+    fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A, SRC_B]})
+    fa.verb_gather_mark(case, {"slug": slug, "id": SRC_B, "status": "left_out",
+                               "reason": "not relevant"})
+    fa.verb_gather_missing_add(case, {"slug": slug, "text": "2019 tax return"})
+
+    with pytest.raises(fa.VerbError):
+        fa.verb_gather_export(case, {})  # needs slug
+    res = fa.verb_gather_export(case, {"slug": slug})
+    assert res["ok"] and res["count"] == 1, "only the possible member is materialized"
+
+    dest = Path(res["manifest"]).parent
+    names = {p.name for p in dest.iterdir()}
+    assert "a.jpg" in names and "b.jpg" not in names, "left-out member is never copied"
+    contents = (dest / "contents.txt").read_text()
+    assert "CPA" in contents and "Here's what you asked for" in contents
+    assert "not relevant" in contents, "a left-out reason still appears on the contents page"
+    assert "2019 tax return" in contents, "a couldn't-find line still appears on the contents page"
+
+    handoffs = _curation(paths)["gathers"][slug]["handoffs"]
+    assert len(handoffs) == 1 and handoffs[0]["count"] == 1
+    # Export is not reversible, same as every other export verb.
+    actions = [json.loads(l) for l in _actions(paths)]
+    export_entry = [a for a in actions if a["action"] == "gather_export"][0]
+    assert export_entry["reversible"] is False
+    with pytest.raises(fa.VerbError):
+        fa.verb_undo(case, {"undo_token": export_entry["undo_token"]})
+
+
+def test_gather_export_nothing_possible_is_an_error(tmp_path):
+    case, paths = setup_case(tmp_path)
+    slug = fa.verb_gather_create(case, {"title": "c"})["slug"]
+    fa.verb_gather_add(case, {"slug": slug, "ids": [SRC_A]})
+    fa.verb_gather_mark(case, {"slug": slug, "id": SRC_A, "status": "left_out"})
+    with pytest.raises(fa.VerbError):
+        fa.verb_gather_export(case, {"slug": slug})
+
+
 def test_overlay_stamps_rows_favorite_note_collections(tmp_path):
     case, paths = setup_case(tmp_path)
     fa.verb_favorite(case, {"id": SRC_A, "on": True})
