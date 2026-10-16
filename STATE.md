@@ -81,7 +81,37 @@ touching anything; nothing is pushed or PR'd yet from this session.
 
 ---
 
-### 2026-10-15, newest — Take-out ("delete") built; Checklist-redesign sketched; a new to-do
+### 2026-10-16 — Emails significance filter made exact; Take-out re-verified fresh
+
+**What shipped (on `documents-view`, committed, not pushed — one commit; `git log --oneline -7`
+for the exact set):** the Emails significance filter (`?significance=N`, renamed from
+`?min_significance=N`) now keeps only that exact level instead of that level and everything above
+it — closes the to-do from 2026-10-15. The count meter next to it switched from cumulative to a
+per-level tally to match. Verified live against the real case: picking a level, the returned rows
+all carried that exact score, and the meter's own numbers no longer crept toward the full total at
+the low end (the old cumulative tell). Full detail/rationale is in the commit message, not
+repeated here — nothing here is a number worth re-quoting as it rots.
+
+**Take-out re-verified fresh this session** (the user asked specifically): took out a document,
+confirmed the file physically moved into `family_deleted/<category>/` on disk, undid it via the
+real `/api/undo` endpoint, confirmed the file was back in its original location and the
+`doc_taken_out` overlay was empty again. Still works exactly as built.
+
+**A testing-tool quirk, not a product bug:** a screenshot taken immediately after a click (Emails'
+initial load; the take-out click) can show stale content on a large page/response — the Documents
+list and the vital-document counts especially. The network response and a second screenshot a
+moment later both show the correct, current state. Don't conclude a feature is broken from one
+screenshot alone when the page involves a large DOM or a big fetch; re-check via the actual API
+response or a follow-up screenshot before reporting a regression.
+
+**Blocked:** nothing.
+
+**Next action:** the Checklist redesign (sketched, not built) is still the open item needing the
+user's go-ahead — see the entry below. `./run_tests.sh` before touching anything else.
+
+---
+
+### 2026-10-15 — Take-out ("delete") built; Checklist-redesign sketched; a new to-do
 
 **What shipped (on `documents-view`, committed, not pushed — three commits, newest first: front
 end, backend, and this entry; `git log --oneline -6` for the exact set):**
