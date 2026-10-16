@@ -1269,12 +1269,19 @@ class ArchiveCase:
             rows = document_rows(self.summary, self.ocr_index, self.role,
                                  doc_placements=self.decisions.get("doc_placements"),
                                  taken_out=self.decisions.get("doc_taken_out"))
+            # 2026-10-16: curated HERE (not only in api_section's later pass) so
+            # vital_docs_data can decorate Checklist items with the same
+            # star/note/collections every Detail card already shows — apply_curation
+            # is additive/idempotent, so api_section's own call on these same rows
+            # is still correct, just a harmless second pass.
+            rows = apply_curation(rows, self.curation_layer, "file")
             return {"index": documents_index(rows), "rows": rows,
                     "vital_docs": vital_docs_data(self.paths, self.summary, self.role,
                                                   decisions=self.decisions,
                                                   threads_index=self.email_threads,
                                                   per_target_k=self.vital_per_target_k(),
-                                                  recordings_delivered=self.recordings_delivered())}
+                                                  recordings_delivered=self.recordings_delivered(),
+                                                  doc_rows=rows)}
         if page == "report":
             docs = self.section("documents")      # reuses the same index + vital_docs
             return report_data(docs["index"], docs["vital_docs"], counts=self._tab_counts(self.decisions))

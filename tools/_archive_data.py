@@ -2261,9 +2261,20 @@ def vital_source_email(paths, email_id):
 
 
 def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
-                    per_target_k=None, recordings_delivered=True):
+                    per_target_k=None, recordings_delivered=True, doc_rows=None):
     """The vital-documents checklist (spec G-2): for every document type the
     pipeline searched for, was one actually found?
+
+    `doc_rows` (2026-10-16, the Checklist-redesign the user asked for): the
+    SAME document_rows() output — already curation-decorated with
+    favorite_curation/note/collections, exactly like a Detail card — the
+    Documents page itself builds, passed in so a browsable item can carry its
+    summary/category/significance/star/note/collections too. Checklist can
+    then show the same info and the same general-purpose actions (Star, Note,
+    Move, Gather for, Take out) that Detail already does, without this
+    function re-deriving any of it or opening a second code path for the same
+    facts. Absent (every other caller) → those extra fields are simply omitted,
+    exactly as before.
 
     Reads output/metadata/vital_doc_confirmed.json (a LIST of confirmed items,
     each {path, target, tag, ...}) and vital_doc_candidates.json (a DICT keyed by
@@ -2324,6 +2335,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         f = d.get("file")
         if f and f not in browsable:
             browsable[f] = d.get("filename") or os.path.basename(f)
+    by_file = {r["file"]: r for r in doc_rows or [] if r.get("file")}
 
     # DECISIONS OVERLAY (examiner-only verbs; vital_doc_confirmed.json is NEVER
     # mutated — these are pure family_decisions.json sidecars):
@@ -2467,6 +2479,17 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 # This item came from the near-miss list, not from the pipeline.
                 "promoted": bool(i.get("_promoted")),
             }
+            # 2026-10-16: same document info + curation Detail already shows for
+            # this file, so Checklist can render the identical card — never
+            # re-derived, just the matching document_rows() row by path.
+            doc = by_file.get(item_row["file_id"]) if item_row["file_id"] else None
+            if doc:
+                item_row["category"] = doc.get("category")
+                item_row["summary"] = doc.get("summary")
+                item_row["significance"] = doc.get("significance")
+                item_row["favorite_curation"] = doc.get("favorite_curation", False)
+                item_row["note"] = doc.get("note")
+                item_row["collections"] = doc.get("collections") or []
             if role == "examiner":
                 prec = prov_idx.get(path)
                 if path in date_idx:

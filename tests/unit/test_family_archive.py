@@ -4902,6 +4902,40 @@ def _vrow(case, paths, target):
     return None, vd
 
 
+def test_checklist_item_carries_document_info_and_curation_when_doc_rows_passed(tmp_path):
+    """2026-10-16 Checklist redesign: a browsable vital item gets the same
+    summary/category/significance/star/note/collections a Detail card already
+    shows for it, when the caller passes doc_rows (the Documents page itself
+    does, via section("documents")'s apply_curation pass). Every other
+    caller omits doc_rows and gets exactly the old, undecorated item — no
+    behavior change for them."""
+    case, paths = setup_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+    _seed_vitals(paths)
+    fa.verb_favorite(case, {"id": "/d/will.pdf", "on": True})
+    fa.verb_note_set(case, {"id": "/d/will.pdf", "text": "Check with attorney"})
+
+    docs = case.section("documents")   # already curation-decorated by the fix
+    vd = _ad.vital_docs_data(paths, case.summary, "examiner", decisions=case.decisions,
+                             doc_rows=docs["rows"])
+    item = [t for t in vd["targets"] if t["target"] == "will_testament"][0]["items"][0]
+    assert item["category"] == "legal"
+    assert item["summary"] == "A will."
+    assert item["significance"] == 5
+    assert item["favorite_curation"] is True
+    assert item["note"] == "Check with attorney"
+    assert item["collections"] == []
+
+    vd2 = _ad.vital_docs_data(paths, case.summary, "examiner", decisions=case.decisions)
+    item2 = [t for t in vd2["targets"] if t["target"] == "will_testament"][0]["items"][0]
+    assert "category" not in item2 and "summary" not in item2 and "favorite_curation" not in item2
+
+
 def test_dismiss_vital_flips_target_and_undo(tmp_path):
     case, paths = setup_case(tmp_path)
     cpath = _seed_vitals(paths)
