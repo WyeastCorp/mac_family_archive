@@ -339,6 +339,24 @@ def test_document_rows_excludes_email_and_carries_text_kind():
     assert by_file["/d/tax.pdf"]["text_kind"] is None
 
 
+def test_document_rows_excludes_taken_out_documents():
+    """2026-10-15: doc_taken_out hides a document ENTIRELY, the same
+    "statement about the document, not one view" rule account_credentials
+    already follows — keyed by path, same id space as doc_placements."""
+    summary = {"document_classifications": [
+        {"file": "/d/a.pdf", "filename": "a.pdf", "category": "miscellaneous",
+         "source": "document", "significance": 3, "summary": "A note."},
+        {"file": "/d/b.pdf", "filename": "b.pdf", "category": "miscellaneous",
+         "source": "document", "significance": 2, "summary": "Another note."},
+    ]}
+    rows = ad.document_rows(summary, [], "examiner",
+                            taken_out={"/d/a.pdf": {"ts": "t", "reason": "not theirs"}})
+    files = [r["file"] for r in rows]
+    assert files == ["/d/b.pdf"]
+    # No taken_out argument at all is the same as an empty one — never an error.
+    assert len(ad.document_rows(summary, [], "examiner")) == 2
+
+
 def test_doc_placements_overrides_document_rows_category():
     """§13.2: a doc_placements entry re-buckets a row's effective category, and the
     derived documents_index counts move with it (browse counts are derived from the

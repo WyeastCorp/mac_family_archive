@@ -1174,6 +1174,114 @@ def test_doc_move_into_account_credentials_refused(tmp_path):
     assert e.value.code == 400
 
 
+def test_take_out_without_delivered_bytes_hides_via_overlay_only(tmp_path):
+    """Most documents have no delivered bytes left to move (reaped — same
+    precondition Move already documents), so the overlay write is what
+    actually hides it; the physical move is best-effort on top."""
+    case, paths = _doc_move_case(tmp_path)
+    assert DOC_MISC in {r["file"] for r in case.section("documents")["rows"]}
+    res = fa.verb_take_out_document(case, {"file": DOC_MISC, "reason": "not theirs"})
+    assert res["ok"] and res["moved"] is False
+    dec = json.loads((paths.metadata_dir / "family_decisions.json").read_text())
+    entry = dec["doc_taken_out"][DOC_MISC]
+    assert entry["reason"] == "not theirs" and entry["category"] == "miscellaneous"
+    assert entry["moved_to"] is None
+    assert DOC_MISC not in {r["file"] for r in case.section("documents")["rows"]}
+    assert "miscellaneous" not in _docs_index(case)
+
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert "doc_taken_out" not in json.loads(
+        (paths.metadata_dir / "family_decisions.json").read_text()) or \
+        DOC_MISC not in json.loads(
+            (paths.metadata_dir / "family_decisions.json").read_text())["doc_taken_out"]
+    assert DOC_MISC in {r["file"] for r in case.section("documents")["rows"]}
+
+
+def test_take_out_moves_real_file_into_family_deleted_by_category_and_undo_restores(tmp_path):
+    case, paths = _doc_move_case(tmp_path)
+    real_src = paths.case_dir / "extracted" / "documents" / "invoice.pdf"
+    real_src.parent.mkdir(parents=True, exist_ok=True)
+    real_src.write_text("the actual bytes")
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": str(real_src), "filename": "invoice.pdf", "category": "financial",
+         "source": "document", "significance": 3, "summary": "An invoice with real bytes."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+
+    res = fa.verb_take_out_document(case, {"file": str(real_src)})
+    assert res["ok"] and res["moved"] is True
+    assert not real_src.exists(), "the delivered copy is gone from its original spot"
+    moved = paths.output_dir / "family_deleted" / "financial" / "invoice.pdf"
+    assert moved.exists() and moved.read_text() == "the actual bytes"
+    assert str(real_src) not in {r["file"] for r in case.section("documents")["rows"]}
+
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    assert real_src.exists() and not moved.exists(), "undo moves the real bytes back"
+    assert real_src.read_text() == "the actual bytes"
+    assert str(real_src) in {r["file"] for r in case.section("documents")["rows"]}
+
+
+def test_take_out_uses_effective_category_not_pipeline_category(tmp_path):
+    """The family_deleted/<category> subfolder is the document's CURRENT
+    (doc_placements-overridden) category, not its raw pipeline one — matching
+    what the Documents page itself would have shown for it."""
+    case, paths = _doc_move_case(tmp_path)
+    fa.verb_move(case, {"view": "document", "src": DOC_MISC, "to": "legal"})
+    real_src = paths.case_dir / "extracted" / "documents" / "note.pdf"
+    real_src.parent.mkdir(parents=True, exist_ok=True)
+    real_src.write_text("x")
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    for d in summ["document_classifications"]:
+        if d["file"] == DOC_MISC:
+            d["file"] = str(real_src)
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+    fa.verb_move(case, {"view": "document", "src": str(real_src), "to": "legal"})
+
+    res = fa.verb_take_out_document(case, {"file": str(real_src)})
+    assert res["ok"]
+    moved = paths.output_dir / "family_deleted" / "legal" / "note.pdf"
+    assert moved.exists(), "filed under the overlay-effective category (legal), not miscellaneous"
+
+
+def test_take_out_rejects_email_sourced_and_unknown_file(tmp_path):
+    case, paths = _doc_move_case(tmp_path)
+    with pytest.raises(fa.VerbError) as e:
+        fa.verb_take_out_document(case, {"file": DOC_EMAIL})
+    assert e.value.code == 400
+    with pytest.raises(fa.VerbError) as e2:
+        fa.verb_take_out_document(case, {"file": "/not/a/real/document.pdf"})
+    assert e2.value.code == 404
+    with pytest.raises(fa.VerbError):
+        fa.verb_take_out_document(case, {})
+
+
+def test_take_out_drops_document_from_vital_checklist_and_undo_restores_it(tmp_path):
+    """The user's own decision (2026-10-15): taking out a document that
+    satisfies a vital-document kind also drops that kind back to not-found —
+    the checklist can't keep claiming it found something Documents no longer
+    shows."""
+    case, paths = _doc_move_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"].append(
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."})
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    case.load()
+    _seed_vitals(paths)
+    row, _vd = _vrow(case, paths, "will_testament")
+    assert row["found"] is True
+
+    res = fa.verb_take_out_document(case, {"file": "/d/will.pdf"})
+    row2, _vd2 = _vrow(case, paths, "will_testament")
+    assert row2["found"] is False
+
+    fa.verb_undo(case, {"undo_token": res["undo_token"]})
+    row3, _vd3 = _vrow(case, paths, "will_testament")
+    assert row3["found"] is True
+
+
 def test_render_seal_family_drops_credential_doc_even_with_forced_placement(tmp_path):
     """§13.3 render-time seal (stale-placement leak): even if a doc_placements entry
     is forced onto disk moving the credential doc to a browsable category, the FAMILY

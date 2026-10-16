@@ -169,6 +169,10 @@ ASSETS_SRC = _ROOT / "report_assets"
 ACTIONS_FILE = "family_actions.ndjson"
 DECISIONS_FILE = "family_decisions.json"
 BANISHED_DIR = "family_banished"
+# 2026-10-15: documents' own hidden-folder equivalent of BANISHED_DIR, organized
+# by category (output/family_deleted/<category>/...) per the user's own choice —
+# see verb_take_out_document.
+TAKEN_OUT_DIR = "family_deleted"
 EXPORT_DIR = "family_export"
 # Curation layer (docs/specs/family-archive-curation-layer.md): a pure, additive,
 # audited sidecar of examiner favorites / collections / notes, keyed by EXISTING
@@ -1187,7 +1191,8 @@ class ArchiveCase:
             # length, which counted every email as a document too (~66k vs. the
             # ~1.5k the Documents page actually shows).
             "documents": len(document_rows(self.summary, self.ocr_index, self.role,
-                                           doc_placements=decisions.get("doc_placements"))),
+                                           doc_placements=decisions.get("doc_placements"),
+                                           taken_out=decisions.get("doc_taken_out"))),
             "audio": len(self.summary.get("audio_classifications", []) or []),
             "videos": self.summary.get("video_delivered", self.summary.get("total_videos", 0)),
             # Conversations THIS ROLE may see (matches the Messages section
@@ -1259,7 +1264,8 @@ class ArchiveCase:
             return d
         if page == "documents":
             rows = document_rows(self.summary, self.ocr_index, self.role,
-                                 doc_placements=self.decisions.get("doc_placements"))
+                                 doc_placements=self.decisions.get("doc_placements"),
+                                 taken_out=self.decisions.get("doc_taken_out"))
             return {"index": documents_index(rows), "rows": rows,
                     "vital_docs": vital_docs_data(self.paths, self.summary, self.role,
                                                   decisions=self.decisions,
@@ -1275,13 +1281,15 @@ class ArchiveCase:
             # kept as self.role rather than hardcoded so a future role change to
             # this page doesn't silently leak the family-gated fields.
             rows = document_rows(self.summary, self.ocr_index, self.role,
-                                 doc_placements=self.decisions.get("doc_placements"))
+                                 doc_placements=self.decisions.get("doc_placements"),
+                                 taken_out=self.decisions.get("doc_taken_out"))
             return gathers_data(self.curation_layer, rows)
         if page == "correspondence":
             # Real (non-email) correspondence docs, grouped by writing medium,
             # plus scanned document/letter IMAGES (not in document_classifications).
             rows = [d for d in document_rows(self.summary, self.ocr_index, self.role,
-                                             doc_placements=self.decisions.get("doc_placements"))
+                                             doc_placements=self.decisions.get("doc_placements"),
+                                             taken_out=self.decisions.get("doc_taken_out"))
                     if d.get("category") in LETTER_CATEGORIES]
             typed, hand = [], []
             for r in rows:
@@ -1362,7 +1370,8 @@ class ArchiveCase:
                             st["summary"], st["universe"], {}, self.role,
                             frame_map=st["video_frame_map"], archive_map=st["archive_map"]),
                 document_rows(st["summary"], st["ocr_index"], self.role,
-                              doc_placements=self.decisions.get("doc_placements")),
+                              doc_placements=self.decisions.get("doc_placements"),
+                              taken_out=self.decisions.get("doc_taken_out")),
                 audio_rows(st["summary"], st["transcription_index"], self.role, self.cfg),
                 email_rows(st["email_threads"]),
                 conversations=message_rows(st["conversation_index"], self.role)))
@@ -3225,6 +3234,86 @@ def verb_move(case, payload):
     return out
 
 
+def verb_take_out_document(case, payload):
+    """Take a document out of every family-facing view, with an optional reason
+    ({file, reason?}) — the Detail-view "delete" the user asked for on
+    2026-10-15, decided over AskUserQuestion as: physically move the delivered
+    file (when one still exists), organized by the document's own current
+    category, AND record a DECISIONS OVERLAY that is the real source of truth
+    for hiding it — because, per Move's own precondition above, a document's
+    delivered bytes are frequently already reaped, leaving nothing to move.
+
+    "Never destroy": like Banish, this only ever relocates bytes (to
+    output/family_deleted/<category>/), never deletes them, and is fully
+    reversible. Unlike Banish it is NOT restricted to archive_dir, because
+    documents never live there — Banish's own archive-dir check is why it
+    cannot be reused for this (confirmed in this session's investigation).
+
+    The user's own decision (not left independent): taking out a document that
+    satisfies a vital-document kind also drops it from the checklist — see
+    vital_docs_data's doc_taken_out check, which this verb's overlay key feeds
+    directly, no separate write needed here.
+    """
+    require_examiner(case)
+    src = payload.get("file")
+    if not src:
+        raise VerbError("take-out needs file", 400)
+    reason = str(payload.get("reason") or "").strip()[:MAX_NOTE_LEN] or None
+
+    # Membership validation (NOT resolve_media_path — doc bytes are reaped),
+    # same precondition as Move (_move_document_validate) and the same reason.
+    rec = None
+    for d in case.summary.get("document_classifications", []) or []:
+        if d.get("file") == src:
+            rec = d
+            break
+    if rec is None:
+        raise VerbError(f"not a document: {src}", 404)
+    if (rec.get("source") or "").lower() == "email":
+        raise VerbError("email items are not taken out from Documents", 400)
+
+    decisions = case.decisions
+    doc_placements = decisions.get("doc_placements") or {}
+    derived = rec.get("category") or "miscellaneous"
+    p = doc_placements.get(src)
+    if isinstance(p, dict):
+        eff_cat = p.get("category") or derived
+    elif isinstance(p, str):
+        eff_cat = p
+    else:
+        eff_cat = derived
+
+    # Best-effort physical move — absent bytes are not an error (see docstring);
+    # the overlay write below is what actually hides the document either way.
+    canonical = moved_to = None
+    try:
+        canonical = resolve_media_path(case, src)
+        dest = case.paths.output_dir / TAKEN_OUT_DIR / eff_cat / canonical.name
+        final = move_tracked(canonical, dest, reason="family:take_out",
+                             ledger=case.ledger, custody=case.custody)
+        moved_to = str(final)
+    except VerbError:
+        pass
+
+    with _doc_lock(case):
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        fresh = load_json(dpath, {}) or {}
+        taken_out = fresh.setdefault("doc_taken_out", {})
+        before = taken_out.get(src)
+        taken_out[src] = {"ts": _now(), "actor": case.role, "reason": reason,
+                          "category": eff_cat, "moved_to": moved_to,
+                          "canonical": str(canonical) if canonical else None}
+        atomic_write_json(dpath, fresh)
+    if moved_to:
+        case.load()           # the delivered file moved — universe/doc state must reflect it
+    entry = append_action(case, "take_out", src,
+                          {"entry": before},
+                          {"reason": reason, "moved_to": moved_to,
+                           "canonical": str(canonical) if canonical else None},
+                          reversible=True)
+    return {"ok": True, "moved": bool(moved_to), "undo_token": entry["undo_token"]}
+
+
 def verb_rename_folder(case, payload, *, record=True):
     """Rename any view folder (event album, scene, person folder) on disk."""
     require_examiner(case)
@@ -3364,7 +3453,8 @@ def _collection_ids(case, kind, key):
         return out
     if kind == "category":
         docs = document_rows(case.summary, case.ocr_index, case.role,
-                             doc_placements=case.decisions.get("doc_placements"))
+                             doc_placements=case.decisions.get("doc_placements"),
+                             taken_out=case.decisions.get("doc_taken_out"))
         if ":" in str(key):
             cat, sub = str(key).split(":", 1)
             return [r["file"] for r in docs
@@ -4659,6 +4749,30 @@ def _apply_inverse(case, entry):
             atomic_write_json(dpath, decisions)
         case.load()
         return {"restored": entry["target"]}
+    if action == "take_out":
+        # Inverse of verb_take_out_document: move the file back (when it was
+        # physically moved — a take-out with no delivered bytes has nothing to
+        # move back, only the overlay to clear) and restore/clear the
+        # doc_taken_out entry. Reached only via Undo (reversible=True) — see
+        # verb_take_out_document.
+        src = entry["target"]
+        after = entry.get("after") or {}
+        moved_to, canonical = after.get("moved_to"), after.get("canonical")
+        if moved_to and canonical and os.path.exists(moved_to):
+            move_tracked(Path(moved_to), Path(canonical), reason="family:put_back",
+                        ledger=case.ledger, custody=case.custody)
+        prev = (entry.get("before") or {}).get("entry")
+        dpath = case.paths.metadata_dir / DECISIONS_FILE
+        with _doc_lock(case):
+            decisions = load_json(dpath, {}) or {}
+            taken_out = decisions.setdefault("doc_taken_out", {})
+            if prev is None:
+                taken_out.pop(src, None)
+            else:
+                taken_out[src] = prev
+            atomic_write_json(dpath, decisions)
+        case.load()
+        return {"restored": src, "moved_back": bool(moved_to)}
     if action == "correspondent_merge_confirm":
         # Restore each loser's PRIOR correspondent_merges entry (or pop → it
         # had none) and drop the suggestion's cluster_id from the confirmed
@@ -5348,6 +5462,8 @@ VERBS = {
     "correspondent/reject": verb_correspondent_merge_reject,
     # ── Move verb (Phase 1, person-only; face_placements overlay) ──
     "move": verb_move,
+    # ── Document take-out ("delete" in Detail view, 2026-10-15; examiner-only) ──
+    "take-out": verb_take_out_document,
     # ── curation layer (examiner-first) ──
     "favorite": verb_favorite,
     # Both roles (see verb_important_email's docstring for why).

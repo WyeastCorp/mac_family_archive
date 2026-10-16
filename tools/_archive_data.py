@@ -1262,7 +1262,7 @@ def places_data(rows):
 _UNSET = object()
 
 
-def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None):
+def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None, taken_out=None):
     ocr_by_file = {}
     text_kind_by_file = {}
     for rec in ocr_index or []:
@@ -1276,12 +1276,24 @@ def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None):
     rows = []
     excluded_creds = 0
     excluded_email = 0
+    excluded_taken_out = 0
+    taken_out = taken_out or {}
     for d in summary.get("document_classifications", []) or []:
         # Emails are surfaced in their own section (email_rows). Excluding them
         # here keeps Documents/Correspondence from being ~96% email, avoids
         # tripling them across sections, and stops them doubling the search index.
         if (d.get("source") or "").lower() == "email":
             excluded_email += 1
+            continue
+        # Taken out (2026-10-15, DECISIONS OVERLAY doc_taken_out): the document
+        # itself is gone from every family-facing view, never just one folder —
+        # same "statement about the document, not the view" rule account_credentials
+        # and vital_doc_dismissed already follow. The delivered file may also have
+        # been physically moved to family_deleted/ (verb_take_out_document) — this
+        # check hides it from the list either way, including when the move itself
+        # couldn't happen because the bytes were already reaped.
+        if d.get("file") in taken_out:
+            excluded_taken_out += 1
             continue
         derived = d.get("category") or "miscellaneous"
         if role == "family" and derived == "account_credentials":
@@ -1324,6 +1336,8 @@ def document_rows(summary, ocr_index, role, *, cap=None, doc_placements=None):
         log(f"documents: excluded {excluded_creds} account_credentials docs from family browse")
     if excluded_email:
         log(f"documents: excluded {excluded_email} email items (surfaced in Emails)")
+    if excluded_taken_out:
+        log(f"documents: excluded {excluded_taken_out} taken-out docs")
     if cap is not None and len(rows) > cap:
         log(f"documents: capping at {cap} of {len(rows)} rows")
         rows = rows[:cap]
@@ -2337,7 +2351,14 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     retarget = decisions.get("vital_doc_target") or {}
     reviewed = decisions.get("vital_doc_reviewed") or {}
     promoted = decisions.get("vital_doc_promoted") or {}
-    overlay_active = bool(dismissed or retarget or promoted)
+    # 2026-10-15: a taken-out document (doc_taken_out) drops out of the checklist
+    # too — the user's own call (over leaving it independent): the checklist can't
+    # still claim a kind was found once Documents no longer shows the one copy that
+    # satisfied it. Keyed by path, same as vital_doc_dismissed, and checked
+    # alongside it rather than merged into it — "not a vital document" and "taken
+    # out of the archive" are different decisions with different undos.
+    taken_out = decisions.get("doc_taken_out") or {}
+    overlay_active = bool(dismissed or retarget or promoted or taken_out)
 
     # A promoted near-miss becomes an item indistinguishable from a confirmed one
     # (it flows through the same dismiss/reassign/link logic below), except that it
@@ -2368,7 +2389,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         # "Not a vital document" is a statement about the DOCUMENT, so dismissal is
         # keyed by PATH and drops the item from EVERY vital category it matched.
         # (A legacy per-item composite key is still honoured for backward compat.)
-        if overlay_active and (ipath in dismissed or iid in dismissed):
+        if overlay_active and (ipath in dismissed or iid in dismissed or ipath in taken_out):
             continue
         eff_target = (retarget.get(iid) if overlay_active else None) or orig_target
         by_target.setdefault(eff_target, []).append((iid, i))
