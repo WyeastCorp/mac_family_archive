@@ -23,7 +23,42 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
-### 2026-10-15, latest — Report percentages; Gather-for-someone built end to end
+### 2026-10-16, later — stale-server gotcha hit a THIRD way; Checklist redesign built
+
+**What this session actually was:** the user hit "unknown verb take-out" on a server that WAS
+the right checkout (`~/mac_family_archive`, port 7783) but had been started before that verb
+existed on disk — a third variant of the same lesson this file keeps recording: a Python process
+here never reloads its own code, no matter how correct the checkout under it is. Restarted it
+with its own original arguments; confirmed via a direct POST that the verb now resolves (400 for
+a missing field, not 404 unknown-verb) before handing it back. **If "unknown verb" or a missing
+feature ever recurs, check `ps -p <pid of the listening port> -o lstart,command` for BOTH the
+checkout AND how long ago it started, before assuming the code is wrong.**
+
+**Built: the Checklist redesign**, after the user agreed to it (sketch shown last session). Full
+technical detail — what changed and the three rendering bugs found only by looking at the live
+page — is in the commit message (`git log -1 --grep "Checklist redesign front end"`), not
+repeated here. The short version: a browsable Checklist item now looks and acts like a Detail
+card (same info, same Star/Note/Move/Gather-for/Take-out toolbar), reusing Detail's own code
+rather than a second copy of it; classification actions and kind-grouping are unchanged; a
+non-browsable item is untouched. Verified live end to end, including that the same star/note
+show correctly on the same document's Detail card — the two views now genuinely share state, not
+just a similar look.
+
+**A pattern worth naming, now that it's happened three times this session (significance filter,
+Take-out, Checklist):** every one of these only revealed its real bugs when actually looked at in
+a browser — a stale-HTML-in-text bug, a CSS class collision with an unrelated widget, and a
+shared helper silently doing nothing in a new context. None of the three would show up in a code
+read or in `./run_tests.sh` (there is no JS test suite in this repo — Python/pytest only). Budget
+for a live check on every front-end change here, not just the risky-looking ones.
+
+**Blocked:** nothing.
+
+**Next action:** `cd ~/mac_family_archive && git log --oneline -8 && ./run_tests.sh` before
+touching anything; nothing pushed or PR'd yet this session.
+
+---
+
+### 2026-10-15 — Report percentages; Gather-for-someone built end to end
 
 **What shipped (on `documents-view`, committed, not pushed — three commits, newest first:
 front end, backend, and the earlier Report-percentages commit; `git log --oneline -6` for the
