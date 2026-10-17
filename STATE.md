@@ -23,6 +23,52 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — to-do #2 built: a dedicated, grouped Near-misses view
+
+**Branch:** `claude/dedicated-near-miss-view-2026-10-17` (not yet merged — check `gh pr list
+--repo WyeastCorp/mac_family_archive --state open` before assuming it landed). **A sibling
+session was working on to-do #4 (by-year un-nesting) in its own worktree at the same time, also
+touching `report_assets/family/family.js`** — check whether its branch merged first and resolve
+any conflict on that file fresh rather than assume this entry's diff description still matches
+`main`.
+
+**The design decision, made by the user before building:** grouped by category (Estate & legal,
+Taxes, Banking, ...), same shape the Checklist's own sidebar already groups vital-doc kinds by —
+not a flat list with a target filter (the other option offered).
+
+**What shipped:** Documents > Vital documents gains a "Near-misses" nav row (examiner-only,
+alongside Checklist) opening `docview=near_misses` — every target with at least one near-miss,
+grouped by category, each still the exact same toggle+drawer the Checklist already had (same
+`/api/vital/near-misses` call, same pagination, same `truncated_at_k` cap chip). Zero backend
+changes — `vital_docs_data()` already carried everything this needed (`near_miss_count`, `group`,
+the group labels). The toggle+drawer construction was extracted out of `vitalDocsPanel` into a
+shared `appendNearMissToggle()` so the Checklist and this new view share one implementation, not
+two that could drift. The Report's per-target near-miss links ("3 · Where the archive isn't
+sure") now open this view instead of the Checklist.
+
+**Verified, not just reasoned through — re-check live before trusting this description, a sibling
+branch may have changed the surrounding code since:** ran a fresh local server against the real
+`oct7_mf` case (examiner, a throwaway port) and confirmed: the sidebar badge total (1,300 — a
+case-specific number, re-derive rather than trust it later), every group rendering with its member
+targets each carrying a real near-miss count (not spot-checked against all 27 individually — the
+grouping logic itself is what's being verified here, not a claim that every target has a
+near-miss), a drawer expanding with real rows including an email-sourced one (thread link still
+resolves correctly), and the Report's deep link auto-expanding and scrolling to the right target.
+Regression-checked the Checklist page itself after the refactor — its own near-miss drawer still
+works unchanged, no console errors either page.
+Family-role access wasn't newly tested live (same release-gate blocker as the entry two below) —
+relies on the same two-layer gate the Checklist's toggle already had (nav row hidden for family;
+`near_miss_count` is simply absent from a family target server-side even on a direct URL hit).
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI and
+whether the by-year branch merged first (resolve a `family.js` conflict if so), then merge or move
+to to-do #5 (a written report for Richard — the last item from the "five new to-dos" entry
+further below, now the only one left unstarted).
+
+---
+
 ### 2026-10-17, newest — to-do #1 built: "Emails at a glance" on the Report page
 
 **Branch:** `claude/emails-at-a-glance-2026-10-17` (not yet merged — check `gh pr list --repo
