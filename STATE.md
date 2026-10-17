@@ -23,56 +23,804 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
-### 2026-10-16, newest — oct7_mf's date_index refreshed to tier 2 (Richard); PR #14 open
+### 2026-10-17, newest — corpus_dates.json wired into Documents' By-year ("Nonvital" group); Photos/Audio/Videos exposure recorded as a separate to-do
 
-**Richard handed over refreshed `date_index.json` + `vital_doc_provenance.json`** for `oct7_mf`
-(per PR #11's contract — see the entry below this one), with instructions to replace the files in
-the case's `output/metadata/` directly. Done: the originals are kept at
-`output/metadata/_backup_2026-10-16/` on the case volume (not in this repo — the case tree is
-outside the checkout, per `.gitignore`), should anything need to be compared back. The new file is
-tier 2 (the old one was tier 1 — no `account_views` key at all) and has 18 more documents with a
-usable date (139 vs 121) — confirmed by reading both files directly, not assumed from the PR
-description. This needs no code change to take effect: `_date_used_index()` already reads
-`items[].date_used` generically, so Checklist/By-year/Report all picked up the richer dates the
-moment the file was swapped — verified live (a new `as_of_date`-based pair of 2006 documents now
-appears in By-year, which had no 2006 entry before).
+**Branch:** `claude/corpus-dates-by-year-2026-10-17` (not yet merged — check `gh pr list --repo
+WyeastCorp/mac_family_archive --state open` before assuming it landed).
 
-**PR #14 open:** [WyeastCorp/mac_family_archive#14](https://github.com/WyeastCorp/mac_family_archive/pull/14) —
-`as_of_date` is a genuinely new basis value in the refreshed file (2 real documents use it); the
-front end's wording table didn't have a case for it, so it fell through to the generic "Dated X"
-instead of the contract's "As of X". Fixed and verified live. Not reviewed yet as of this entry.
+**The scope decision, made by the user this session:** Documents' By-year only, not Photos/Audio/
+Videos/Messages — even though `corpus_dates.json` has real data for all of them (see the entry two
+below for the numbers). Reasoning, in the user's own words: the UI they actually use day to day
+(the Desktop launcher, `--documents-only`) can't reach those other sections at all regardless of
+what the data supports, so building there first would be invisible to them. **Separately
+recorded, not scoped or sized:** at some point this UI needs to actually expose Photos/Audio/
+Videos — see the entry two below for the full note; don't lose it just because this entry
+addressed Documents.
 
-**Two real integration opportunities, NOT built — both need a decision, not just data plumbing:**
-- **`operative_views[]`** (wills/POA/trusts/beneficiary forms, tier 1): Documents already shows a
-  banner ("Newest date first, not the governing one") for these kinds, but it's a naive client-side
-  sort, not the pipeline's own ranking — which adds a real "lead" instrument
-  (`latest_by_date`), an "order unclear" flag, "refers to an instrument dated X" text for
-  codicils, and a "N copies" chip for duplicate text. This is an upgrade to something half-built,
-  not new scope. Decision needed: replace the existing sort outright, or layer the richer fields
-  on top of it?
-- **`account_views[]`** (financial statements by account, tier 2, brand new — `oct7_mf` has 11
-  groups: 10 real accounts + one "not grouped" bucket): no UI anywhere today. A natural fit would
-  be a third arrangement next to "By subject / By year", scoped to financial statements only.
-  Decision needed on that scoping before building — it would be the first arrangement that doesn't
-  apply to every document.
-- Full field-by-field rendering rules for both are in `docs/date_index_contract.md` (merged via
-  PR #11) — read that before building either, it's already thorough.
+**What shipped:** an ordinary (non-vital) document now gets a real year in By-year when
+`corpus_dates.json` has one for it, nested under a NEW "Nonvital" group — same term the (still
+unbuilt) sidebar-reorg to-do uses for the unlabeled category list, kept consistent on purpose.
+Vital documents are completely unaffected: `date_index.json` stays the one source of truth for a
+confirmed vital document's date; `corpus_dates.json` already defers to it (a vital document is a
+`{"see":"date_index"}` stub there, not a second, possibly-conflicting date) and the new code
+checks `r["vital"]` first, `r["corpus_date"]` only as a fallback — same precedence, enforced in
+code, not just assumed from the data being well-behaved.
 
-**Yet another server restart on port 7783** (the user's own, previously restarted twice this
-session already) — needed to pick up both the new data files and the `as_of_date` fix, since the
-backend caches everything in memory at startup. Restarted with its original arguments each time;
-flagged clearly before doing it, this time.
+**Where:** `tools/_archive_data.py` gained `_corpus_dates_by_file(md)` (mirrors
+`_date_used_index`'s style — reads `corpus_dates.json`, scoped to `kind=="document"` entries that
+carry a real `date_used`, which excludes the `{"see":"date_index"}` stubs and every non-document
+kind for free, no special-casing). `documents_year_index()` now falls back to `r["corpus_date"]`
+when there's no vital date, grouping those as `"nonvital"` / `"Nonvital"`. `tools/family_archive.py`
+gained `_attach_corpus_date()` (same copy-on-write pattern `_attach_vital` already uses, called
+right after it) and routed `_document_year`/`_document_group`'s old direct `.vital` read through a
+new `_document_year_source(r)` — the one place both now read, so a document's year and its group
+always agree regardless of which source produced them, same guarantee the vital-only version
+already gave. Two now-stale comments in `report_assets/family/family.js` claiming "only vital
+documents ever carry a date" were updated — re-read them if this area gets touched again, they're
+easy to let rot back out of date.
 
-**Blocked:** nothing on the fix. The two bigger integration points need a decision before
-building.
+**Tested:** 7 new tests — `tests/unit/test_archive_data.py` covers the pure `documents_year_index`/
+`_corpus_dates_by_file` behavior (nonvital grouping, vital-wins-over-corpus precedence, mixed
+groups within one year, unreadable/missing corpus dates staying in "No date"); one new test in
+`tests/unit/test_family_archive.py` exercises the REAL server path
+(`_attach_vital → _attach_corpus_date → documents_year_index → _filter_documents`), not just the
+pure functions — confirms `?year=`/`?vital_group=nonvital` actually narrow correctly through
+`case.api_section`. `./run_tests.sh`: 816 passed (809 + 7), 3 skipped.
 
-**Next action:** `cd ~/mac_family_archive && git log --oneline -5 && ./run_tests.sh`. Check
-`gh pr view 14 --repo WyeastCorp/mac_family_archive` for review/merge status before assuming
-nothing has happened since this was written.
+**Verified live, not just by reading the diff:** `corpus_dates.json` is now installed in the real
+case (see the entry two below for how/why — it had no existing file to replace, so no backup-first
+pattern applied, just a plain copy-in). Restarted the examiner server first (backend/Python
+change — static JS auto-reloads on this app, Python does not; see `memory/
+wyeast-server-restart-after-backend-change.md` for why). Confirmed: "No date"'s count dropped by
+exactly 2,338 from its prior (vital-only) figure — the same number `_corpus_dates_by_file` reports
+independently from the raw file, cross-checked rather than assumed to match. Expanded 2014 (513
+documents that year) and saw it nest into "Nonvital" (467) alongside the pre-existing vital groups
+"Business" (45) and "Banking" (1); clicked into "Nonvital" and confirmed every row returned
+actually carries a `corpus_date` matching what's shown, via the raw `/api/documents` response, not
+just the rendered page. No console errors. **Family role wasn't live-tested** — same release-gate
+blocker every entry this session has hit on this case (family GET is closed end to end on an
+unreleased case) — the data-layer functions are role-agnostic either way (same `documents_year_index`
+regardless of role), so this is a reasoned-through gap, not an untested code path, but a real
+family-role click-through hasn't happened.
+
+**Re-check before trusting any number in this entry** — re-derive "No date"'s count and the 2014
+breakdown fresh rather than trust the figures above; this is a live, multi-session case and counts
+here have already been observed to drift between page loads earlier today.
+
+**Blocked:** nothing on this piece.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or move to one of the remaining to-dos — see the sidebar-reorg entry below for #1-#4 of the
+original five (all done except the written report for Richard, #5) and for the still-open sidebar
+reorganization itself, which this entry's "Nonvital" naming now has to stay consistent with
+wherever it lands.
 
 ---
 
-### 2026-10-16, later — PR #12 merged; Report Section 3 + By-year built; another accidental server kill
+### 2026-10-17 — Richard's THIRD round installed (date_index/vital_doc_provenance/corpus_dates); corpus_dates.json now also wired into By-year (see the newest entry above)
+
+**`date_index (3).json` / `vital_doc_provenance (3).json` are now installed** into
+`output/metadata/` in the case at `/Volumes/oct7_mf_case/oct7_mf/`, same backup-first pattern as
+every prior round — the files they replaced are preserved alongside them with a
+`.bak-<timestamp>` suffix in the same directory (check that listing rather than trusting a
+filename quoted here). Verified after install: parsed cleanly through this repo's own
+`load_json`/`_date_used_index`/`_operative_views_index` against the real case path, the
+already-running examiner server picked it up with no restart needed (both functions read fresh
+off disk every call — confirmed earlier this session) and no console errors, `./run_tests.sh`
+still green (809 passed / 3 skipped — a sanity check on the repo, not on this install, re-run it
+rather than trust the number).
+
+**`corpus_dates.json` is now also installed** (as of the newest entry above this one) — plain
+copy-in to `output/metadata/`, no backup-first pattern needed since there was no existing file to
+replace. At the time THIS entry was first written it was still sitting in Downloads, not
+installed, pending a scope decision — see below for what's actually in it; the scope decision
+itself and the build it led to are in the entry above.
+
+**`date_index (3).json` vs. what's installed — checked by diff, not assumed:** `items`,
+`operative_views`, `account_views`, `tier`, `counts`, `case_id`, `schema_version`, `step` are
+byte-identical to what's already in the case. Only `near_misses` changed, and only its DATES, not
+its population — still 832 paths / 1366 targets, same as installed. What changed: `with_date_used`
+rose 627→712, and a NEW basis appears for the first time, `pdf_created_no_later_than` (210
+occurrences in `target.date_used.basis` — the raw per-candidate label is `"pdf_created"`, the
+resolved basis adds the `_no_later_than` suffix, same convention `email_sent_no_later_than`
+already uses). Richard's extractor now also reads a PDF's embedded creation-date metadata as a
+date candidate, where before it only read in-text mentions and email-sent dates. **This basis value
+is undocumented** — not in `docs/date_index_contract.md`, not handled anywhere in
+`report_assets/family/family.js`'s basis-label code (grepped both, zero hits) — but it's harmless
+today because `near_misses` still isn't read by any code in this repo (same caveat the `(2)` round
+left standing). Whoever eventually builds against `near_misses` needs to add this basis to the
+contract doc and the front-end's basis-label table, not just the already-documented
+`email_sent_no_later_than`.
+
+**`vital_doc_provenance (3).json`:** byte-identical to installed except `timestamp` — a pure
+refresh, same as the `(2)` round's provenance file was.
+
+**`corpus_dates.json` — genuinely new, not a refresh of anything, reads like the "date codifying
+the whole corpus" work Richard said he was starting when he sent the `(2)` round:** `step:
+"date_index"` (same stage name as the existing file) but a COMPLETELY different, much broader
+shape — this is NOT a `date_index.json` replacement. Top level: `{case_id, counts, emails, items,
+schema_version, step, timestamp}`. `items[]` is a flat list of 9,748 entries covering EVERY
+document (5,240), photo+video (4,209), audio file (104), and message chunk (195) in the
+corpus — not just vital-doc candidates. Each entry: `{file, kind, date_used: {value, precision,
+basis, confidence} | null, evidence, junk_routed?}`. Emails get their own summary block instead of
+per-item entries (31,806 items, 31,722 already dated via `email_index.json`'s existing
+`email_date_iso` field, 84 listed by path as undated) — presumably because email dating was
+already solved and didn't need re-doing.
+
+**The one design-relevant detail, checked directly rather than assumed:** of the 5,240 documents,
+509 are stub entries (`{"file":..., "kind":"document", "see":"date_index"}`) — these are the
+already-CONFIRMED VITAL documents, which this pass politely defers to the existing
+`date_index.json` rather than risking a second, possibly-conflicting date for the same file. The
+other 4,731 are genuinely NEW: 2,338 of them now have a real `date_used` (bases seen:
+`email_sent_no_later_than`, `pdf_created_no_later_than`) that NO document in this repo has ever
+had before — these are exactly the non-vital ("Nonvital", per the sidebar-reorg entry two below)
+documents that land in "No date" today. **This directly bears on the sidebar-reorg to-do's open
+question #4** (whether By-year should be Vital-only): if this file ever gets wired in, a large
+chunk of what's in "No date" today would get a real year, which changes the premise that By-year
+"only ever organizes vital documents" — read both entries together before building either one.
+
+**No code anywhere reads `corpus_dates.json`** (grepped `tools/`, `wyeast/`, `docs/`,
+`report_assets/`, `tests/` for the string — zero hits) and no contract doc exists for its shape,
+same gap `near_misses` already has.
+
+**Correction, checked live against the real case, not assumed — Photos/Audio/Videos are NOT all
+empty in `oct7_mf`:** this entry originally floated Photos/Videos/Recordings as other places
+`corpus_dates.json` could land. The Report page's own "Processed" tile shows **Photos: 0, Audio:
+104, Videos: 50** for this case — Photos really is empty, but Audio and Video are not; both have
+real content and working pages (`P.recordings`, `P.photos` filtered to `media: "videos"`), just no
+date-based browsing. **But the user's own point stands and is the one that actually decides this:**
+the UI they personally use day to day (the Desktop launcher, `--documents-only` — see the global
+CLAUDE.md's Wyeast section) redirects every page except Documents back to Documents server-side
+(`SOLO_PAGE` in `tools/family_archive.py`), so Photos/Audio/Videos are invisible to them
+regardless of what exists in the code or the data. **Decision made: scope `corpus_dates.json` to
+Documents' By-year only, for now.** Separately noted, not for this round: **at some point this UI
+needs to actually expose Photos/Audio/Videos to the user** — either lifting the `--documents-only`
+restriction on the launcher they use, or deciding that restriction is permanent and those sections
+are examiner-workstation-only. Not scoped, not sized, just recorded so it isn't lost.
+
+**Blocked:** nothing on the Documents/By-year piece — scope decided, see the entry above this one
+for build status. The Photos/Audio/Videos exposure question is a separate, unscoped to-do.
+
+**Next action:** see the newest entry above this one for where the By-year + `corpus_dates.json`
+build actually landed.
+
+---
+
+### 2026-10-17, newest — TO DO (not started): sidebar reorganization — Near-misses promoted to its own section, two renames, By-year scoped to Vital only
+
+**The user's own request, stepping away before it could be scoped further — read it fresh rather
+than trust this paraphrase, and confirm each piece with them if anything here looks ambiguous
+once you're looking at the live tree.** Four asks, from a live complaint that the current
+Near-misses placement (shipped minutes earlier, PR #19) is "clunky":
+
+1. **Near-misses becomes its own top-level sidebar section**, not a row nested inside "Vital
+   documents". Position: below the Vital documents section, above the (renamed, see #3) category
+   list — with a separator line both above AND below it, visually standing alone the way "Vital
+   documents" and "All documents" already do, not blended into a list the way it is today.
+2. **Rename "Checklist" → "Vital Checklist"** (the row inside Vital documents that opens
+   `docview=checklist`).
+3. **Rename the unlabeled category-folder section → "Nonvital"** (the `financial`/`legal`/
+   `miscellaneous`/... list that today has no group label of its own, just renders as a flat list
+   of folders below the Vital documents block). The user said "for now" — treat the name as a
+   placeholder they may want to revisit, not a settled final word.
+4. **By-year should only be reachable from within Vital documents**, not as a global arrange
+   toggle over the whole tree. The user's own reasoning (matches what PR #18's entry below already
+   found): by-year only ever organizes VITAL documents, because `documents_year_index()` only ever
+   gets a date from a document's `date_used`, which only a vital document carries — an ordinary
+   ("Nonvital") document has no date and always lands in the undifferentiated "No date" bucket.
+   Today's `arrange` toggle ("By subject" / "By year", `drawTree()` in
+   `report_assets/family/family.js`, right above the `ul` tree) sits ABOVE the whole tree and
+   swaps out BOTH the Vital and Nonvital sections at once when switched to "By year" — that's the
+   part the user wants gone. It should be scoped so Nonvital always shows by subject/category, with
+   no year option at all, and the year view lives only inside Vital documents somehow.
+
+**Current code, read directly (re-read it yourself before building — a sibling session may have
+touched this area since):** `drawTree()` in `report_assets/family/family.js`, roughly lines
+3895–4043 as of this entry (line numbers rot fast — grep for `"All documents"` / `"Near-misses"` /
+`arrange === "year"` to re-locate). Today's order: `All documents` → sep → `Vital documents`
+(expandable: `Vital Checklist`-to-be, `Near-misses`-to-move, then each vital-doc GROUP nested one
+level in) → sep → the `arrange`-controlled list (`By subject`'s plain category folders, OR
+`By year`'s year rows nested by vital group — see PR #18's entry below for why year-nesting reuses
+the SAME group taxonomy) → sep (examiner-only) → `Collections`. The `sep(ul)` helper (one-liner,
+appends a single `<li class="tsep">` divider) is already exactly the tool items #1 needs for its
+"line above and below."
+
+**Proposed new order (asks #1–#3, mechanically straightforward — moving/renaming existing trow()
+calls, no new data):**
+
+```
+All documents
+─────────────
+Vital documents                 (key: "vital", unchanged)
+  Vital Checklist                (renamed from "Checklist")
+  <vital-doc groups...>          (Estate & legal, Taxes, Banking, ... — unchanged, nested)
+─────────────
+Near-misses                     (moved OUT from under Vital documents — now its own
+                                  top-level row, same EXAMINER gate + mark/count badge +
+                                  muted-at-zero behavior as today, just no longer
+                                  conditional on open.vital)
+─────────────
+Nonvital                        (renamed label for the existing category-folder list —
+                                  the folders themselves, their subcategories, and their
+                                  drag-to-move behavior are all unchanged)
+─────────────                   (examiner-only, unchanged)
+Collections
+```
+
+**Not yet decided — ask #4 needs one more concrete design call before building, same as to-do #2
+needed a shape decision before it could be built (see that entry two below):** the user specified
+the CONSTRAINT (by-year only inside Vital documents) but not the MECHANIC. At least two shapes fit
+what they described — don't guess; ask, the way #2's shape got asked and answered before building:
+- **(a)** a third row alongside `Vital Checklist`/`Near-misses` inside Vital documents — e.g.
+  "By year", which swaps the GROUP nesting for the YEAR nesting within that same expandable section
+  (the groups themselves stay the primary/default view; by-year is an alternate way to browse the
+  same vital documents).
+- **(b)** a `By subject` / `By year` toggle that only appears/applies once you're INSIDE Vital
+  documents (replacing today's global toggle above the whole tree), with Nonvital's folder list
+  having no such toggle at all — always by-subject.
+These may converge to roughly the same visible result; the difference is in `arrange`'s scope (a
+per-section state vs. a page-global one) and how much of `drawTree()`/`view`/the URL query params
+(`arrange=year`) need to change to stop leaking into Nonvital. Read PR #18's own entry (two below)
+for exactly how `arrange`/`year`/`vital_group` are wired today before picking.
+
+**Verification note for whoever builds this:** no backend changes anticipated (pure sidebar
+reshuffling + two label strings) UNLESS ask #4 ends up needing `documents_year_index()` or
+`_filter_documents` touched to stop a Nonvital-context URL from accepting `arrange=year` — check
+that live, don't assume. No JS test harness exists in this repo; verify live per `CLAUDE.md`'s
+"Verify in a browser" section, same discipline every entry below this one used.
+
+**Other unfinished to-dos as of this entry (re-check `gh pr list` yourself, this rots fast):**
+- **To-do #5** (the last item from the "five new to-dos" entry further below): a written report
+  for Richard on what the pipeline could do for email sorting/filtering — answered in chat in an
+  earlier session, never turned into an actual document. Not started.
+- **PR #14** (`date-index-as-of-date`, `as_of_date` wording in the date_index contract) — open,
+  unmerged, unrelated scope to everything else in this file. Pre-dates this session; status
+  unchanged by anything done today.
+- **The entry directly below this one** ("Markland is wondering about a feature") — showing an
+  ORDINARY (non-vital) document's source email on the document itself, the way Vital Documents
+  already can. Recorded as a feature idea the user wants scoped, not sized or built yet, with the
+  real complexity already identified (the family/examiner audience gate on source-email links must
+  apply here too, same as it does for Vital Documents' own thread-linking).
+
+**Blocked:** on the user for #4's mechanic (see above) before any of this gets built — #1–#3 could
+start without that decision, but check with them first since this whole entry was cut short by
+them stepping away, not fully confirmed.
+
+**Next action:** when picked back up, re-read the live sidebar in a browser first (`docview`
+params may have shifted under a sibling session's work since this was written), confirm the
+proposed order above still matches what the user meant, then build #1–#3 together (they're one
+coherent sidebar-reshuffle commit) and ask the open #4 question before touching `arrange`.
+
+---
+
+### 2026-10-17, newest — Markland is wondering about a feature: showing a document's source email
+
+While looking at an ordinary (non-vital) Legal-category document whose filename carried the
+`msgNNNNN_` import prefix — the marker the pipeline stamps on a file pulled out of an email, to
+keep two different messages' attachments from colliding on the same basename — Markland asked
+whether the archive could surface that connection on the document itself, the way it already does
+for Vital Documents. Not filed as a bug; recorded here as a feature Markland raised and wants
+scoped, not yet sized or built.
+
+**Current state, read from the code, not assumed:** `document_rows()` in `tools/_archive_data.py`
+(the Documents list and its Detail card) carries no source-email field at all for ordinary
+documents — it's not hidden by the front end, the server never computes it for anything but a
+confirmed Vital Document. The only place a document today links back to its source email is the
+Vital checklist (`vital_docs_data()` / `vital_source_email()`), and only after that document is
+confirmed vital. The reverse direction already exists for email — an email's attachment chip can
+link forward to its delivered document (`delivered_basename_index()`) — there's just no index
+built the other way (attachment → source email) for ordinary documents.
+
+**What it would take:** invert that lookup and feed it into `document_rows()` or the Detail card's
+data path. The real work isn't the lookup — it's `wyeast/core/audience.py`'s family/examiner
+split: some source emails are deliberately screened out of what family can see, so a reverse link
+has to pass the same audience gate the Vital checklist's thread-linking already does
+(`_vital_thread_links`, scoped to the caller's own audience index) before showing a family member
+anything. Skipping that check to ship this faster would be the actual bug.
+
+(Deliberately not naming the specific document or quoting its filename here — see CLAUDE.md's
+rule against pasting real case material into the repo. The `msgNNNNN_` prefix pattern is
+reproducible on any email-sourced file in any case, no case-specific detail needed to act on this.)
+
+---
+
+### 2026-10-17, newest — to-do #2 built: a dedicated, grouped Near-misses view
+
+**Branch:** `claude/dedicated-near-miss-view-2026-10-17` (not yet merged — check `gh pr list
+--repo WyeastCorp/mac_family_archive --state open` before assuming it landed). **A sibling
+session was working on to-do #4 (by-year un-nesting) in its own worktree at the same time, also
+touching `report_assets/family/family.js` — its branch (PR #18) merged to `main` FIRST**, before
+this one was even pushed. Merging `main` back into this branch conflicted only in this file
+(`STATE.md`, this very entry's position relative to the one below) — `family.js` itself merged
+clean, no manual resolution needed there. Re-run `./run_tests.sh` and a live check after any
+further rebase of this branch, rather than trust that "merged clean" stays true.
+
+**The design decision, made by the user before building:** grouped by category (Estate & legal,
+Taxes, Banking, ...), same shape the Checklist's own sidebar already groups vital-doc kinds by —
+not a flat list with a target filter (the other option offered).
+
+**What shipped:** Documents > Vital documents gains a "Near-misses" nav row (examiner-only,
+alongside Checklist) opening `docview=near_misses` — every target with at least one near-miss,
+grouped by category, each still the exact same toggle+drawer the Checklist already had (same
+`/api/vital/near-misses` call, same pagination, same `truncated_at_k` cap chip). Zero backend
+changes — `vital_docs_data()` already carried everything this needed (`near_miss_count`, `group`,
+the group labels). The toggle+drawer construction was extracted out of `vitalDocsPanel` into a
+shared `appendNearMissToggle()` so the Checklist and this new view share one implementation, not
+two that could drift. The Report's per-target near-miss links ("3 · Where the archive isn't
+sure") now open this view instead of the Checklist.
+
+**Verified, not just reasoned through — re-check live before trusting this description, a sibling
+branch may have changed the surrounding code since:** ran a fresh local server against the real
+`oct7_mf` case (examiner, a throwaway port) and confirmed: the sidebar badge total (1,300 — a
+case-specific number, re-derive rather than trust it later), every group rendering with its member
+targets each carrying a real near-miss count (not spot-checked against all 27 individually — the
+grouping logic itself is what's being verified here, not a claim that every target has a
+near-miss), a drawer expanding with real rows including an email-sourced one (thread link still
+resolves correctly), and the Report's deep link auto-expanding and scrolling to the right target.
+Regression-checked the Checklist page itself after the refactor — its own near-miss drawer still
+works unchanged, no console errors either page.
+Family-role access wasn't newly tested live (same release-gate blocker as the entry two below) —
+relies on the same two-layer gate the Checklist's toggle already had (nav row hidden for family;
+`near_miss_count` is simply absent from a family target server-side even on a direct URL hit).
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or move to to-do #5 (a written report for Richard — the last item from the "five new to-dos"
+entry further below; by this point #1, #2, #3 and #4 are all done, so #5 is the only one left).
+
+---
+
+### 2026-10-17, newest — to-do #4 built: By-year documents now nest by vital category instead of a flat count
+
+**Branch:** `claude/amazing-cannon-7fe56b` (built in its own worktree, per the task's own isolation — check `gh pr
+list --repo WyeastCorp/mac_family_archive --state open` before assuming it's merged).
+
+**What changed, and why this shape specifically:** the to-do (STATE's "PR #15 merged" entry,
+five-to-dos-down from here) asked to un-nest the Documents page's By-year view to match the
+original mockup instead of the flat per-year count PR #12 shipped as a deliberate v1
+simplification. Read the actual mockup artifact (`project/Documents.dc.html` on the canvas
+`memory/wyeast-frontend-brainstorm.md` points at) before building, rather than guessing from the
+to-do's one sentence — worth re-reading that canvas yourself before trusting this paragraph's
+summary of it, it may have moved on. The mockup nests EVERY document (vital or not) by its full
+category/subcategory within a year. This repo's real data can't support that: `documents_year_index`
+only ever gets a year from a vital document's `date_used` (see its own docstring, and the
+2026-10-16 "By-year" entry below) — ordinary documents have no date at all, so every document that
+lands in a real year already IS a vital document. Nesting by the mockup's full category taxonomy
+would have meant inventing a second grouping scheme for documents that already have one; instead
+each year now nests by the SAME `VITAL_DOC_GROUPS` category the Checklist already uses (`tax_records`
+→ "Taxes", `real_estate_property` → "Property", etc.) — matching, not duplicating, how the rest of
+the app already groups vital documents. "No date" never nests; it holds only non-vital documents,
+which have no group to nest by.
+
+**Where:** `documents_year_index()` in `tools/_archive_data.py` now returns `[{year, count,
+groups: [{group, label, count}]}]` instead of `[{year, count}]` — additive, not a breaking rename.
+`tools/family_archive.py` gained `_document_year_vital` (the one vital entry both the year AND the
+group are read from, so a document matching more than one vital target can't end up attributed to a
+year from one match and a group from another) and a new `?vital_group=` filter in
+`_filter_documents`. `report_assets/family/family.js`'s `arrange === "year"` tree now renders each
+year as an expandable row with its groups nested one level in, reusing the exact same `trow`/`open`/
+`glabel` machinery the Checklist's own vital-group nesting already uses (hoisted `glabel` to the
+shared scope both now read, removing a duplicate declaration) — not a second implementation of
+group-row rendering. New query param `vital_group` threads through `encodeURL`'s persist whitelist,
+`view`/`pick`/`isCurrent`, the pager's `getParams`, and the breadcrumb click-handler, the same way
+`year` itself already did.
+
+**Tested:** `tests/unit/test_archive_data.py` gained six new tests on the pure `documents_year_index`
+function (nesting, the always-empty "No date" groups list, the `group`-key fallback to
+`vital_doc_group(target)`, the "Other" fallback label, and — the one most worth re-reading before
+trusting the behavior — that a document matching several vital targets gets its year AND its group
+from the SAME entry, not two different ones). `tests/unit/test_family_archive.py`'s existing
+`test_api_section_documents_year_index_and_year_filter` was extended (not replaced) to also assert
+the nested `groups` shape and exercise the real `?vital_group=` filter end-to-end through
+`api_section`, not just the pure function in isolation. `./run_tests.sh` green — re-run it yourself
+rather than trust a count quoted here.
+
+**Verified live, not just by reading the diff:** started a THIRD server instance on port 7801 (7766,
+7783 and 7790 were all other sessions' live examiner servers at the time — checked with `lsof`
+first, never touched) against the real `oct7_mf` case. Clicked "By year", expanded a year with
+several hundred documents and saw it nest into real groups whose counts summed back to the year's
+own total (re-check live rather than trust a figure here — the undo/triage history in this case
+means it moves), clicked into one nested group and got exactly its own documents with a correct
+breadcrumb back to the year. Reloaded the resulting direct-link URL
+(`?year=2023&vital_group=estate_legal&arrange=year`) fresh — the prior By-year entry below records
+TWO wiring bugs that only showed up on a direct link, not a click, so this was checked deliberately:
+the tree auto-expanded the year and the pane showed the same single filtered document, both correct
+on first load. Confirmed "No date" (still the large majority of this case's documents, per the
+2026-10-16 By-year entry's own finding — re-check it, don't trust either entry's figure) renders
+with no expand chevron and no groups, as designed. Also reloaded the existing "By subject"
+arrangement and the Checklist page (which now shares its group-label map with the new code) to
+confirm neither regressed. No console errors on any of these loads. **Not separately verified:**
+the family role — this case is pre-release, so the family GET surface is gated closed (E5) and would
+need a second server process (`--role family`) to even reach a page; the data-layer functions this
+feature touches are role-agnostic (same `documents_year_index`/`_filter_documents` either role goes
+through), so this is a reasoned-through gap, not an untested one, but a real family-role click-through
+on a released case hasn't happened.
+
+**PII check:** the live verification above opened real document names and at least one real person's
+name in the browser (not in this file, a commit, or the PR). Nothing from the live case is quoted
+anywhere in the branch's commits, this entry, or the PR body — every example above uses the group
+labels/categories, which identify no one, same as `CLAUDE.md` requires.
+
+**Blocked:** nothing. The branch is ready for CI once pushed.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>` to check CI, then
+either merge this (the user's own call, not done here) or pick up another to-do from the "PR #15
+merged" entry further below — by the time this merged, the entry right below this one (to-do #1)
+and to-do #3 (two entries below) were both already done too, built concurrently in a separate
+worktree; re-check `gh pr list` for current merge state rather than trust either entry. Only #2 and
+#5 are still open.
+
+---
+
+### 2026-10-17, newest — to-do #1 built: "Emails at a glance" on the Report page
+
+**Branch:** `claude/emails-at-a-glance-2026-10-17` (not yet merged — check `gh pr list --repo
+WyeastCorp/mac_family_archive --state open` before assuming it landed).
+
+**What shipped:** the Report page now has an "Emails at a glance" section, same x/y/z/a shape
+as the existing "Documents at a glance" — of every email thread the archive holds, how many are
+vital, an unresolved near-miss, or neither. `tools/_archive_data.py`: `vital_docs_data()` gains
+`vital_email_thread_count` / `near_miss_email_thread_count` (built off the SAME thread-link
+resolution the Checklist already uses — the plumbing the previous entry below proved correct, not
+a new lookup); `report_data()` gains an `email_overview` block mirroring `doc_overview`.
+`report_assets/family/family.js`: a new sheet, same pattern as the Documents one.
+
+**Deliberately NOT done:** no "found by the pipeline" line the email side (unlike Documents' pre-
+filing count). `email_triage_summary.json`'s `email_count`/`kept_count` are MESSAGE-grain; this
+whole feature counts by THREAD (same unit `counts["emails"]`/the Emails tab already use) — pairing
+a message-grain number with a thread-grain total would show something that LOOKS like one honest
+partition but isn't. Left out rather than shown misleading.
+
+**Verified, not just reasoned through — re-check before trusting the specific numbers here, they
+rot like any other count:** ran a fresh local server against the real `oct7_mf` case (examiner
+role, a throwaway port, never 7766/7783) and confirmed live: the new "In this archive" total
+matches the Processed section's own Emails tile exactly (same number, zero drift — that's
+`counts["emails"]` reused, not recomputed). Cross-checked the "vital" count two independent ways —
+counted confirmed `.eml` paths directly in `vital_doc_confirmed.json`, and separately pulled every
+item's resolved `thread_id` from the live API and counted distinct ids — both landed on the same
+number, confirming the thread-grain count isn't accidentally equal to a path-grain one. Couldn't
+live-test the FAMILY role's rendering: `oct7_mf` predates the release gate, so family GET is closed
+end to end on this case (confirmed live — the family page says exactly that) — covered instead by
+new unit tests in `tests/unit/test_archive_data.py`, including one that forces two different
+messages (one confirmed, one a near-miss candidate) into the SAME thread to prove the "a thread
+already counted vital doesn't also count near-miss" rule actually fires, not just coincidentally
+holds on non-overlapping fixtures. `./run_tests.sh`: 804 passed (798 + 6 new), 3 skipped.
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or move to one of the remaining to-dos from the "five new to-dos" entry further below — #1
+(this one) and #3 (the email/near-miss investigation, two entries below) are now done; #2 (a
+dedicated near-miss browsing view) and #4 (by-year un-nesting) are self-contained and can start
+independently; #5 (a written report for Richard) is a writing task, not code. (#4 was also built
+concurrently in a separate worktree — see the entry above this one.)
+
+---
+
+### 2026-10-16, newest — to-do #3 investigated: email-thread linking already works; found and fixed a real undercount bug instead
+
+**Branch:** `claude/vital-docs-checklist-email-count-2026-10-16` (not yet merged — check `gh pr
+list --repo WyeastCorp/mac_family_archive --state open` before assuming it landed).
+
+**What to-do #3 two entries below actually asked:** two specific open sub-questions, plus the
+user's broader suspicion that emails never show up as vital documents. Both sub-questions are now
+answered, by reading the code and by hitting the live app against the real case, not by guessing:
+
+1. **Does thread-link resolution fire for near-miss rows, not just confirmed ones?** Yes —
+   `near_miss_rows()` in `tools/_archive_data.py` builds `thread_links`/`message_links`/
+   `recording_links` against its `unlinked` set exactly the way `vital_docs_data()` does for
+   confirmed items, no source-type filtering anywhere in that path. Confirmed live: hit
+   `/api/vital/near-misses?target=will_testament` on the real case and got back rows with real
+   `thread_id`/`thread_subject` for every email-sourced near-miss.
+2. **Does the retrieval stage search email body text, or only attachments?** Body text — confirmed
+   by reading actual hits straight out of `vital_doc_candidates.json`: snippets like "Can you please
+   send me a will form for me and Jennifer?" are plainly message bodies, with the hit's `path`
+   pointing at the `.eml` file itself, not an attachment. (Didn't need Wyeast's private stage code
+   for this — the evidence was already sitting in the case's own metadata.)
+
+**So the plumbing for "an email is vital evidence" already works, confirmed and near-miss alike.**
+What doesn't: a real counting bug in `report_assets/family/family.js`'s Checklist sidebar. The
+"Vital documents" nav count, each category group's subtotal, and each target's row count all
+filtered `t.items` to `i.file_id` before counting — silently dropping every confirmed item whose
+only evidence is an email thread, a chat conversation, or a recording, even though that exact item
+renders correctly with a working link the moment you expand its target's drawer. This has been
+there since the Documents view's original sync commit (`ea846f9`, `git log -S foundItems`) — predates
+the thread/conversation/recording linking work entirely, never updated to match. **Fixed** (three
+filtered `.length` calls now count the full `t.items` list, matching what `vital_docs_data()`'s own
+docstring already says "found" means).
+
+**Verified, not just reasoned through — re-check both numbers before trusting this paragraph, they
+rot like any other count:** ran a SECOND local server on a different port against the real `oct7_mf`
+case (`--port 7799`, never the examiner's own already-running session on 7766) and compared the
+Checklist sidebar before and after the fix. Three targets in this case had email-only confirmed
+items; all three were undercounted before the fix and correct after it. `./run_tests.sh` still
+green (pytest never touches the real case, so this was never going to catch the bug or the fix —
+sanity check on the repo only). No JS test harness exists in this repo to write an automated
+regression test into (unlike `tools/`'s pytest coverage) — this was a live-browser verification,
+per `CLAUDE.md`'s own "Verify in a browser" section; a repeat of the before/after comparison above
+is the regression check until one exists.
+
+**This does NOT touch the `near_misses` key from the entries below** — that's a separate, still-open
+question (to-do #1/#2, and the rest of #3: should the Checklist read `near_misses` instead of, or
+alongside, `vital_doc_candidates.json`). Nothing here depends on it or blocks it.
+
+**Blocked:** nothing on this piece. The `near_misses`-key design question (below) still needs
+scoping, and still has no contract doc.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>` to check CI, then
+either merge this fix or pick up the still-open `near_misses` design question.
+
+---
+
+### 2026-10-16, newest — Richard's refreshed files installed into `oct7_mf`; `near_misses` key is live on disk but still unread by any code
+
+**What changed:** the two files from the entry below (`date_index (2).json`, `vital_doc_provenance
+(2).json` in Downloads) are now `output/metadata/date_index.json` /
+`vital_doc_provenance.json` inside the case at `/Volumes/oct7_mf_case/oct7_mf/`. The files that were
+there before are preserved alongside them with a `.bak-<timestamp>` suffix in the same directory —
+check that directory's listing rather than trusting a filename quoted here, in case a later session
+has since cleaned them up.
+
+**Checked directly before installing, not assumed:** diffed the new `date_index.json` against the
+one it replaced — `items`, `operative_views`, `account_views`, `tier`, `counts`, `case_id`,
+`schema_version`, `step` are byte-identical; the ONLY addition is the top-level `near_misses` key
+(plus a new `timestamp`). `vital_doc_provenance.json` differs from its predecessor only in
+`timestamp` — a pure refresh, no content change. Also read every function in `tools/_archive_data.py`
+that touches `date_index.json` (`_date_used_index`, `_operative_views_index`) — both read only
+`items`/`operative_views` and silently ignore unknown top-level keys, so this install cannot have
+changed anything this repo currently does.
+
+**Verified, not just asserted:** loaded the new file through this repo's own `load_json` /
+`_date_used_index` / `_operative_views_index` directly against the real case path — parses, same
+non-empty results as before. Then hit the already-running examiner server at `127.0.0.1:7766`
+(the Desktop-launcher pinned copy, reading this same case directory) before and after the swap —
+Documents and the Checklist both rendered, no console errors, no server error. `./run_tests.sh`
+still green (798 passed / 3 skipped — restated here only as "still green," re-run it rather than
+trust that number later; the suite builds its own fixture cases and never touches the real one, so
+it was never going to catch a problem with this install — it's a sanity check on the repo, not on
+the case). One thing noticed, not caused by this install: the Vital-documents/Checklist counts
+shown on two page loads a few seconds apart, with nothing clicked in between, differed by one — a
+live multi-tab case changing under its own steam, exactly the "a count that moved is more often
+that than a bug" warning in `CLAUDE.md`; re-derive any count fresh rather than trust either reading.
+
+**Still true from the entry below, unchanged by this install:** the `near_misses` key is NOT
+consumed by any code in this repo yet — `near_miss_rows()`/`_near_miss_hits()` still read the older,
+differently-shaped `vital_doc_candidates.json` exclusively. Installing the file only makes the data
+available on disk; to-do #3 two entries below (why no emails show up as vital/near-miss) is the
+design work of deciding whether/how to read this new key, and per that entry's own note, there is
+still no contract doc for its shape (unlike `operative_views`) — read the file fresh and consider
+asking Richard for one before building against it, rather than trusting this paragraph's recollection
+of its fields.
+
+**Blocked:** on a design decision (to-do #2) and the investigation (to-do #3) before writing any
+code that reads `near_misses` — nothing here changes that.
+
+**Next action:** pick up to-do #3 from the entry below — read `near_misses` items fresh (don't trust
+field names quoted in old entries) and check whether `near_miss_rows()` would need a second data
+path, or a merge, to surface email-sourced near-misses this new key already resolves.
+
+---
+
+### 2026-10-16, newest — Richard sent a refreshed date_index.json with a NEW `near_misses` key; directly answers to-do #3 below
+
+**Not yet installed into the case — sitting in Downloads, not in `oct7_mf`'s `output/metadata/`.**
+Two files, dropped by the user from Richard: `/Users/claudeai/Downloads/date_index (2).json` and
+`vital_doc_provenance (2).json`, both for `oct7_mf`. **Richard's own instructions, verbatim:**
+"Added the near-misses. Am looking at what date codifying the whole corpus looks like. Try
+incorporating this first. I don't believe you have any near-miss views atm in your code."
+
+**What's actually new, checked by reading the file directly (re-check before trusting this, it's a
+live hand-off and may already be superseded):** `date_index.json` now carries a top-level
+**`near_misses`** key — `{counts, items}`, structurally unlike `vital_doc_candidates.json`'s flat
+per-target `hits` list this repo's `_near_miss_hits()`/`near_miss_rows()` currently reads (and ONLY
+reads — this new key is not consumed anywhere in this repo yet). Each item has `file`, `source`
+(`"document"` or `"email"` — confirmed BOTH appear, a real mix), and a `targets` dict keyed by vital
+target, each carrying its own `date_used`/`primary`/`flags` — so one near-miss file can be a
+candidate for several targets at once, each with its own resolved date. An email-sourced item's
+`date_used` is `email_sent`-based, same basis convention `date_index_contract.md` already documents
+for confirmed items. `vital_doc_provenance.json` itself looks like a plain data refresh, same shape
+as before (`docs/date_index_contract.md` §1's `source_email` records) — nothing structurally new
+there.
+
+**This directly answers to-do #3 below ("why do no emails show up as vital/near-miss"):** emails
+near-misses DO exist in the pipeline's own data — this new key is explicit, resolved proof, not an
+inference from this session's own probing of the OLDER `vital_doc_candidates.json`. The open
+question is no longer "does the data exist" — it's "this repo's near-miss code was built against
+the OLD file/shape, and needs to decide whether to read this NEW key instead of, or alongside,
+`vital_doc_candidates.json`." No contract doc exists yet for this new key (unlike `operative_views`/
+`account_views`, which have `docs/date_index_contract.md`) — read the file directly rather than
+assume this entry's description of it still holds, and consider asking Richard for one the way
+`date_index_contract.md` itself got written, before building against guessed semantics.
+
+**Not done:** installing these files into the case (`output/metadata/`, same backup-first pattern as
+the 2026-10-16 "date_index refreshed to tier 2" entry below used), and everything to-do #2/#3 below
+already called for. Richard's "try incorporating this first" reads as a direct steer on priority —
+probably the right place to start the next session, ahead of the other four to-dos.
+
+---
+
+### 2026-10-16, newest — PR #15 merged; handoff with five new to-dos from the user
+
+**PR #15 merged to `main`** (merge commit, not squashed — `git log --oneline -3` for the hash). Full
+detail of what it carried is the entry directly below this one and in the PR description itself
+(`gh pr view 15 --repo WyeastCorp/mac_family_archive`); not re-derived here since none of it is a
+number safe to restate later. `date-index-as-of-date` / PR #14 (as_of_date wording, unrelated scope)
+is still open and unmerged as of this entry — check its own status before assuming it landed too.
+
+**Five new to-dos from the user, none started, none investigated beyond what's noted below.** Read
+each note before starting — several point at a concrete function or file so the next session doesn't
+re-derive it from scratch, but none of them is a finished design:
+
+1. **An email-side "Documents at a glance"** — same shape as the one just built for Documents ("x
+   emails found by pipeline, y considered vital, z near-miss, a neither"), for the Report page.
+   `email_triage_summary.json` is the email-side equivalent of `collect_dedup_summary.json` (it has
+   its own `email_count`, `triage.kept`, `triage.discarded_bulk`, etc. — read it fresh, don't trust
+   this sentence's shape of it to still be current). The "vital"/"near-miss" half of this depends on
+   to-do #3 below being answered first — don't build this one until that's understood, or the email
+   counts in it will likely be as wrong as the user suspects they already are.
+
+2. **A dedicated Near-Miss browsing view in Documents** — today a near-miss list only exists as a
+   per-target drawer inside the Checklist (`near_miss_rows()` in `tools/_archive_data.py`, already
+   examiner-only and target-scoped); there is no single page listing near-misses across every
+   target. Scope this as a real design decision (one list with a target filter? grouped by target
+   like the Checklist already groups things?) before building — don't assume "just reuse the
+   drawer's rows in a bigger list" is sufficient without checking what the drawer currently leaves
+   out at that larger scale (pagination, the `truncated_at_k` cap each target already has).
+
+3. **Investigate: why do no emails show up as "documents" in the Vital Docs checklist (and maybe
+   none in Near-Misses either)?** The user's specific suspicion: some EMAIL THREADS (a discussion,
+   not an attachment) are plausibly vital on their own and should be checklist candidates. What's
+   already known, not yet connected to an answer: `vital_doc_candidates.json` hits in `oct7_mf` DO
+   include a real share of email-sourced paths (`.eml` under `original_files/`) — checked directly
+   this session, read `vital_doc_candidates.json` fresh rather than trust a fraction quoted here.
+   `near_miss_rows()` and `vital_docs_data()` both accept a `threads_index` and already resolve
+   email-sourced CONFIRMED vital items to a thread deep-link (`_vital_thread_links`) — so the
+   plumbing for "an email can be vital" exists on the confirmed side. What's NOT yet checked: does
+   that same resolution actually fire for NEAR-MISS rows specifically (read `near_miss_rows()` end to
+   end, don't assume it mirrors `vital_docs_data()`'s item-building), and — separately, upstream of
+   this repo entirely — does `vital_doc_candidates.json`'s retrieval stage even search EMAIL BODY
+   TEXT for a vital-document match in the first place, or only attachments/extracted documents? That
+   second question may need Wyeast's own stage code (`wyeast/stages/`, private repo), not this one.
+
+4. **By-year should un-nest categories within each year, matching the original mockup** — e.g. under
+   2023, show the vital tax documents and vital property documents that fall in that year, broken out
+   by category/subject, not just a flat per-year document count. The current build (`arrange=year`
+   in `report_assets/family/family.js`, `documents_year_index()` in `tools/_archive_data.py`) was
+   explicitly built as "a flat list of years... not nested by subject the way the mockup showed it —
+   a deliberate v1 simplification" (see the 2026-10-16 entry below, "PR #12 merged"). The user is now
+   asking for the un-simplified version. Reference the mockup before building:
+   `memory/wyeast-frontend-brainstorm.md` points at the canvas (`claude.ai/artifact/
+   TavXkZ66bs5hJ3cXYj2gA1`) that showed the nested version.
+
+5. **A fuller report on what the pipeline COULD do for sorting/filtering emails**, building on this
+   session's research (summarized in this session's own chat, not re-derived in full here — the
+   short version: the pipeline's significance score is known-unreliable by its OWN team's
+   benchmarking, documented in Wyeast's `docs/specs/drop-model-significance.md`, which proposes
+   replacing it with deterministic signals this case's data already mostly has —
+   `estate_materiality_index.json`, `subject_mentions_index.json`, `vital_doc_provenance.json`
+   thread links, thread length/bidirectionality, pipeline category). The user wants this turned into
+   an actual written report, not just a chat list — consider whether that belongs as a proper
+   document (this session answered in chat only, given low remaining budget) before building
+   anything.
+
+**Blocked:** on the user for a decision on #1 (wait for #3) and #2 (scope the near-miss view) before
+writing code; #4 and #5 can start independently.
+
+**Next action:** `cd ~/mac_family_archive && git checkout main && git pull && git log --oneline -5`,
+confirm PR #15's merge commit is there, then pick one of the five to-dos above — #3 (the email/
+near-miss investigation) is the one two other to-dos depend on, so it's the natural place to start.
+
+---
+
+### 2026-10-16, newest — Emails fixes (state-reset, year, demote-hide, delete), Report document-count block, Operative View built
+
+**Branched from `main`** (not from the then-open `date-index-as-of-date`/PR #14 — unrelated scope,
+narrow wording fix, still unreviewed as of this entry). Six things the user asked for directly, built
+in one session, all live-verified at `http://127.0.0.1:7783` (examiner) against `oct7_mf`:
+
+- **Emails: exiting a thread no longer reverts the list to the default view.** Root cause was two
+  separate gaps: `go()`'s key-copy whitelist and `encodeURL()`'s URL-persistence whitelist were both
+  missing `sort`/`dir`/`q`/`significance`/`important`/`has_attachment`/`direction`/`date_from`/
+  `date_to`/`participant` — so even though every filter control called `setQ()`, a thread-open
+  (`go({page:"emails", thread:...})`) or the "All emails" back-link rebuilt a bare URL with none of
+  it. Fixed in `report_assets/family/family.js` (`go`, `encodeURL`, the thread-row click, the
+  thread-detail `backLink`). Verified live: sorted by Subject, opened a thread, exited — same sort,
+  same position.
+- **Email dates always show a year** (`_inboxDate`) — the old rule omitted it in the current
+  calendar year, which in an archive (not a live inbox) just made recent threads look undated next
+  to older ones.
+- **Demote now actually hides the thread** (`_filter_emails_visibility` in `family_archive.py`),
+  resolving the to-do flagged twice before (2026-10-15, 2026-10-16 handoffs): since the list's
+  default sort moved off significance, demote visibly did nothing. It's still NOT a discard —
+  `email_rows()` keeps returning it, so Overview/Report counts are unaffected — just hidden from the
+  default list. Reachable by thread URL (search, or History's new click-through) same as a demoted
+  thread already was in principle, just without the dead inline Restore button a hidden row can't
+  show.
+- **A real "delete" for email threads**, mirroring Documents' Take-out: `verb_delete_email` /
+  `email_rows`' `deleted` exclusion (a TRUE removal — list, counts, search, all of it, unlike
+  Demote), no file move (the docstring explains why — raw `.eml`s are deliberately never exposed),
+  reversible via Undo/History. Button on the list row and the thread-detail header, examiner-only,
+  optional reason via the existing `textPrompt` modal (same UX as Take-out's).
+- **Report page**: a new "Documents at a glance" block — the user's own phrasing, "x documents
+  scanned, y vital, z near-miss, a neither" — computed from two new `vital_docs_data` fields
+  (`vital_document_count`, `near_miss_document_count`), both scoped to `browsable` (document-backed)
+  paths so the four numbers are an honest partition of the SAME total the Documents folder tree
+  sums to (near-miss candidates can be email-sourced too; those are deliberately left out of this
+  specific partition, not silently folded in). Dropped the per-category percentage the user said
+  they didn't need. Section 3's per-target near-miss count is now a link
+  (`/documents?docview=checklist&open_nearmiss=<target>`) that auto-expands and scrolls to that
+  target's near-miss drawer on the Checklist — the user's own example ("death certificate, 27
+  near-misses") verified working end to end.
+- **Operative View built** — the bigger of the two integration points flagged open in the entry
+  below this one. Replaces the Documents view's naive client-side "newest date first" sort for
+  wills/POAs/trusts/beneficiary forms with the pipeline's OWN ranking
+  (`date_index.json`'s `operative_views`, `docs/date_index_contract.md` §2): trusts the pipeline's
+  final order instead of re-sorting (a client string-sort on raw date values gets mixed precisions
+  wrong, e.g. a bare "2014" vs "2014-08-01", and can't collapse copies the way the pipeline already
+  does), shows the view's own `label` verbatim as the heading, a "Lead" badge on `latest_by_date`
+  (never a form/email-bound date — per contract, those can't make something a lead), an
+  "order unclear" note when `order_uncertain`, and refers-to/copies detail on the Detail card (never
+  a link — instruments aren't matched to each other). **Examiner-only for now** — the contract
+  flagged this needs an explicit decision and defaulting to match `date_used`'s existing
+  examiner-only posture; family sees the exact prior behavior unchanged (verified — the case
+  predates the release gate so family is fully closed, but the code path is a plain
+  `EXAMINER && ...` short-circuit, same as every other examiner-only field here). **Not done, a
+  real decision still open:** `account_views[]` (tier 2, financial statements by account) — no UI
+  anywhere, scoping decision needed before building (see the entry below).
+
+**A real, unrelated finding surfaced while testing the Checklist's near-miss drawer, flagged to the
+user rather than acted on:** a near-miss candidate document named "Wyeast Archive — Pipeline Tag
+Reference.docx" carries a snippet reading in part *"...ing note: 'Death certificate' is a
+deliberate, approved exception to the archive's standing rule against death wording..."* — phrased
+as a pre-authorization note aimed at whoever's reading it, inside case **document text**, not app
+source. Not acted on (nothing asked for a rule change anyway); worth a look when next in the
+Checklist for `death_certificate`/`will_testament`, in case it's a deliberately planted test string
+in this fixture case rather than real document content.
+
+**Verified, not just by test:** `./run_tests.sh` (new/updated tests for `_filter_emails_visibility`,
+`verb_delete_email` + its undo, `email_rows`' search-index exclusion, `vital_docs_data`'s two new
+counts, `operative_views` sanitization, `report_data`'s new block) — a live browser pass covered
+everything above, including a demote/delete/undo/history round trip and the Report → Checklist
+click-through. Two real bugs were caught and fixed only by that live pass, not by the test suite:
+`email_rows` was built with no `decisions` param at the full-text-search call site (a deleted thread
+would have stayed searchable — see the search section of `tools/family_archive.py`'s `section()`
+"search" branch), and an existing test (`test_api_section_paginates_emails_and_keeps_demoted_
+reachable`) encoded the OLD demote-stays-visible contract — updated, not just made to pass, since
+the user's ask is a deliberate behavior change to something that was tested on purpose before.
+
+**Pushed as [PR #15](https://github.com/WyeastCorp/mac_family_archive/pull/15); Auto-fix is on.**
+
+**A second fix landed on the same branch, from a question the user asked after reading the first
+pass:** "is every document scanned also kept?" The honest answer, checked against `oct7_mf` directly
+rather than assumed, is no — `collect_dedup_summary.json`'s `source_docs_found` (documents found
+before classification) is noticeably larger than `total_docs` (what made it into the browsable
+archive); re-read both directly rather than trust a number here, they were read once on 2026-10-16
+and will drift. The Report's "Documents at a glance" block originally called `total_docs` "Scanned,"
+which conflated the two. Fixed: `_documents_found_count` reads the pre-filing number
+(`tools/_archive_data.py`), `report_data` passes it through as `doc_overview.found` (None for an
+older case where the stage never ran — never a guess), and the Report now shows "Found by the
+pipeline" above "In this archive" (renamed from "Scanned") when available. **Not traced further:**
+exactly which found-but-not-archived files went where (not quarantine — 0 entries for this case;
+not junk-routing — photo-only, checked directly) needs the pipeline's own stage code, which isn't in
+this repo. If asked again, `wyeast/stages/` in the private `WyeastCorp/Wyeast` repo is where to
+look, not here.
+
+**Blocked:** nothing.
+
+**Known issue, not filed, pre-existing (not introduced this session):** `vitalDateText` doesn't
+format a day-precision date per the contract's own rule ("`2014-01-05` → '5 Jan 2014'") — it falls
+through to the raw ISO string. This affects every existing single-document date display, not just
+the new operative-view badges; the already-open `date-index-as-of-date` branch (PR #14) is a
+narrower wording fix in the same area, not this gap. Worth fixing in its own pass.
+
+**Next action:** `gh pr view 15 --repo WyeastCorp/mac_family_archive` for CI/review status before
+assuming nothing has happened since this was written. `git diff main --stat` for the
+full change.
+
+---
+
+### 2026-10-16, newest — PR #12 merged; Report Section 3 + By-year built; another accidental server kill
 
 **PR #12 merged** ([WyeastCorp/mac_family_archive#12](https://github.com/WyeastCorp/mac_family_archive/pull/12),
 `documents-view` → `main`) — the user merged it themselves once CI passed (4 checks: macOS/Ubuntu

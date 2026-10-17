@@ -381,6 +381,17 @@ def test_doc_placements_overrides_document_rows_category():
     assert idx == {"legal": 1, "miscellaneous": 1}, "documents_index counts are DERIVED"
 
 
+def test_documents_found_count_reads_collect_dedup_summary(tmp_path):
+    md = tmp_path / "md"; md.mkdir()
+    (md / "collect_dedup_summary.json").write_text(json.dumps({"source_docs_found": 6418}))
+    assert ad._documents_found_count(md) == 6418
+
+
+def test_documents_found_count_none_when_stage_never_ran(tmp_path):
+    md = tmp_path / "md"; md.mkdir()  # no collect_dedup_summary.json at all — older case
+    assert ad._documents_found_count(md) is None
+
+
 def test_report_data_splits_found_and_not_found_vital_targets():
     # Section 1 ("what's here") gets folder counts + the FOUND vital kinds;
     # Section 2 ("what wasn't found") gets everything else, grouped by the
@@ -401,10 +412,10 @@ def test_report_data_splits_found_and_not_found_vital_targets():
     }
     r = ad.report_data(index, vital_docs, counts={"documents": 13, "emails": 4})
     assert r["available"] is True
-    # pct is each folder's share of ALL documents (10 + 3 = 13), not of some
-    # other total — financial 10/13 rounds to 77%, legal 3/13 to 23%.
-    assert r["here_folders"] == [{"name": "financial", "count": 10, "pct": 77},
-                                 {"name": "legal", "count": 3, "pct": 23}]
+    # 2026-10-16: dropped the per-category percentage (the user doesn't need
+    # it) — a folder row is just its count now.
+    assert r["here_folders"] == [{"name": "financial", "count": 10},
+                                 {"name": "legal", "count": 3}]
     assert r["here_vital"] == [{"name": "Will / testament", "count": 2}]
     assert r["not_found"] == [{"area": "Estate & legal", "what": "Trust agreement"}]
     assert r["found_count"] == 1 and r["total_count"] == 2
@@ -423,10 +434,71 @@ def test_report_data_unavailable_when_vital_doc_stage_never_ran():
     assert r["processed"] == {}
 
 
-def test_report_data_here_folders_pct_is_none_when_no_documents():
+def test_report_data_here_folders_no_pct_field_at_all():
     index = [{"category": "miscellaneous", "count": 0, "subcategories": []}]
     r = ad.report_data(index, {"available": False, "targets": [], "found_count": 0, "total_count": 0})
-    assert r["here_folders"] == [{"name": "miscellaneous", "count": 0, "pct": None}]
+    assert r["here_folders"] == [{"name": "miscellaneous", "count": 0}]
+
+
+def test_report_data_doc_overview_partitions_total_docs():
+    """2026-10-16: "x documents scanned, y vital, z near-miss, a neither" —
+    the user's own phrasing. vital_document_count/near_miss_document_count
+    are vital_docs_data's job to compute honestly; report_data just
+    partitions total_docs with them."""
+    index = [{"category": "financial", "count": 7, "subcategories": []},
+             {"category": "legal", "count": 3, "subcategories": []}]  # total_docs = 10
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 2, "near_miss_document_count": 3,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs)
+    assert r["doc_overview"] == {
+        "found": None,
+        "total": 10,
+        "vital": 2, "vital_pct": 20,
+        "near_miss": 3, "near_miss_pct": 30,
+        "neither": 5, "neither_pct": 50,
+    }
+
+
+def test_report_data_doc_overview_family_absorbs_near_miss_into_neither():
+    """near_miss_document_count is None for family (examiner-only data) —
+    family's "neither" bucket absorbs those documents rather than the report
+    claiming a near-miss count family can't actually see."""
+    index = [{"category": "financial", "count": 10, "subcategories": []}]
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 4, "near_miss_document_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs)
+    assert r["doc_overview"] == {
+        "found": None,
+        "total": 10, "vital": 4, "vital_pct": 40,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": 6, "neither_pct": 60,
+    }
+
+
+def test_report_data_doc_overview_no_documents_has_no_percentages():
+    r = ad.report_data([], {"available": False, "targets": [], "found_count": 0, "total_count": 0})
+    assert r["doc_overview"] == {
+        "found": None,
+        "total": 0, "vital": 0, "vital_pct": None,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": 0, "neither_pct": None,
+    }
+
+
+def test_report_data_doc_overview_found_passed_through_when_given():
+    """docs_found (2026-10-16): the pipeline's pre-filing document count —
+    the user asked directly whether every scanned document is kept, and the
+    answer (checked against a real case) was no. Always >= total; report_data
+    just passes it through, never recomputes or validates it against total —
+    that honesty check belongs to whoever reads it, not this function."""
+    index = [{"category": "financial", "count": 10, "subcategories": []}]
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_document_count": 0, "near_miss_document_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data(index, vital_docs, docs_found=14)
+    assert r["doc_overview"]["found"] == 14
 
 
 def test_report_data_unsure_section_from_real_unconfirmed_and_near_miss_counts():
@@ -523,19 +595,172 @@ def test_significance_bucket_counts_matches_each_filter_option():
 
 
 def test_documents_year_index_groups_by_vital_date_nodate_always_last():
+    """Un-nested count only (no groups asserted here): proves the year bucketing
+    and "No date" ordering are unaffected by adding the groups breakdown below —
+    the two concerns (which year, which group within it) are independent."""
     rows = [
-        {"file": "/d/will.pdf", "vital": [{"date_used": {"value": "2015-02"}}]},
-        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}}]},
-        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}}]},
+        {"file": "/d/will.pdf", "vital": [{"date_used": {"value": "2015-02"}, "group": "estate_legal"}]},
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}, "group": "tax_records"}]},
+        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}, "group": "tax_records"}]},
         {"file": "/d/recipe.pdf"},                              # no .vital at all
         {"file": "/d/deed.pdf", "vital": [{}]},                  # .vital present, no date_used
         {"file": "/d/odd.pdf", "vital": [{"date_used": {"value": "unreadable"}}]},
     ]
-    assert ad.documents_year_index(rows) == [
-        {"year": "2023", "count": 2},
-        {"year": "2015", "count": 1},
-        {"year": "nodate", "count": 3},
+    out = ad.documents_year_index(rows)
+    assert [(e["year"], e["count"]) for e in out] == [
+        ("2023", 2), ("2015", 1), ("nodate", 3),
     ]
+
+
+def test_documents_year_index_nests_by_vital_group_within_a_year():
+    """The un-simplified By-year view (to-do #4, 2026-10-17): under a year,
+    documents break out by the SAME VITAL_DOC_GROUPS category the Checklist
+    nests vital documents into — e.g. 2023's tax return and property deed are
+    their own groups, not one flat count. Two documents in the same group
+    (both tax_records) collapse into one group entry with count 2, highest
+    count first."""
+    rows = [
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}, "group": "tax_records"}]},
+        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}, "group": "tax_records"}]},
+        {"file": "/d/deed23.pdf", "vital": [{"date_used": {"value": "2023-09"}, "group": "real_estate_property"}]},
+    ]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2023"
+    assert out[0]["count"] == 3
+    assert out[0]["groups"] == [
+        {"group": "tax_records", "label": "Taxes", "count": 2},
+        {"group": "real_estate_property", "label": "Property", "count": 1},
+    ]
+
+
+def test_documents_year_index_nodate_bucket_never_gets_a_groups_breakdown():
+    """"No date" holds only ordinary, un-vital documents — they carry no vital
+    group to nest by, so unlike every real year its groups list is always
+    empty, never a guess."""
+    rows = [{"file": "/d/recipe.pdf"}, {"file": "/d/letter.pdf"}]
+    out = ad.documents_year_index(rows)
+    assert out == [{"year": "nodate", "count": 2, "groups": []}]
+
+
+def test_documents_year_index_group_falls_back_to_vital_doc_group_of_target():
+    """A vital entry missing its own `group` key (older data, or a row built by
+    hand without _attach_vital's own stamping) still nests correctly — the same
+    vital_doc_group(target) lookup _attach_vital itself uses, not a silent
+    "ungrouped" miss."""
+    rows = [{"file": "/d/will.pdf",
+             "vital": [{"date_used": {"value": "2020-01"}, "target": "will_testament"}]}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["groups"] == [{"group": "estate_legal", "label": "Estate & legal", "count": 1}]
+
+
+def test_documents_year_index_unknown_vital_group_labeled_other():
+    """A target with no VITAL_DOC_GROUPS entry (vital_doc_group's own "other"
+    fallback) still nests, under the same "Other" label the Checklist itself
+    shows for an unmapped target — not a crash and not a silently dropped row."""
+    rows = [{"file": "/d/mystery.pdf",
+             "vital": [{"date_used": {"value": "2019-01"}, "target": "something_new"}]}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["groups"] == [{"group": "other", "label": "Other", "count": 1}]
+
+
+def test_documents_year_index_attributes_year_and_group_from_the_same_vital_entry():
+    """A document matching more than one vital target must attribute its year
+    AND its group from the SAME entry (the first one with a date) — otherwise
+    a document could land in a year and a group that don't belong to the same
+    underlying match. Mirrors _document_year_vital in family_archive.py, which
+    this index has to stay in lockstep with for the filter and the index to
+    agree on what a click shows."""
+    rows = [{"file": "/d/dual.pdf", "vital": [
+        {"date_used": {"value": "unreadable"}, "group": "tax_records"},    # skipped: no usable date
+        {"date_used": {"value": "2021-05"}, "group": "real_estate_property"},  # this one wins
+        {"date_used": {"value": "2021-11"}, "group": "tax_records"},       # never reached
+    ]}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2021"
+    assert out[0]["groups"] == [{"group": "real_estate_property", "label": "Property", "count": 1}]
+
+
+def test_documents_year_index_corpus_date_lands_in_nonvital_group():
+    """2026-10-17 (to-do: corpus-wide dates, scoped to Documents' By-year): a row
+    with no vital date but a pre-stamped `corpus_date` (from corpus_dates.json,
+    via _attach_corpus_date in family_archive.py) still gets a real year — group
+    "nonvital" / label "Nonvital", since it has no VITAL_DOC_GROUPS category to
+    nest by the way a vital document does."""
+    rows = [{"file": "/d/old_letter.pdf", "corpus_date": {"value": "2018-07-04"}}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2018"
+    assert out[0]["groups"] == [{"group": "nonvital", "label": "Nonvital", "count": 1}]
+
+
+def test_documents_year_index_vital_date_wins_over_corpus_date():
+    """A document that's both confirmed vital AND carries a corpus_date (shouldn't
+    happen in practice — corpus_dates.json defers to date_index.json for an
+    already-vital document, see _corpus_dates_by_file — but the precedence must
+    hold regardless of what upstream data promises) uses the VITAL date/group,
+    never the corpus one."""
+    rows = [{"file": "/d/will.pdf",
+             "vital": [{"date_used": {"value": "2015-02"}, "group": "estate_legal"}],
+             "corpus_date": {"value": "1999-01-01"}}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2015"
+    assert out[0]["groups"] == [{"group": "estate_legal", "label": "Estate & legal", "count": 1}]
+
+
+def test_documents_year_index_mixes_vital_and_nonvital_groups_in_one_year():
+    rows = [
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}, "group": "tax_records"}]},
+        {"file": "/d/letter23a.pdf", "corpus_date": {"value": "2023-06-01"}},
+        {"file": "/d/letter23b.pdf", "corpus_date": {"value": "2023-11-01"}},
+    ]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2023" and out[0]["count"] == 3
+    assert out[0]["groups"] == [
+        {"group": "nonvital", "label": "Nonvital", "count": 2},
+        {"group": "tax_records", "label": "Taxes", "count": 1},
+    ]
+
+
+def test_documents_year_index_unreadable_or_missing_corpus_date_stays_nodate():
+    rows = [
+        {"file": "/d/a.pdf", "corpus_date": {"value": "unreadable"}},
+        {"file": "/d/b.pdf", "corpus_date": {}},
+        {"file": "/d/c.pdf", "corpus_date": None},
+        {"file": "/d/d.pdf"},
+    ]
+    out = ad.documents_year_index(rows)
+    assert out == [{"year": "nodate", "count": 4, "groups": []}]
+
+
+def test_corpus_dates_by_file_reads_document_entries_only(tmp_path):
+    """_corpus_dates_by_file: scoped to kind=="document" (the population
+    documents_year_index uses) — a photo/audio/message entry is real data in
+    corpus_dates.json but out of scope for this round (2026-10-17: Photos/Audio/
+    Messages aren't wired up, per STATE.md), and a document entry with no
+    date_used (the {"see":"date_index"} stub for an already-vital document) is
+    excluded for free by checking date_used is a dict, no special-casing needed."""
+    paths = CasePaths.from_case_id("CD", str(tmp_path))
+    md = paths.metadata_dir
+    md.mkdir(parents=True, exist_ok=True)
+    (md / "corpus_dates.json").write_text(json.dumps({
+        "items": [
+            {"file": "/d/dated.pdf", "kind": "document",
+             "date_used": {"value": "2020-05-01", "basis": "pdf_created_no_later_than"}},
+            {"file": "/d/already_vital.pdf", "kind": "document", "see": "date_index"},
+            {"file": "/d/undated.pdf", "kind": "document", "date_used": None},
+            {"file": "/m/photo.jpg", "kind": "image",
+             "date_used": {"value": "2019-01-01", "basis": "captured"}},
+            {"file": "/a/voicemail.m4a", "kind": "audio", "date_used": None},
+        ],
+    }))
+    out = ad._corpus_dates_by_file(md)
+    assert out == {"/d/dated.pdf": {"value": "2020-05-01", "basis": "pdf_created_no_later_than"}}
+
+
+def test_corpus_dates_by_file_empty_when_file_absent(tmp_path):
+    paths = CasePaths.from_case_id("CD2", str(tmp_path))
+    md = paths.metadata_dir
+    md.mkdir(parents=True, exist_ok=True)
+    assert ad._corpus_dates_by_file(md) == {}
 
 
 def test_email_category_counts_tallies_every_category_on_a_thread():
@@ -1627,6 +1852,179 @@ def test_vital_docs_near_miss_count_examiner_only(tmp_path):
     assert exam["passport_id"]["near_miss_count"] == 2   # near-miss hits surfaced
     assert exam["will_testament"]["near_miss_count"] == 1
     assert exam["deed_title"]["near_miss_count"] == 0
+
+
+def test_vital_docs_operative_views_sanitized_and_examiner_only(tmp_path):
+    """operative_views (2026-10-16, date_index_contract.md §2): the pipeline's
+    own ranking for wills/POAs/trusts/beneficiary forms, passed through
+    sanitized — `copies` reduced to a count (never the other files' paths),
+    `instruments` order untouched (never re-sorted here), examiner-only."""
+    paths, summary = _vital_case(tmp_path)
+    (paths.metadata_dir / "date_index.json").write_text(json.dumps({
+        "operative_views": [{
+            "target": "will_testament",
+            "label": "latest by date, not governing",
+            "latest_by_date": "/d/codicil.pdf",
+            "order_uncertain": False,
+            "instruments": [
+                {"file": "/d/codicil.pdf",
+                 "date_used": {"value": "2021-06-02", "precision": "day",
+                               "basis": "execution_date", "confidence": "high"},
+                 "refers_to": ["2019-03-14"], "copies": []},
+                {"file": "/d/will.pdf",
+                 "date_used": {"value": "2019-03-14", "precision": "day",
+                               "basis": "execution_date", "confidence": "high"},
+                 "refers_to": [], "copies": ["/d/will_copy2.pdf", "/d/will_copy3.pdf"]},
+            ],
+        }],
+    }))
+    exam = ad.vital_docs_data(paths, summary, "examiner")
+    ov = exam["operative_views"]["will_testament"]
+    assert ov["label"] == "latest by date, not governing"
+    assert ov["latest_by_date"] == "/d/codicil.pdf"
+    assert ov["order_uncertain"] is False
+    # order preserved exactly as the pipeline wrote it, not re-sorted
+    assert [i["file"] for i in ov["instruments"]] == ["/d/codicil.pdf", "/d/will.pdf"]
+    assert ov["instruments"][0]["refers_to"] == ["2019-03-14"]
+    assert ov["instruments"][1]["copies"] == 2, "copies is a COUNT, not the raw path list"
+    assert "copies" not in str(ov["instruments"][1]) or isinstance(ov["instruments"][1]["copies"], int)
+
+    fam = ad.vital_docs_data(paths, summary, "family")
+    assert fam["operative_views"] is None, "operative views are examiner-only for now"
+
+
+def test_vital_docs_operative_views_empty_when_date_index_absent(tmp_path):
+    paths, summary = _vital_case(tmp_path)
+    assert ad.vital_docs_data(paths, summary, "examiner")["operative_views"] == {}
+
+
+def test_vital_docs_document_level_counts_for_report(tmp_path):
+    """vital_document_count/near_miss_document_count (2026-10-16, feeds the
+    Report's x/y/z/a partition): document-grain, not target-grain — and
+    scoped to BROWSABLE (document-backed) paths only, so an email-sourced
+    near-miss (msg1.eml) doesn't inflate a count that's supposed to partition
+    total_docs. Uses _near_miss_case's default k=4: will.pdf confirmed
+    (browsable); near-misses are msg1.eml (email, excluded), blank.pdf and
+    pad0.pdf (both browsable documents, counted)."""
+    paths, summary = _near_miss_case(tmp_path)
+    exam = ad.vital_docs_data(paths, summary, "examiner")
+    assert exam["vital_document_count"] == 1
+    assert exam["near_miss_document_count"] == 2
+    fam = ad.vital_docs_data(paths, summary, "family")
+    assert fam["vital_document_count"] == 1, "document-level vital count is not examiner-only"
+    assert fam["near_miss_document_count"] is None, "near-miss stays examiner-only"
+
+
+def test_vital_docs_email_level_counts_for_report(tmp_path):
+    """vital_email_thread_count/near_miss_email_thread_count (2026-10-17, the
+    Report's email-side "Documents at a glance", to-do #1): the email mirror
+    of vital_document_count/near_miss_document_count above — but counted by
+    THREAD, not by .eml path, since that's the unit the Emails tab (and the
+    "total" this partitions against) already uses. _vital_case's confirmed
+    deed_title is /m/deed.eml; resolved here to thread T-DEED via
+    threads_index, same as near_miss_rows' own deep-link tests do."""
+    paths, summary = _vital_case(tmp_path)
+    idx = {"threads": [{"thread_id": "T-DEED", "subject": "Re: the deed",
+                        "files": ["/m/deed.eml"]}]}
+    exam = ad.vital_docs_data(paths, summary, "examiner", threads_index=idx)
+    assert exam["vital_email_thread_count"] == 1
+    # _vital_case's candidate hits are all non-email (/x, and the two bare dicts
+    # under passport_id, which `_near_miss_hits` treats as paths of None) — no
+    # near-miss email thread to find here.
+    assert exam["near_miss_email_thread_count"] == 0
+    fam = ad.vital_docs_data(paths, summary, "family", threads_index=idx)
+    assert fam["vital_email_thread_count"] == 1, "email-level vital count is not examiner-only"
+    assert fam["near_miss_email_thread_count"] is None, "near-miss stays examiner-only"
+
+
+def test_vital_docs_near_miss_email_thread_count_from_near_miss_case(tmp_path):
+    """The near-miss half, exercised against _near_miss_case's msg1.eml (an
+    email-sourced near-miss for will_testament) — resolved to thread T7, the
+    same fixture `test_near_miss_rows_deep_links_email_via_thread` uses."""
+    paths, summary = _near_miss_case(tmp_path)
+    idx = {"threads": [{"thread_id": "T7", "subject": "Re: the will",
+                        "files": ["/m/msg1.eml"]}]}
+    exam = ad.vital_docs_data(paths, summary, "examiner", threads_index=idx)
+    assert exam["near_miss_email_thread_count"] == 1
+    assert exam["vital_email_thread_count"] == 0, "the only confirmed item (will.pdf) is a document"
+
+
+def test_vital_docs_email_thread_near_miss_excludes_already_vital_thread(tmp_path):
+    """A thread is never counted as BOTH vital and near-miss — mirrors the
+    "- vital_doc_paths" rule near_miss_document_count already applies, but for
+    threads: two DIFFERENT messages in the SAME conversation, one confirmed as
+    the vital item and the other a near-miss candidate, must not inflate the
+    near-miss count just because they happen to share a thread."""
+    paths = CasePaths.from_case_id("TE", str(tmp_path))
+    md = paths.metadata_dir
+    md.mkdir(parents=True, exist_ok=True)
+    (md / "vital_doc_confirmed.json").write_text(json.dumps([
+        {"path": "/m/a.eml", "target": "will_testament", "tag": "vital_doc:will_testament"},
+    ]))
+    (md / "vital_doc_candidates.json").write_text(json.dumps({
+        "will_testament": {"description": "last will", "hits": [
+            {"path": "/m/a.eml", "score": 0.9, "snippet": "the confirmed one"},
+            {"path": "/m/b.eml", "score": 0.4, "snippet": "same thread, different message"},
+        ]},
+    }))
+    summary = {"document_classifications": [
+        {"file": "/m/a.eml", "filename": "a.eml", "source": "email"},
+        {"file": "/m/b.eml", "filename": "b.eml", "source": "email"},
+    ]}
+    idx = {"threads": [{"thread_id": "T1", "subject": "the will",
+                        "files": ["/m/a.eml", "/m/b.eml"]}]}
+    exam = ad.vital_docs_data(paths, summary, "examiner", threads_index=idx)
+    assert exam["vital_email_thread_count"] == 1
+    assert exam["near_miss_email_thread_count"] == 0, \
+        "T1 already counts as vital (via a.eml) — b.eml must not double it into near-miss too"
+
+
+def test_report_data_email_overview_partitions_total_emails():
+    """2026-10-17: the email-side x/y/z/a partition (to-do #1) — same shape as
+    doc_overview, but "total" reuses counts["emails"] (the Emails tab's own
+    number, thread-grain) rather than a document folder-count tree. No
+    "found" line: email_triage_summary.json's pre-triage counts are
+    message-grain, a different population than this thread-grain total, so
+    pairing them would mislead rather than inform (see the comment in
+    report_data itself)."""
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_email_thread_count": 3, "near_miss_email_thread_count": 4,
+                  "groups": [], "targets": []}
+    r = ad.report_data([], vital_docs, counts={"emails": 20})
+    assert r["email_overview"] == {
+        "total": 20,
+        "vital": 3, "vital_pct": 15,
+        "near_miss": 4, "near_miss_pct": 20,
+        "neither": 13, "neither_pct": 65,
+    }
+    assert "found" not in r["email_overview"]
+
+
+def test_report_data_email_overview_family_absorbs_near_miss_into_neither():
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_email_thread_count": 2, "near_miss_email_thread_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data([], vital_docs, counts={"emails": 10})
+    assert r["email_overview"] == {
+        "total": 10, "vital": 2, "vital_pct": 20,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": 8, "neither_pct": 80,
+    }
+
+
+def test_report_data_email_overview_no_emails_tile_has_no_percentages():
+    """counts without an "emails" key (an older caller, or a case with no
+    email stage at all) — total is None, every percentage is None, and
+    "neither" must not be a lie (0 - 0 computed against a missing total)."""
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_email_thread_count": 0, "near_miss_email_thread_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data([], vital_docs)
+    assert r["email_overview"] == {
+        "total": None, "vital": 0, "vital_pct": None,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": None, "neither_pct": None,
+    }
 
 
 def _near_miss_case(tmp_path, *, k=4, rejections=True):

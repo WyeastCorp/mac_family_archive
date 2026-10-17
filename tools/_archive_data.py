@@ -2175,6 +2175,50 @@ def _date_used_index(md):
             if isinstance(i, dict) and i.get("file") and i.get("date_used")}
 
 
+def _corpus_dates_by_file(md):
+    """{document path: date_used} from corpus_dates.json (2026-10-17, to-do: scoped to
+    Documents' By-year for now — see STATE.md for why Photos/Audio/Messages aren't wired
+    up here too).
+
+    corpus_dates.json covers the WHOLE corpus (documents, photos/video, audio, messages) —
+    this reads only `kind == "document"` entries, the population `documents_year_index`
+    actually uses. An already-CONFIRMED VITAL document is a stub here (`{"file":...,
+    "kind":"document", "see":"date_index"}`, no `date_used` key) rather than a second,
+    possibly-conflicting date for the same file — filtering on `date_used` being a dict
+    excludes those stubs for free, no special-casing needed; `date_index.json` (via
+    `r["vital"]`) stays the one source of truth for a vital document's date, same as
+    today. {} when the file is missing, unreadable, or predates this key (every case on
+    disk before this was written) — `documents_year_index` must then fall back to its
+    vital-only behavior, never guess."""
+    data = load_json(Path(md) / "corpus_dates.json", None)
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for i in data.get("items") or []:
+        if not isinstance(i, dict) or i.get("kind") != "document":
+            continue
+        f, du = i.get("file"), i.get("date_used")
+        if f and isinstance(du, dict):
+            out[f] = du
+    return out
+
+
+def _operative_views_index(md):
+    """{target: view} from date_index.json's operative_views (tier 1: wills,
+    POAs, trusts, beneficiary forms — see docs/date_index_contract.md §2).
+    {} when the file is missing, unreadable, or predates this key (older
+    date_index.json, or a tier-0 one). The pipeline's own order within a view
+    is final (dated instruments first, latest first; undated after) — callers
+    must not re-sort it, same rule the contract gives the front end."""
+    data = load_json(Path(md) / "date_index.json", None)
+    if not isinstance(data, dict):
+        return {}
+    views = data.get("operative_views")
+    if not isinstance(views, list):
+        return {}
+    return {v["target"]: v for v in views if isinstance(v, dict) and v.get("target")}
+
+
 def _addr_text(addrs):
     out = []
     for a in addrs or []:
@@ -2358,6 +2402,7 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     # Examiner-only: where each document came from (BACKLOG #43) and which date to show.
     prov_idx = _vital_provenance_index(md) if role == "examiner" else {}
     date_idx = _date_used_index(md) if role == "examiner" else {}
+    op_idx = _operative_views_index(md) if role == "examiner" else {}
     decisions = decisions or {}
     dismissed = decisions.get("vital_doc_dismissed") or {}
     retarget = decisions.get("vital_doc_target") or {}
@@ -2437,6 +2482,31 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     # the release gate's `_vital_docs_cleared` EXACTLY, so the guided count reaches
     # 0 precisely when the vital-doc gate clears — confirming a doc drops it here.
     unconfirmed_count = 0
+    # DOCUMENT-level counts for the Report's "x scanned, y vital, z near-miss, a
+    # neither" partition (2026-10-16, the user's own phrasing) — distinct from
+    # found_count/total_count above, which count checklist TARGETS (kinds), not
+    # documents. Deduped by path since one document can satisfy >1 target.
+    # Scoped to `browsable` (document-backed, same test `file_id` already uses)
+    # so these are an honest subset of `total_docs` (the Documents count) — an
+    # email- or message-sourced vital/near-miss hit is real but isn't a
+    # "document", so it's left out of both sets rather than silently inflating
+    # a count that's supposed to partition the SAME total_docs denominator.
+    vital_doc_paths = set()
+    near_miss_doc_paths = set()
+    # EMAIL-grain mirror of the two sets above (2026-10-17, the Report's email-
+    # side "Documents at a glance" — BACKLOG to-do #1). Counted by THREAD, not
+    # by individual .eml path: the Emails section (and `counts["emails"]`,
+    # which `report_data` reuses as this partition's denominator) is organized
+    # by thread, so a message-grain count here would not partition the same
+    # population it's displayed next to. `vital_email_thread_ids` fills during
+    # the same per-item loop below (it already resolves each item's thread via
+    # `thread_links`); `near_miss_email_paths` collects near-miss .eml paths
+    # per target, then ONE batch `_vital_thread_links` call after the loop
+    # resolves all of them to thread ids at once — same pattern `near_miss_rows`
+    # uses for the drawer, just resolved in bulk across every target instead of
+    # one at a time.
+    vital_email_thread_ids = set()
+    near_miss_email_paths = set()
     for t in order:
         items = []
         for iid, i in by_target.get(t, []):
@@ -2500,6 +2570,10 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                                                  for e in prec.get("emails") or []]
                     if prec.get("unresolved"):
                         item_row["source_unresolved"] = True
+            if item_row["file_id"]:
+                vital_doc_paths.add(item_row["file_id"])
+            elif item_row["thread_id"]:
+                vital_email_thread_ids.add(item_row["thread_id"])
             items.append(item_row)
         found = bool(items)  # a target is "found" iff ≥1 item SURVIVES the overlay
         if found:
@@ -2516,8 +2590,12 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
             # hunting for misses that did not exist. Subtracting what is already on
             # the checklist (confirmed + promoted, per this target's own bucket)
             # makes the number mean what the UI says it means, and go to 0.
-            row["near_miss_count"] = len(
-                _near_miss_hits(candidates, confirmed, decisions, t))
+            target_near_misses = _near_miss_hits(candidates, confirmed, decisions, t)
+            row["near_miss_count"] = len(target_near_misses)
+            near_miss_doc_paths.update(
+                h["path"] for h in target_near_misses if h.get("path") in browsable)
+            near_miss_email_paths.update(
+                h["path"] for h in target_near_misses if h.get("path") not in browsable)
             row["description"] = cand.get("description")
             # Whether retrieval hit the per-target ceiling for THIS target: the
             # embed stage pulls at most k hits before LLM confirmation, so a
@@ -2544,11 +2622,70 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 row["k"] = per_target_k
         targets.append(row)
 
+    # Resolve the near-miss email paths collected above to thread ids, ONE
+    # batch call covering every target at once (near_miss_rows does the same
+    # resolution per-target, on demand, for the drawer — this is the same
+    # lookup, just run once up front since the Report needs a single total,
+    # not a per-target list). A thread already counted as vital (it has a
+    # CONFIRMED item in it) is not also a near-miss — same "- vital" rule the
+    # document-side near_miss_doc_paths/vital_doc_paths pair already applies.
+    near_miss_email_thread_ids = set()
+    if role == "examiner":
+        for link in _vital_thread_links(md, role, near_miss_email_paths,
+                                        threads_index=threads_index).values():
+            near_miss_email_thread_ids.add(link["thread_id"])
+    near_miss_email_thread_ids -= vital_email_thread_ids
+
+    # Operative views (2026-10-16): the pipeline's OWN ranking for wills, POAs,
+    # trusts and beneficiary forms (date_index_contract.md §2) — replacing the
+    # Documents view's naive client-side "newest date first" sort for these
+    # kinds, which could get the order wrong across mixed precisions (a bare
+    # "2014" vs "2014-08-01") and never had a lead/order-uncertain/refers-to/
+    # copies concept at all. Sanitized to just what the contract says to
+    # render: never re-sort `instruments` (the pipeline's order is final), and
+    # `copies` is reduced to a count — the UI shows "N copies", never the
+    # other files' paths. Examiner-only (None for family) per the contract's
+    # own note that this needs an explicit decision and defaults to matching
+    # date_used's existing examiner-only posture.
+    operative_views = {}
+    if role == "examiner":
+        for target, v in op_idx.items():
+            operative_views[target] = {
+                "label": v.get("label"),
+                "latest_by_date": v.get("latest_by_date"),
+                "order_uncertain": bool(v.get("order_uncertain")),
+                "instruments": [
+                    {"file": inst.get("file"), "date_used": inst.get("date_used"),
+                     "refers_to": inst.get("refers_to") or [],
+                     "copies": len(inst.get("copies") or [])}
+                    for inst in (v.get("instruments") or []) if isinstance(inst, dict)
+                ],
+            }
+
     return {
         "available": True,
         "targets": targets,
+        "operative_views": operative_views if role == "examiner" else None,
         "found_count": found_count,
         "total_count": len(targets),
+        # DOCUMENT-grain counts for the Report's x/y/z/a partition (see the
+        # comment above the two sets that build these) — both roles, same as
+        # found_count/here_vital: a document-level vital count leaks nothing
+        # family doesn't already see in the checklist itself.
+        "vital_document_count": len(vital_doc_paths),
+        # Examiner-only: built from the same examiner-only candidate hits
+        # near_miss_count already restricts to.
+        "near_miss_document_count": len(near_miss_doc_paths - vital_doc_paths)
+                                    if role == "examiner" else None,
+        # EMAIL-grain mirror of the two counts above, for the Report's email-
+        # side "Documents at a glance" (to-do #1) — counted by THREAD (see the
+        # comment above vital_email_thread_ids), both roles for the vital half
+        # since it leaks nothing the Emails section doesn't already show once a
+        # thread's vital item is confirmed; near-miss stays examiner-only, same
+        # restriction near_miss_document_count already carries.
+        "vital_email_thread_count": len(vital_email_thread_ids),
+        "near_miss_email_thread_count": len(near_miss_email_thread_ids)
+                                        if role == "examiner" else None,
         # Found vital docs still awaiting an examiner decision (confirm / dismiss /
         # reassign) — the guided step's "to confirm" number. Examiner-only; a family
         # session neither confirms nor sees this. Matches _vital_docs_cleared.
@@ -2573,7 +2710,26 @@ def _pct(part, whole):
     return round(100 * part / whole)
 
 
-def report_data(index, vital_docs, counts=None):
+def _documents_found_count(md):
+    """How many document-type FILES the pipeline found before any filing
+    happened — collect_dedup's own `source_docs_found` (collect_dedup_
+    summary.json), which counts the same population as document_classifications'
+    source=="document" rows but BEFORE classification/filing, so it's always
+    >= total_docs, never a subset of it. 2026-10-16: the user asked whether
+    every scanned document is kept — checked this case directly and found a
+    real gap (6,418 found vs. 5,240 archived here) that total_docs alone
+    can't show, since total_docs is already the post-filing count. None when
+    the stage never ran or the file is missing/unreadable (older case) —
+    never a guess, and the Report must then omit the found→archived line
+    rather than show a wrong one."""
+    data = load_json(Path(md) / "collect_dedup_summary.json", None)
+    if not isinstance(data, dict):
+        return None
+    n = data.get("source_docs_found")
+    return n if isinstance(n, int) else None
+
+
+def report_data(index, vital_docs, counts=None, docs_found=None):
     """The Report page's three kept-apart statements (the front-end
     brainstorm's own framing): what the archive holds, what it couldn't find,
     and — since 2026-10-16 — what it hasn't resolved yet.
@@ -2613,10 +2769,65 @@ def report_data(index, vital_docs, counts=None):
     not_found = [{"area": glabel.get(t.get("group")) or "Other", "what": t.get("label")}
                  for t in targets if not t.get("found")]
     total_docs = sum((c.get("count") or 0) for c in (index or []))
-    here_folders = [{"name": c.get("category"), "count": c.get("count"),
-                     "pct": _pct(c.get("count") or 0, total_docs)} for c in index or []]
+    # 2026-10-16: dropped the per-category percentage the user said they don't
+    # need ("I don't care what percentage are say financial") — the category
+    # breakdown stays as a count + link, just without a pct column.
+    here_folders = [{"name": c.get("category"), "count": c.get("count")} for c in index or []]
     found_count = vital_docs.get("found_count", 0)
     total_count = vital_docs.get("total_count", 0)
+    # 2026-10-16: the x/y/z/a partition the user asked for instead — of all
+    # DOCUMENTS (not vital-doc KINDS, which found_count/total_count above
+    # already cover), how many are vital, how many are an unresolved near-miss
+    # candidate, how many are neither. See vital_docs_data's vital_document_count
+    # / near_miss_document_count for exactly how these are scoped to stay an
+    # honest partition of total_docs (never double-counted, never spanning into
+    # email/message-sourced hits that aren't "documents"). near_miss is
+    # examiner-only (None for family) — family's "neither" absorbs it rather
+    # than guessing, since family can't see the near-miss distinction anywhere
+    # else either.
+    vital_doc_count = vital_docs.get("vital_document_count") or 0
+    near_miss_doc_count = vital_docs.get("near_miss_document_count")
+    accounted = vital_doc_count + (near_miss_doc_count or 0)
+    neither_count = max(total_docs - accounted, 0)
+    doc_overview = {
+        # 2026-10-16: the true pre-filing count (collect_dedup's source_docs_
+        # found) — always >= total, since total is already post-filing. None
+        # when the stage never ran (older case); the front end must then omit
+        # the "found → archived" line rather than show a wrong one.
+        "found": docs_found,
+        "total": total_docs,
+        "vital": vital_doc_count, "vital_pct": _pct(vital_doc_count, total_docs),
+        "near_miss": near_miss_doc_count,
+        "near_miss_pct": _pct(near_miss_doc_count, total_docs) if near_miss_doc_count is not None else None,
+        "neither": neither_count, "neither_pct": _pct(neither_count, total_docs),
+    }
+    # 2026-10-17: the email-side equivalent of doc_overview (to-do #1) — same
+    # x/y/z/a partition, but of EMAIL THREADS rather than documents. `total`
+    # reuses `counts["emails"]` (the SAME number the Emails tab itself shows)
+    # rather than recomputing a thread count here, for the identical reason
+    # `counts` is threaded through this whole function: so this line can never
+    # drift from what the Emails tab displays. vital_email_thread_count /
+    # near_miss_email_thread_count (vital_docs_data) are already counted by
+    # thread for exactly this reason — see the comment above
+    # vital_email_thread_ids there for why message-grain would have been the
+    # wrong unit. No "found" line here (unlike documents' pre-filing
+    # source_docs_found): email_triage_summary.json's email_count/kept_count
+    # are MESSAGE-grain, not thread-grain, so pairing either with this
+    # thread-grain total would be comparing two different populations — left
+    # out rather than shown misleadingly.
+    total_emails = (counts or {}).get("emails")
+    vital_email_count = vital_docs.get("vital_email_thread_count") or 0
+    near_miss_email_count = vital_docs.get("near_miss_email_thread_count")
+    email_accounted = vital_email_count + (near_miss_email_count or 0)
+    neither_email_count = (max(total_emails - email_accounted, 0)
+                           if total_emails is not None else None)
+    email_overview = {
+        "total": total_emails,
+        "vital": vital_email_count, "vital_pct": _pct(vital_email_count, total_emails),
+        "near_miss": near_miss_email_count,
+        "near_miss_pct": _pct(near_miss_email_count, total_emails) if near_miss_email_count is not None else None,
+        "neither": neither_email_count, "neither_pct": _pct(neither_email_count, total_emails),
+    }
     # Section 3: real, un-fabricated open items — see the docstring above for
     # exactly what this is and isn't. None for family (unconfirmed_count is
     # already role-gated upstream) means an empty list, not a shorter one.
@@ -2641,6 +2852,8 @@ def report_data(index, vital_docs, counts=None):
         "found_count": found_count,
         "total_count": total_count,
         "found_pct": _pct(found_count, total_count),
+        "doc_overview": doc_overview,
+        "email_overview": email_overview,
         "processed": dict(counts or {}),
         "unsure": unsure,
     }
@@ -3397,37 +3610,74 @@ def documents_index(rows):
 
 
 def documents_year_index(rows):
-    """Group document rows by year for the By-year arrangement (2026-10-16,
-    built honestly per the user's own call): [{year, count}], years
-    descending, "No date" always last regardless of count.
+    """Group document rows by year for the By-year arrangement: [{year, count,
+    groups}], years descending, "No date" always last regardless of count.
 
-    The pipeline gives a date to exactly the ~13 vital document kinds (see
-    the undated-ordinary-documents finding, 2026-10-15) — `r["vital"]`
-    carries it when present (same `_attach_vital` join Detail's docDateOf
-    reads), nothing else in this app ever has one. So this index is mostly
-    one large "No date" bucket and a handful of real years holding the vital
-    documents — an honest reflection of what the pipeline actually knows, not
-    a broader by-year feature the data doesn't support. `rows` must already
-    have `.vital` attached (api_section's documents branch does this before
-    calling in); a plain document_rows() row with no `.vital` key reads as
-    undated, same as one that has the key but no date_used.
+    Two sources of a date, vital taking precedence (2026-10-17: corpus_dates.json
+    added a second one — see below; before that, `r["vital"]` was the only date
+    any document in this app ever had, per the undated-ordinary-documents finding,
+    2026-10-15):
+
+      1. `r["vital"]` — a confirmed vital document's own date_used (same
+         `_attach_vital` join Detail's docDateOf reads). Its group is the SAME
+         VITAL_DOC_GROUPS category the Checklist already nests vital documents
+         into — [{group, label, count}] within a year, highest count first. A
+         document matching several vital targets is attributed to whichever one
+         gave it its year — the SAME entry `_document_year`/`_document_year_vital`
+         pick in tools/family_archive.py, so a document's year and its group
+         always agree.
+      2. `r["corpus_date"]` — checked ONLY when there's no vital date. An ordinary
+         document's date from corpus_dates.json's corpus-wide pass (2026-10-17,
+         scoped to Documents for now — see STATE.md), pre-stamped onto the row the
+         same way `.vital` is (by `_attach_corpus_date` in tools/family_archive.py,
+         called before this). These have no vital-doc category to nest by — the
+         whole point of corpus_dates.json is dating documents the vital pipeline
+         never touched — so they land in one group, key "nonvital" / label
+         "Nonvital" (same term the sidebar's own Nonvital section uses), not
+         "Other" (which stays reserved for an unrecognized VITAL_DOC_GROUPS key).
+
+    `rows` must already have `.vital` and (optionally) `.corpus_date` attached
+    before calling in; a row with neither reads as undated — "No date" never
+    gets a `groups` breakdown, since by construction every row that reaches it
+    had neither source.
     """
     years = {}
     nodate = 0
     for r in rows:
-        y = None
+        year = None
+        group = None
         for v in r.get("vital") or ():
             val = str((v.get("date_used") or {}).get("value") or "")
             if len(val) >= 4 and val[:4].isdigit():
-                y = val[:4]
+                year = val[:4]
+                group = v.get("group") or vital_doc_group(v.get("target"))
                 break
-        if y is None:
+        if year is None:
+            cd = r.get("corpus_date")
+            val = str((cd or {}).get("value") or "")
+            if len(val) >= 4 and val[:4].isdigit():
+                year = val[:4]
+                group = "nonvital"
+        if year is None:
             nodate += 1
         else:
-            years[y] = years.get(y, 0) + 1
-    out = [{"year": y, "count": c} for y, c in years.items()]
+            bucket = years.setdefault(year, {"count": 0, "groups": {}})
+            bucket["count"] += 1
+            gk = group or "other"
+            bucket["groups"][gk] = bucket["groups"].get(gk, 0) + 1
+    out = []
+    for year, bucket in years.items():
+        group_list = [
+            {"group": gk,
+             "label": "Nonvital" if gk == "nonvital"
+                      else VITAL_DOC_GROUPS[gk][0] if gk in VITAL_DOC_GROUPS else "Other",
+             "count": c}
+            for gk, c in bucket["groups"].items()
+        ]
+        group_list.sort(key=lambda e: (-e["count"], e["label"]))
+        out.append({"year": year, "count": bucket["count"], "groups": group_list})
     out.sort(key=lambda e: e["year"], reverse=True)
-    out.append({"year": "nodate", "count": nodate})
+    out.append({"year": "nodate", "count": nodate, "groups": []})
     return out
 
 
@@ -3527,14 +3777,28 @@ def email_rows(threads_index, *, cap=None, decisions=None):
     Threads the examiner has demoted (`family_decisions.json` `email_demoted`,
     keyed by thread_id) are forced to significance 0 so they drop to the bottom
     band of the sort (still listed, just no longer at the top), and flagged
-    `demoted: True` so the UI can offer a Restore.
+    `demoted: True` so the UI can offer a Restore. (The Emails list itself hides
+    a demoted thread by default — see `_filter_emails_visibility` — but it stays
+    in THIS list, so counts here, e.g. the Overview/Report "emails" total, never
+    drift just because something was demoted; demote is explicitly not a
+    discard.)
+
+    A DELETED thread (`email_deleted`, same shape) is different: like a
+    taken-out document, it's a real removal from every family-facing view, so
+    it's excluded HERE — every caller (counts included) drops it, not just the
+    list. Reversible via the existing Undo/History mechanism; `thread_messages`
+    (thread-detail-by-id) is a separate code path that never calls this
+    function, so a deleted thread's own page still works for Undo/search.
     """
     demoted = set((decisions or {}).get("email_demoted", {}) or {})
+    deleted = set((decisions or {}).get("email_deleted", {}) or {})
     owner_addresses = (decisions or {}).get("owner_addresses") or []
     threads = (threads_index or {}).get("threads", []) or []
     rows = []
     for t in threads:
         tid = t.get("thread_id")
+        if str(tid) in deleted:
+            continue
         is_demoted = str(tid) in demoted
         participants = t.get("participants") or []
         rows.append({
