@@ -680,6 +680,89 @@ def test_documents_year_index_attributes_year_and_group_from_the_same_vital_entr
     assert out[0]["groups"] == [{"group": "real_estate_property", "label": "Property", "count": 1}]
 
 
+def test_documents_year_index_corpus_date_lands_in_nonvital_group():
+    """2026-10-17 (to-do: corpus-wide dates, scoped to Documents' By-year): a row
+    with no vital date but a pre-stamped `corpus_date` (from corpus_dates.json,
+    via _attach_corpus_date in family_archive.py) still gets a real year — group
+    "nonvital" / label "Nonvital", since it has no VITAL_DOC_GROUPS category to
+    nest by the way a vital document does."""
+    rows = [{"file": "/d/old_letter.pdf", "corpus_date": {"value": "2018-07-04"}}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2018"
+    assert out[0]["groups"] == [{"group": "nonvital", "label": "Nonvital", "count": 1}]
+
+
+def test_documents_year_index_vital_date_wins_over_corpus_date():
+    """A document that's both confirmed vital AND carries a corpus_date (shouldn't
+    happen in practice — corpus_dates.json defers to date_index.json for an
+    already-vital document, see _corpus_dates_by_file — but the precedence must
+    hold regardless of what upstream data promises) uses the VITAL date/group,
+    never the corpus one."""
+    rows = [{"file": "/d/will.pdf",
+             "vital": [{"date_used": {"value": "2015-02"}, "group": "estate_legal"}],
+             "corpus_date": {"value": "1999-01-01"}}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2015"
+    assert out[0]["groups"] == [{"group": "estate_legal", "label": "Estate & legal", "count": 1}]
+
+
+def test_documents_year_index_mixes_vital_and_nonvital_groups_in_one_year():
+    rows = [
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}, "group": "tax_records"}]},
+        {"file": "/d/letter23a.pdf", "corpus_date": {"value": "2023-06-01"}},
+        {"file": "/d/letter23b.pdf", "corpus_date": {"value": "2023-11-01"}},
+    ]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2023" and out[0]["count"] == 3
+    assert out[0]["groups"] == [
+        {"group": "nonvital", "label": "Nonvital", "count": 2},
+        {"group": "tax_records", "label": "Taxes", "count": 1},
+    ]
+
+
+def test_documents_year_index_unreadable_or_missing_corpus_date_stays_nodate():
+    rows = [
+        {"file": "/d/a.pdf", "corpus_date": {"value": "unreadable"}},
+        {"file": "/d/b.pdf", "corpus_date": {}},
+        {"file": "/d/c.pdf", "corpus_date": None},
+        {"file": "/d/d.pdf"},
+    ]
+    out = ad.documents_year_index(rows)
+    assert out == [{"year": "nodate", "count": 4, "groups": []}]
+
+
+def test_corpus_dates_by_file_reads_document_entries_only(tmp_path):
+    """_corpus_dates_by_file: scoped to kind=="document" (the population
+    documents_year_index uses) — a photo/audio/message entry is real data in
+    corpus_dates.json but out of scope for this round (2026-10-17: Photos/Audio/
+    Messages aren't wired up, per STATE.md), and a document entry with no
+    date_used (the {"see":"date_index"} stub for an already-vital document) is
+    excluded for free by checking date_used is a dict, no special-casing needed."""
+    paths = CasePaths.from_case_id("CD", str(tmp_path))
+    md = paths.metadata_dir
+    md.mkdir(parents=True, exist_ok=True)
+    (md / "corpus_dates.json").write_text(json.dumps({
+        "items": [
+            {"file": "/d/dated.pdf", "kind": "document",
+             "date_used": {"value": "2020-05-01", "basis": "pdf_created_no_later_than"}},
+            {"file": "/d/already_vital.pdf", "kind": "document", "see": "date_index"},
+            {"file": "/d/undated.pdf", "kind": "document", "date_used": None},
+            {"file": "/m/photo.jpg", "kind": "image",
+             "date_used": {"value": "2019-01-01", "basis": "captured"}},
+            {"file": "/a/voicemail.m4a", "kind": "audio", "date_used": None},
+        ],
+    }))
+    out = ad._corpus_dates_by_file(md)
+    assert out == {"/d/dated.pdf": {"value": "2020-05-01", "basis": "pdf_created_no_later_than"}}
+
+
+def test_corpus_dates_by_file_empty_when_file_absent(tmp_path):
+    paths = CasePaths.from_case_id("CD2", str(tmp_path))
+    md = paths.metadata_dir
+    md.mkdir(parents=True, exist_ok=True)
+    assert ad._corpus_dates_by_file(md) == {}
+
+
 def test_email_category_counts_tallies_every_category_on_a_thread():
     rows = [{"thread_id": "t1", "categories": ["financial", "insurance"]},
            {"thread_id": "t2", "categories": ["financial"]},

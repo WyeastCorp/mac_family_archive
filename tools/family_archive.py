@@ -74,6 +74,7 @@ from tools._archive_data import (  # noqa: E402
     _duplicate_cluster_id, delivered_basename_index,
     audio_rows, build_doctext_views, build_photo_universe, build_search, build_stacks,
     confirm_queue_data, conversation_detail, document_rows, documents_index, documents_year_index,
+    _corpus_dates_by_file,
     file_identity,
     email_rows, email_thread_detail, event_album_titles, event_albums_data,
     thread_has_delivered_attachment, thread_direction_flags, _participant_address,
@@ -519,6 +520,27 @@ def _attach_vital(rows, vital_docs, candidate_targets=None):
     return out
 
 
+def _attach_corpus_date(rows, corpus_dates_by_file):
+    """Stamp each document row with `corpus_date` (2026-10-17, to-do: By-year for
+    ordinary documents) — the SAME copy-on-write, additive pattern `_attach_vital`
+    uses, deliberately: a row with no vital date and no corpus_dates.json entry must
+    pass through unchanged, same object, same as `_attach_vital`'s "nothing to add"
+    path. Called AFTER `_attach_vital` so both `documents_year_index` and
+    `_filter_documents` (which both read `.vital` first, `.corpus_date` only as a
+    fallback — see `documents_year_index`'s own docstring) see a row carrying
+    whichever sources actually apply to it, never just one."""
+    if not corpus_dates_by_file:
+        return rows
+    out = []
+    for r in rows:
+        du = corpus_dates_by_file.get(r.get("file"))
+        if du:
+            r = dict(r)
+            r["corpus_date"] = du
+        out.append(r)
+    return out
+
+
 def _doc_kind(r):
     """The file extension a Documents row sorts by in its Kind column."""
     return os.path.splitext(r.get("name") or r.get("file") or "")[1].lower()
@@ -534,11 +556,11 @@ _DOC_SORTS = {
 
 
 def _document_year_vital(r):
-    """The row's own first `vital` entry that carries a date, or None — the
-    ONE entry `_document_year` and `_document_group` both read, so a
-    document's year and its By-year group nesting always agree on which
-    vital match produced them, even when the document matches more than one
-    vital target. Same source Detail's docDateOf uses."""
+    """The row's own first `vital` entry that carries a date, or None — ONE of
+    the two sources `_document_year_source` reads, so a document's year and
+    its By-year group nesting always agree on which vital match produced
+    them, even when the document matches more than one vital target. Same
+    source Detail's docDateOf uses."""
     for v in r.get("vital") or ():
         val = str((v.get("date_used") or {}).get("value") or "")
         if len(val) >= 4 and val[:4].isdigit():
@@ -546,25 +568,52 @@ def _document_year_vital(r):
     return None
 
 
-def _document_year(r):
-    """The 4-digit year a document row's vital date_used falls in, or None —
-    the ONLY date any document in this app ever has (see documents_year_index
-    for why this means "no date" for nearly every ordinary document)."""
+def _document_year_source(r):
+    """Where a document row's By-year date+group come from — ("vital", entry)
+    | ("corpus", date_used) | None. The ONE place `_document_year` and
+    `_document_group` both read, so year and group nesting always agree, same
+    guarantee `_document_year_vital` gave before `corpus_date` existed
+    (2026-10-17, to-do: ordinary-document dates, scoped to Documents' By-year
+    — see STATE.md). Vital always wins when both are present — matches
+    corpus_dates.json's own deference to date_index.json for a document
+    that's already confirmed vital (see `_corpus_dates_by_file`), so this
+    precedence order is really just making the two sources agree, not
+    picking a winner between two live candidates."""
     v = _document_year_vital(r)
-    if not v:
+    if v:
+        return ("vital", v)
+    cd = r.get("corpus_date")
+    val = str((cd or {}).get("value") or "")
+    if len(val) >= 4 and val[:4].isdigit():
+        return ("corpus", cd)
+    return None
+
+
+def _document_year(r):
+    """The 4-digit year a document row's date falls in, or None — see
+    `_document_year_source` for where that date comes from."""
+    src = _document_year_source(r)
+    if not src:
         return None
-    return str((v.get("date_used") or {}).get("value"))[:4]
+    kind, payload = src
+    if kind == "vital":
+        return str((payload.get("date_used") or {}).get("value"))[:4]
+    return str(payload.get("value"))[:4]
 
 
 def _document_group(r):
-    """The VITAL_DOC_GROUPS category (e.g. "tax_records") the same vital entry
-    that gave this row its year belongs to, or None — the By-year
-    arrangement's nested-group filter (?vital_group=), matching exactly the
-    group documents_year_index attributed the row to."""
-    v = _document_year_vital(r)
-    if not v:
+    """The group this row's year nests under — a VITAL_DOC_GROUPS category
+    (e.g. "tax_records") for a vital-sourced date, or "nonvital" for a
+    corpus_dates.json-sourced one — the By-year arrangement's nested-group
+    filter (?vital_group=), matching exactly what `documents_year_index`
+    attributed the row to."""
+    src = _document_year_source(r)
+    if not src:
         return None
-    return v.get("group") or vital_doc_group(v.get("target"))
+    kind, payload = src
+    if kind == "vital":
+        return payload.get("group") or vital_doc_group(payload.get("target"))
+    return "nonvital"
 
 
 def _filter_documents(rows, params):
@@ -1548,6 +1597,11 @@ class ArchiveCase:
             data = self.section("documents")           # {index, rows(full), vital_docs}
             rows = apply_curation(data["rows"], curation, "file")
             rows = _attach_vital(rows, data["vital_docs"], self.vital_candidate_targets())
+            # Ordinary-document dates (2026-10-17, to-do: scoped to Documents' By-year
+            # for now — see STATE.md). AFTER _attach_vital: documents_year_index and
+            # _filter_documents both check .vital first, .corpus_date only as a
+            # fallback, so a row needs both stamps before either reads it.
+            rows = _attach_corpus_date(rows, _corpus_dates_by_file(self.paths.metadata_dir))
             index = data["index"]
             year_index = documents_year_index(rows)   # By-year arrangement (2026-10-16)
             # Documents-view topic merge (?include_emails=1): email bodies share

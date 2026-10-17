@@ -3912,9 +3912,10 @@
       // By-year arrangement (2026-10-16): which PRIMARY list the tree shows
       // below Vital documents — subject categories (the only one before
       // today) or years. Vital documents/Checklist above are unaffected
-      // either way. Built honestly: most cases will show a handful of real
-      // years and one large "No date" bucket, because the pipeline gives a
-      // date to only the ~13 vital document kinds — see documents_year_index.
+      // either way. A document gets a year from its own confirmed-vital date
+      // (date_index.json) or, failing that, corpus_dates.json's corpus-wide
+      // pass (2026-10-17, nested as "Nonvital" within a year) — see
+      // documents_year_index for exactly which source wins and why.
       var arr = el("div", "seg");
       arr.setAttribute("role", "group"); arr.setAttribute("aria-label", "Arrange by");
       [["subject", "By subject"], ["year", "By year"]].forEach(function (o) {
@@ -3995,16 +3996,16 @@
 
       sep(ul);
       if (arrange === "year") {
-        // Nested by vital group within each year (2026-10-17, the mockup's
-        // richer version, un-nesting the old v1 flat count). Since only
-        // vital documents ever carry a date (see documents_year_index),
-        // everything inside a real year IS a vital document — so "nested by
-        // subject" here is the SAME VITAL_DOC_GROUPS category the Checklist
-        // already nests vital documents into, not a second taxonomy.
-        // "No date" never nests (it holds only ordinary, un-vital documents,
-        // which have no group to nest by) and always sorts last
-        // server-side, regardless of how large it is — it's usually the
-        // biggest folder.
+        // Nested by group within each year (2026-10-17, the mockup's richer
+        // version, un-nesting the old v1 flat count). A vital document's
+        // group is the SAME VITAL_DOC_GROUPS category the Checklist already
+        // nests vital documents into; an ordinary document dated only via
+        // corpus_dates.json (same day: scoped to Documents' By-year — see
+        // STATE.md) has no vital category to nest by, so it lands in one
+        // group, "Nonvital" — see documents_year_index for exactly which
+        // source wins when both exist. "No date" never nests (it holds only
+        // documents with neither source) and always sorts last server-side,
+        // regardless of how large it is — it's usually the biggest folder.
         yearIndex.forEach(function (y) {
           var yname = y.year === "nodate" ? "No date" : y.year;
           var ykey = "y:" + y.year;

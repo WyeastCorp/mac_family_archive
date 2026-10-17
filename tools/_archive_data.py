@@ -2175,6 +2175,34 @@ def _date_used_index(md):
             if isinstance(i, dict) and i.get("file") and i.get("date_used")}
 
 
+def _corpus_dates_by_file(md):
+    """{document path: date_used} from corpus_dates.json (2026-10-17, to-do: scoped to
+    Documents' By-year for now — see STATE.md for why Photos/Audio/Messages aren't wired
+    up here too).
+
+    corpus_dates.json covers the WHOLE corpus (documents, photos/video, audio, messages) —
+    this reads only `kind == "document"` entries, the population `documents_year_index`
+    actually uses. An already-CONFIRMED VITAL document is a stub here (`{"file":...,
+    "kind":"document", "see":"date_index"}`, no `date_used` key) rather than a second,
+    possibly-conflicting date for the same file — filtering on `date_used` being a dict
+    excludes those stubs for free, no special-casing needed; `date_index.json` (via
+    `r["vital"]`) stays the one source of truth for a vital document's date, same as
+    today. {} when the file is missing, unreadable, or predates this key (every case on
+    disk before this was written) — `documents_year_index` must then fall back to its
+    vital-only behavior, never guess."""
+    data = load_json(Path(md) / "corpus_dates.json", None)
+    if not isinstance(data, dict):
+        return {}
+    out = {}
+    for i in data.get("items") or []:
+        if not isinstance(i, dict) or i.get("kind") != "document":
+            continue
+        f, du = i.get("file"), i.get("date_used")
+        if f and isinstance(du, dict):
+            out[f] = du
+    return out
+
+
 def _operative_views_index(md):
     """{target: view} from date_index.json's operative_views (tier 1: wills,
     POAs, trusts, beneficiary forms — see docs/date_index_contract.md §2).
@@ -3585,30 +3613,33 @@ def documents_year_index(rows):
     """Group document rows by year for the By-year arrangement: [{year, count,
     groups}], years descending, "No date" always last regardless of count.
 
-    The pipeline gives a date to exactly the ~13 vital document kinds (see
-    the undated-ordinary-documents finding, 2026-10-15) — `r["vital"]`
-    carries it when present (same `_attach_vital` join Detail's docDateOf
-    reads), nothing else in this app ever has one. So this index is mostly
-    one large "No date" bucket and a handful of real years holding the vital
-    documents — an honest reflection of what the pipeline actually knows, not
-    a broader by-year feature the data doesn't support. `rows` must already
-    have `.vital` attached (api_section's documents branch does this before
-    calling in); a plain document_rows() row with no `.vital` key reads as
-    undated, same as one that has the key but no date_used.
+    Two sources of a date, vital taking precedence (2026-10-17: corpus_dates.json
+    added a second one — see below; before that, `r["vital"]` was the only date
+    any document in this app ever had, per the undated-ordinary-documents finding,
+    2026-10-15):
 
-    `groups` (2026-10-17, un-nesting the v1 flat count per the user's to-do:
-    "match the original mockup") is each year's documents broken out by the
-    SAME VITAL_DOC_GROUPS category the Checklist already nests vital
-    documents into — [{group, label, count}], highest count first. Since
-    every document that lands in a real year IS a vital document (nothing
-    else is dated), "nested by subject within a year" the mockup asked for
-    has no other taxonomy to draw on here; inventing a second one would
-    contradict the Checklist's own grouping for the same documents. A
-    document matching several vital targets is attributed to whichever one
-    gave it its year — the SAME entry `_document_year`/`_document_year_vital`
-    pick in tools/family_archive.py, so a document's year and its group
-    always agree. "No date" never gets a breakdown: it holds only ordinary,
-    un-vital documents, which carry no group to nest by.
+      1. `r["vital"]` — a confirmed vital document's own date_used (same
+         `_attach_vital` join Detail's docDateOf reads). Its group is the SAME
+         VITAL_DOC_GROUPS category the Checklist already nests vital documents
+         into — [{group, label, count}] within a year, highest count first. A
+         document matching several vital targets is attributed to whichever one
+         gave it its year — the SAME entry `_document_year`/`_document_year_vital`
+         pick in tools/family_archive.py, so a document's year and its group
+         always agree.
+      2. `r["corpus_date"]` — checked ONLY when there's no vital date. An ordinary
+         document's date from corpus_dates.json's corpus-wide pass (2026-10-17,
+         scoped to Documents for now — see STATE.md), pre-stamped onto the row the
+         same way `.vital` is (by `_attach_corpus_date` in tools/family_archive.py,
+         called before this). These have no vital-doc category to nest by — the
+         whole point of corpus_dates.json is dating documents the vital pipeline
+         never touched — so they land in one group, key "nonvital" / label
+         "Nonvital" (same term the sidebar's own Nonvital section uses), not
+         "Other" (which stays reserved for an unrecognized VITAL_DOC_GROUPS key).
+
+    `rows` must already have `.vital` and (optionally) `.corpus_date` attached
+    before calling in; a row with neither reads as undated — "No date" never
+    gets a `groups` breakdown, since by construction every row that reaches it
+    had neither source.
     """
     years = {}
     nodate = 0
@@ -3622,6 +3653,12 @@ def documents_year_index(rows):
                 group = v.get("group") or vital_doc_group(v.get("target"))
                 break
         if year is None:
+            cd = r.get("corpus_date")
+            val = str((cd or {}).get("value") or "")
+            if len(val) >= 4 and val[:4].isdigit():
+                year = val[:4]
+                group = "nonvital"
+        if year is None:
             nodate += 1
         else:
             bucket = years.setdefault(year, {"count": 0, "groups": {}})
@@ -3631,7 +3668,10 @@ def documents_year_index(rows):
     out = []
     for year, bucket in years.items():
         group_list = [
-            {"group": gk, "label": VITAL_DOC_GROUPS[gk][0] if gk in VITAL_DOC_GROUPS else "Other", "count": c}
+            {"group": gk,
+             "label": "Nonvital" if gk == "nonvital"
+                      else VITAL_DOC_GROUPS[gk][0] if gk in VITAL_DOC_GROUPS else "Other",
+             "count": c}
             for gk, c in bucket["groups"].items()
         ]
         group_list.sort(key=lambda e: (-e["count"], e["label"]))
