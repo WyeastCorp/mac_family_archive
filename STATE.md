@@ -23,6 +23,59 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — sidebar reorg #1–#3 built (Near-misses own section, Vital Checklist / Nonvital renames); #4 (By-year scope) still open
+
+**Branch:** `claude/sidebar-reorg-near-misses-nonvital-2026-10-17` (not yet merged — check `gh pr
+list --repo WyeastCorp/mac_family_archive --state open` before assuming it landed). Picks up the
+"TO DO (not started)" entry below this one — read that one first if this entry alone doesn't give
+enough context, it has the full original ask and the proposed-order diagram.
+
+**What shipped (asks #1–#3 of 4):**
+- Near-misses is a top-level sidebar section now — a sibling of "All documents"/"Vital documents",
+  with a separator line above and below (the existing `.tsep` divider, same one every other
+  top-level boundary already uses) — not nested inside Vital documents anymore.
+- "Checklist" → "Vital Checklist", everywhere it's user-facing (sidebar row, breadcrumb, the
+  Report page's near-miss link, two Overview/tally lines). Code comments using "the Checklist" as
+  plain-English shorthand were left alone — not a literal UI-label quote, so not misleading as-is.
+- The previously-unlabeled category-folder list is now labeled **"Nonvital"** (the user's own
+  word, "for now" — a placeholder, not a settled name) — added only above the By-subject list;
+  By-year's list stays unlabeled, since whether/how By-year even applies there is #4, still open.
+
+**Found and fixed along the way, not originally asked for but a direct consequence of #1:**
+Near-misses' breadcrumb used to read "Vital documents › Near-misses" — stale the moment it stopped
+being nested there. Now has no parent crumb, same `[null, label]` pattern the true root ("All
+documents") already uses.
+
+**#4 (By-year scoped to only be reachable from within Vital documents) is still NOT built** —
+genuinely needs the mechanic decision the entry below lays out two options for (a third row
+inside Vital documents vs. a toggle that only applies there), not just more code. **One thing has
+changed since that entry was written, worth re-reading before deciding:** it assumed only vital
+documents can ever have a date, which `corpus_dates.json`'s build (two entries below) made no
+longer true — ordinary documents can have a date now too, via the new "Nonvital" group within a
+year. That doesn't resolve #4's question, but it does mean the premise needs a second look before
+picking a mechanic.
+
+**Verified live, not just by reading the diff:** real server, real case (`oct7_mf`, examiner) —
+sidebar shows "Vital Checklist" and a standalone "Near-misses" row with the separator rendering
+(confirmed the CSS rule itself, not just that the DOM element exists); "NONVITAL" label above the
+category folders in By-subject mode (absent in By-year mode, as designed). Clicked into Vital
+Checklist, Near-misses (including the Report page's per-target near-miss deep links, which still
+auto-expand and scroll to the right target), and By-year mode — all still function, no console
+errors on any of them. No backend touched, so `./run_tests.sh` is unaffected (still 816 passed, 3
+skipped) — a sanity check on the repo, not evidence for this change; re-run it yourself rather
+than trust that number later, and re-verify live if this area gets touched again before trusting
+this entry's description of it.
+
+**Blocked:** on the user for #4's mechanic — see the entry below for the two options and what
+picking between them actually changes in the code.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or pick up #4 once the mechanic is decided, or move to one of the other open to-dos (a
+written report for Richard, the source-email-on-ordinary-documents feature idea, or exposing
+Photos/Audio/Videos to the UI the user actually uses — see nearby entries for each).
+
+---
+
 ### 2026-10-17, newest — corpus_dates.json wired into Documents' By-year ("Nonvital" group); Photos/Audio/Videos exposure recorded as a separate to-do
 
 **Branch:** `claude/corpus-dates-by-year-2026-10-17` (not yet merged — check `gh pr list --repo
@@ -186,7 +239,7 @@ build actually landed.
 
 ---
 
-### 2026-10-17, newest — TO DO (not started): sidebar reorganization — Near-misses promoted to its own section, two renames, By-year scoped to Vital only
+### 2026-10-17 — sidebar reorganization to-do, as originally written (#1–#3 now built — see the newest entry above; #4 still open)
 
 **The user's own request, stepping away before it could be scoped further — read it fresh rather
 than trust this paraphrase, and confirm each piece with them if anything here looks ambiguous
