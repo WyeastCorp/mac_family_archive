@@ -23,6 +23,84 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — Markland is wondering about a feature: showing a document's source email
+
+While looking at an ordinary (non-vital) Legal-category document whose filename carried the
+`msgNNNNN_` import prefix — the marker the pipeline stamps on a file pulled out of an email, to
+keep two different messages' attachments from colliding on the same basename — Markland asked
+whether the archive could surface that connection on the document itself, the way it already does
+for Vital Documents. Not filed as a bug; recorded here as a feature Markland raised and wants
+scoped, not yet sized or built.
+
+**Current state, read from the code, not assumed:** `document_rows()` in `tools/_archive_data.py`
+(the Documents list and its Detail card) carries no source-email field at all for ordinary
+documents — it's not hidden by the front end, the server never computes it for anything but a
+confirmed Vital Document. The only place a document today links back to its source email is the
+Vital checklist (`vital_docs_data()` / `vital_source_email()`), and only after that document is
+confirmed vital. The reverse direction already exists for email — an email's attachment chip can
+link forward to its delivered document (`delivered_basename_index()`) — there's just no index
+built the other way (attachment → source email) for ordinary documents.
+
+**What it would take:** invert that lookup and feed it into `document_rows()` or the Detail card's
+data path. The real work isn't the lookup — it's `wyeast/core/audience.py`'s family/examiner
+split: some source emails are deliberately screened out of what family can see, so a reverse link
+has to pass the same audience gate the Vital checklist's thread-linking already does
+(`_vital_thread_links`, scoped to the caller's own audience index) before showing a family member
+anything. Skipping that check to ship this faster would be the actual bug.
+
+(Deliberately not naming the specific document or quoting its filename here — see CLAUDE.md's
+rule against pasting real case material into the repo. The `msgNNNNN_` prefix pattern is
+reproducible on any email-sourced file in any case, no case-specific detail needed to act on this.)
+
+---
+
+### 2026-10-17, newest — to-do #2 built: a dedicated, grouped Near-misses view
+
+**Branch:** `claude/dedicated-near-miss-view-2026-10-17` (not yet merged — check `gh pr list
+--repo WyeastCorp/mac_family_archive --state open` before assuming it landed). **A sibling
+session was working on to-do #4 (by-year un-nesting) in its own worktree at the same time, also
+touching `report_assets/family/family.js` — its branch (PR #18) merged to `main` FIRST**, before
+this one was even pushed. Merging `main` back into this branch conflicted only in this file
+(`STATE.md`, this very entry's position relative to the one below) — `family.js` itself merged
+clean, no manual resolution needed there. Re-run `./run_tests.sh` and a live check after any
+further rebase of this branch, rather than trust that "merged clean" stays true.
+
+**The design decision, made by the user before building:** grouped by category (Estate & legal,
+Taxes, Banking, ...), same shape the Checklist's own sidebar already groups vital-doc kinds by —
+not a flat list with a target filter (the other option offered).
+
+**What shipped:** Documents > Vital documents gains a "Near-misses" nav row (examiner-only,
+alongside Checklist) opening `docview=near_misses` — every target with at least one near-miss,
+grouped by category, each still the exact same toggle+drawer the Checklist already had (same
+`/api/vital/near-misses` call, same pagination, same `truncated_at_k` cap chip). Zero backend
+changes — `vital_docs_data()` already carried everything this needed (`near_miss_count`, `group`,
+the group labels). The toggle+drawer construction was extracted out of `vitalDocsPanel` into a
+shared `appendNearMissToggle()` so the Checklist and this new view share one implementation, not
+two that could drift. The Report's per-target near-miss links ("3 · Where the archive isn't
+sure") now open this view instead of the Checklist.
+
+**Verified, not just reasoned through — re-check live before trusting this description, a sibling
+branch may have changed the surrounding code since:** ran a fresh local server against the real
+`oct7_mf` case (examiner, a throwaway port) and confirmed: the sidebar badge total (1,300 — a
+case-specific number, re-derive rather than trust it later), every group rendering with its member
+targets each carrying a real near-miss count (not spot-checked against all 27 individually — the
+grouping logic itself is what's being verified here, not a claim that every target has a
+near-miss), a drawer expanding with real rows including an email-sourced one (thread link still
+resolves correctly), and the Report's deep link auto-expanding and scrolling to the right target.
+Regression-checked the Checklist page itself after the refactor — its own near-miss drawer still
+works unchanged, no console errors either page.
+Family-role access wasn't newly tested live (same release-gate blocker as the entry two below) —
+relies on the same two-layer gate the Checklist's toggle already had (nav row hidden for family;
+`near_miss_count` is simply absent from a family target server-side even on a direct URL hit).
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or move to to-do #5 (a written report for Richard — the last item from the "five new to-dos"
+entry further below; by this point #1, #2, #3 and #4 are all done, so #5 is the only one left).
+
+---
+
 ### 2026-10-17, newest — to-do #4 built: By-year documents now nest by vital category instead of a flat count
 
 **Branch:** `claude/amazing-cannon-7fe56b` (built in its own worktree, per the task's own isolation — check `gh pr
@@ -102,6 +180,8 @@ merged" entry further below — by the time this merged, the entry right below t
 and to-do #3 (two entries below) were both already done too, built concurrently in a separate
 worktree; re-check `gh pr list` for current merge state rather than trust either entry. Only #2 and
 #5 are still open.
+
+---
 
 ### 2026-10-17, newest — to-do #1 built: "Emails at a glance" on the Report page
 
