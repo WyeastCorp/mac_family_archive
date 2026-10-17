@@ -23,6 +23,60 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — sidebar reorg round 2: Near-misses sub-tree, Vital Checklist own section, explanatory copy; the Starred-documents collision resolved
+
+**Branch:** `claude/sidebar-near-misses-subtree-2026-10-17` (not yet merged — check `gh pr list
+--repo WyeastCorp/mac_family_archive --state open` before assuming it landed).
+
+**What the user actually meant, corrected after round 1 shipped:** Near-misses needed the SAME
+group → target sidebar sub-tree Vital documents has — round 1 only made it a single clickable row
+that opened a full page, not a real navigable tree. Vital Checklist should ALSO become its own
+top-level section (same bars-above/below treatment Near-misses got in round 1), positioned
+directly below Vital documents. Both pages should open with a short explanation of what they are.
+**What shipped:** exactly that — see the branch's own commit message for the full breakdown
+(group/target nesting, the `open_nearmiss` deep-link plumbing reused from the Report page's
+existing links, the explanatory paragraphs). Vital documents' own sidebar tree is now ONLY the
+found-vital-documents browse; Vital Checklist no longer lives inside it.
+
+**The collision, and how it was resolved — read this before touching `~/mac_family_archive`'s
+shared checkout again this session:** while this round was in progress directly in that shared
+checkout, a DIFFERENT session (the user mentioned wanting a "Starred documents" category in
+passing, not as a work order — it started building anyway) was concurrently building that feature
+in the SAME shared working tree. Both sessions' uncommitted edits to `family.js` (and two Python
+files) ended up interleaved before either had committed. That session also ran a bare `git stash`
+mid-investigation, which briefly stashed this round's uncommitted work too — caught and
+`git stash pop`'d within seconds, confirmed nothing was lost (diffed byte-for-byte against a backup
+taken beforehand). **Neither session tried to hand-separate the tangled working copy.** Instead:
+the Starred session built its feature fresh in an isolated worktree off a clean `main` and shipped
+it as PR #22 (merged — see the entry below). This session then did the same for round 2: a fresh
+worktree off `origin/main` (which already had PR #22 in it), round 2's edits re-applied from
+scratch against that clean base, verified live on a throwaway port, committed, pushed. The shared
+checkout's stale mixed working-tree changes were then discarded (`git checkout --` on the three
+files) ONLY after confirming byte-for-byte that discarding lost nothing — both halves were already
+safely captured in their own commits by that point.
+
+**Verified live, not just by reading the diff:** fresh server on a throwaway port, real `oct7_mf`
+case, examiner role. Vital documents' sidebar tree no longer nests Vital Checklist; Vital Checklist
+renders as its own section with the explanatory paragraph; Near-misses expands into the same
+group/target shape as Vital documents, same counts the live page already showed; clicking a target
+under Near-misses (checked: Will / testament) correctly scrolls to and expands that target's drawer
+with real candidate rows, same as the Report page's own near-miss links already did. Also
+re-confirmed the Starred feature (independent, PR #22) still works unaffected on the same page —
+not a redundant check, since both features now share several of the same functions (`pick`,
+`isCurrent`, `view`, `encodeURL`'s whitelist). No console errors anywhere. `./run_tests.sh`: 817
+passed, 3 skipped — unaffected, no Python changed this round (re-run it rather than trust this
+number, same as every entry in this file).
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge. **If anyone works in `~/mac_family_archive` directly again (not a worktree) while another
+session might also be active there, check `ListAgents`/`list_sessions` FIRST** — this is the
+second time this session hit exactly this collision in one afternoon (see the Starred entry below
+for the first). A worktree costs little and avoids it entirely.
+
+---
+
 ### 2026-10-17, newest — Starred documents: a Documents-side filter for the existing curation star
 
 **Branch:** `claude/starred-documents-2026-10-17`, built in an isolated git worktree (not yet
