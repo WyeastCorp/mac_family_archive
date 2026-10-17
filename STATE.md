@@ -23,6 +23,113 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — TO DO (not started): sidebar reorganization — Near-misses promoted to its own section, two renames, By-year scoped to Vital only
+
+**The user's own request, stepping away before it could be scoped further — read it fresh rather
+than trust this paraphrase, and confirm each piece with them if anything here looks ambiguous
+once you're looking at the live tree.** Four asks, from a live complaint that the current
+Near-misses placement (shipped minutes earlier, PR #19) is "clunky":
+
+1. **Near-misses becomes its own top-level sidebar section**, not a row nested inside "Vital
+   documents". Position: below the Vital documents section, above the (renamed, see #3) category
+   list — with a separator line both above AND below it, visually standing alone the way "Vital
+   documents" and "All documents" already do, not blended into a list the way it is today.
+2. **Rename "Checklist" → "Vital Checklist"** (the row inside Vital documents that opens
+   `docview=checklist`).
+3. **Rename the unlabeled category-folder section → "Nonvital"** (the `financial`/`legal`/
+   `miscellaneous`/... list that today has no group label of its own, just renders as a flat list
+   of folders below the Vital documents block). The user said "for now" — treat the name as a
+   placeholder they may want to revisit, not a settled final word.
+4. **By-year should only be reachable from within Vital documents**, not as a global arrange
+   toggle over the whole tree. The user's own reasoning (matches what PR #18's entry below already
+   found): by-year only ever organizes VITAL documents, because `documents_year_index()` only ever
+   gets a date from a document's `date_used`, which only a vital document carries — an ordinary
+   ("Nonvital") document has no date and always lands in the undifferentiated "No date" bucket.
+   Today's `arrange` toggle ("By subject" / "By year", `drawTree()` in
+   `report_assets/family/family.js`, right above the `ul` tree) sits ABOVE the whole tree and
+   swaps out BOTH the Vital and Nonvital sections at once when switched to "By year" — that's the
+   part the user wants gone. It should be scoped so Nonvital always shows by subject/category, with
+   no year option at all, and the year view lives only inside Vital documents somehow.
+
+**Current code, read directly (re-read it yourself before building — a sibling session may have
+touched this area since):** `drawTree()` in `report_assets/family/family.js`, roughly lines
+3895–4043 as of this entry (line numbers rot fast — grep for `"All documents"` / `"Near-misses"` /
+`arrange === "year"` to re-locate). Today's order: `All documents` → sep → `Vital documents`
+(expandable: `Vital Checklist`-to-be, `Near-misses`-to-move, then each vital-doc GROUP nested one
+level in) → sep → the `arrange`-controlled list (`By subject`'s plain category folders, OR
+`By year`'s year rows nested by vital group — see PR #18's entry below for why year-nesting reuses
+the SAME group taxonomy) → sep (examiner-only) → `Collections`. The `sep(ul)` helper (one-liner,
+appends a single `<li class="tsep">` divider) is already exactly the tool items #1 needs for its
+"line above and below."
+
+**Proposed new order (asks #1–#3, mechanically straightforward — moving/renaming existing trow()
+calls, no new data):**
+
+```
+All documents
+─────────────
+Vital documents                 (key: "vital", unchanged)
+  Vital Checklist                (renamed from "Checklist")
+  <vital-doc groups...>          (Estate & legal, Taxes, Banking, ... — unchanged, nested)
+─────────────
+Near-misses                     (moved OUT from under Vital documents — now its own
+                                  top-level row, same EXAMINER gate + mark/count badge +
+                                  muted-at-zero behavior as today, just no longer
+                                  conditional on open.vital)
+─────────────
+Nonvital                        (renamed label for the existing category-folder list —
+                                  the folders themselves, their subcategories, and their
+                                  drag-to-move behavior are all unchanged)
+─────────────                   (examiner-only, unchanged)
+Collections
+```
+
+**Not yet decided — ask #4 needs one more concrete design call before building, same as to-do #2
+needed a shape decision before it could be built (see that entry two below):** the user specified
+the CONSTRAINT (by-year only inside Vital documents) but not the MECHANIC. At least two shapes fit
+what they described — don't guess; ask, the way #2's shape got asked and answered before building:
+- **(a)** a third row alongside `Vital Checklist`/`Near-misses` inside Vital documents — e.g.
+  "By year", which swaps the GROUP nesting for the YEAR nesting within that same expandable section
+  (the groups themselves stay the primary/default view; by-year is an alternate way to browse the
+  same vital documents).
+- **(b)** a `By subject` / `By year` toggle that only appears/applies once you're INSIDE Vital
+  documents (replacing today's global toggle above the whole tree), with Nonvital's folder list
+  having no such toggle at all — always by-subject.
+These may converge to roughly the same visible result; the difference is in `arrange`'s scope (a
+per-section state vs. a page-global one) and how much of `drawTree()`/`view`/the URL query params
+(`arrange=year`) need to change to stop leaking into Nonvital. Read PR #18's own entry (two below)
+for exactly how `arrange`/`year`/`vital_group` are wired today before picking.
+
+**Verification note for whoever builds this:** no backend changes anticipated (pure sidebar
+reshuffling + two label strings) UNLESS ask #4 ends up needing `documents_year_index()` or
+`_filter_documents` touched to stop a Nonvital-context URL from accepting `arrange=year` — check
+that live, don't assume. No JS test harness exists in this repo; verify live per `CLAUDE.md`'s
+"Verify in a browser" section, same discipline every entry below this one used.
+
+**Other unfinished to-dos as of this entry (re-check `gh pr list` yourself, this rots fast):**
+- **To-do #5** (the last item from the "five new to-dos" entry further below): a written report
+  for Richard on what the pipeline could do for email sorting/filtering — answered in chat in an
+  earlier session, never turned into an actual document. Not started.
+- **PR #14** (`date-index-as-of-date`, `as_of_date` wording in the date_index contract) — open,
+  unmerged, unrelated scope to everything else in this file. Pre-dates this session; status
+  unchanged by anything done today.
+- **The entry directly below this one** ("Markland is wondering about a feature") — showing an
+  ORDINARY (non-vital) document's source email on the document itself, the way Vital Documents
+  already can. Recorded as a feature idea the user wants scoped, not sized or built yet, with the
+  real complexity already identified (the family/examiner audience gate on source-email links must
+  apply here too, same as it does for Vital Documents' own thread-linking).
+
+**Blocked:** on the user for #4's mechanic (see above) before any of this gets built — #1–#3 could
+start without that decision, but check with them first since this whole entry was cut short by
+them stepping away, not fully confirmed.
+
+**Next action:** when picked back up, re-read the live sidebar in a browser first (`docview`
+params may have shifted under a sibling session's work since this was written), confirm the
+proposed order above still matches what the user meant, then build #1–#3 together (they're one
+coherent sidebar-reshuffle commit) and ask the open #4 question before touching `arrange`.
+
+---
+
 ### 2026-10-17, newest — Markland is wondering about a feature: showing a document's source email
 
 While looking at an ordinary (non-vital) Legal-category document whose filename carried the
