@@ -23,6 +23,110 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-16, newest — to-do #3 investigated: email-thread linking already works; found and fixed a real undercount bug instead
+
+**Branch:** `claude/vital-docs-checklist-email-count-2026-10-16` (not yet merged — check `gh pr
+list --repo WyeastCorp/mac_family_archive --state open` before assuming it landed).
+
+**What to-do #3 two entries below actually asked:** two specific open sub-questions, plus the
+user's broader suspicion that emails never show up as vital documents. Both sub-questions are now
+answered, by reading the code and by hitting the live app against the real case, not by guessing:
+
+1. **Does thread-link resolution fire for near-miss rows, not just confirmed ones?** Yes —
+   `near_miss_rows()` in `tools/_archive_data.py` builds `thread_links`/`message_links`/
+   `recording_links` against its `unlinked` set exactly the way `vital_docs_data()` does for
+   confirmed items, no source-type filtering anywhere in that path. Confirmed live: hit
+   `/api/vital/near-misses?target=will_testament` on the real case and got back rows with real
+   `thread_id`/`thread_subject` for every email-sourced near-miss.
+2. **Does the retrieval stage search email body text, or only attachments?** Body text — confirmed
+   by reading actual hits straight out of `vital_doc_candidates.json`: snippets like "Can you please
+   send me a will form for me and Jennifer?" are plainly message bodies, with the hit's `path`
+   pointing at the `.eml` file itself, not an attachment. (Didn't need Wyeast's private stage code
+   for this — the evidence was already sitting in the case's own metadata.)
+
+**So the plumbing for "an email is vital evidence" already works, confirmed and near-miss alike.**
+What doesn't: a real counting bug in `report_assets/family/family.js`'s Checklist sidebar. The
+"Vital documents" nav count, each category group's subtotal, and each target's row count all
+filtered `t.items` to `i.file_id` before counting — silently dropping every confirmed item whose
+only evidence is an email thread, a chat conversation, or a recording, even though that exact item
+renders correctly with a working link the moment you expand its target's drawer. This has been
+there since the Documents view's original sync commit (`ea846f9`, `git log -S foundItems`) — predates
+the thread/conversation/recording linking work entirely, never updated to match. **Fixed** (three
+filtered `.length` calls now count the full `t.items` list, matching what `vital_docs_data()`'s own
+docstring already says "found" means).
+
+**Verified, not just reasoned through — re-check both numbers before trusting this paragraph, they
+rot like any other count:** ran a SECOND local server on a different port against the real `oct7_mf`
+case (`--port 7799`, never the examiner's own already-running session on 7766) and compared the
+Checklist sidebar before and after the fix. Three targets in this case had email-only confirmed
+items; all three were undercounted before the fix and correct after it. `./run_tests.sh` still
+green (pytest never touches the real case, so this was never going to catch the bug or the fix —
+sanity check on the repo only). No JS test harness exists in this repo to write an automated
+regression test into (unlike `tools/`'s pytest coverage) — this was a live-browser verification,
+per `CLAUDE.md`'s own "Verify in a browser" section; a repeat of the before/after comparison above
+is the regression check until one exists.
+
+**This does NOT touch the `near_misses` key from the entries below** — that's a separate, still-open
+question (to-do #1/#2, and the rest of #3: should the Checklist read `near_misses` instead of, or
+alongside, `vital_doc_candidates.json`). Nothing here depends on it or blocks it.
+
+**Blocked:** nothing on this piece. The `near_misses`-key design question (below) still needs
+scoping, and still has no contract doc.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>` to check CI, then
+either merge this fix or pick up the still-open `near_misses` design question.
+
+---
+
+### 2026-10-16, newest — Richard's refreshed files installed into `oct7_mf`; `near_misses` key is live on disk but still unread by any code
+
+**What changed:** the two files from the entry below (`date_index (2).json`, `vital_doc_provenance
+(2).json` in Downloads) are now `output/metadata/date_index.json` /
+`vital_doc_provenance.json` inside the case at `/Volumes/oct7_mf_case/oct7_mf/`. The files that were
+there before are preserved alongside them with a `.bak-<timestamp>` suffix in the same directory —
+check that directory's listing rather than trusting a filename quoted here, in case a later session
+has since cleaned them up.
+
+**Checked directly before installing, not assumed:** diffed the new `date_index.json` against the
+one it replaced — `items`, `operative_views`, `account_views`, `tier`, `counts`, `case_id`,
+`schema_version`, `step` are byte-identical; the ONLY addition is the top-level `near_misses` key
+(plus a new `timestamp`). `vital_doc_provenance.json` differs from its predecessor only in
+`timestamp` — a pure refresh, no content change. Also read every function in `tools/_archive_data.py`
+that touches `date_index.json` (`_date_used_index`, `_operative_views_index`) — both read only
+`items`/`operative_views` and silently ignore unknown top-level keys, so this install cannot have
+changed anything this repo currently does.
+
+**Verified, not just asserted:** loaded the new file through this repo's own `load_json` /
+`_date_used_index` / `_operative_views_index` directly against the real case path — parses, same
+non-empty results as before. Then hit the already-running examiner server at `127.0.0.1:7766`
+(the Desktop-launcher pinned copy, reading this same case directory) before and after the swap —
+Documents and the Checklist both rendered, no console errors, no server error. `./run_tests.sh`
+still green (798 passed / 3 skipped — restated here only as "still green," re-run it rather than
+trust that number later; the suite builds its own fixture cases and never touches the real one, so
+it was never going to catch a problem with this install — it's a sanity check on the repo, not on
+the case). One thing noticed, not caused by this install: the Vital-documents/Checklist counts
+shown on two page loads a few seconds apart, with nothing clicked in between, differed by one — a
+live multi-tab case changing under its own steam, exactly the "a count that moved is more often
+that than a bug" warning in `CLAUDE.md`; re-derive any count fresh rather than trust either reading.
+
+**Still true from the entry below, unchanged by this install:** the `near_misses` key is NOT
+consumed by any code in this repo yet — `near_miss_rows()`/`_near_miss_hits()` still read the older,
+differently-shaped `vital_doc_candidates.json` exclusively. Installing the file only makes the data
+available on disk; to-do #3 two entries below (why no emails show up as vital/near-miss) is the
+design work of deciding whether/how to read this new key, and per that entry's own note, there is
+still no contract doc for its shape (unlike `operative_views`) — read the file fresh and consider
+asking Richard for one before building against it, rather than trusting this paragraph's recollection
+of its fields.
+
+**Blocked:** on a design decision (to-do #2) and the investigation (to-do #3) before writing any
+code that reads `near_misses` — nothing here changes that.
+
+**Next action:** pick up to-do #3 from the entry below — read `near_misses` items fresh (don't trust
+field names quoted in old entries) and check whether `near_miss_rows()` would need a second data
+path, or a merge, to surface email-sourced near-misses this new key already resolves.
+
+---
+
 ### 2026-10-16, newest — Richard sent a refreshed date_index.json with a NEW `near_misses` key; directly answers to-do #3 below
 
 **Not yet installed into the case — sitting in Downloads, not in `oct7_mf`'s `output/metadata/`.**

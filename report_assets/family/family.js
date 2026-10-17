@@ -3856,8 +3856,17 @@
 
       if (targets.length) {
         sep(ul);
+        // A found item is anything in t.items — vital_docs_data() puts a path
+        // there only once it's confirmed (or examiner-promoted), whether it
+        // resolved to a browsable file, an email thread, a conversation, a
+        // recording, or (rarely) none of those (a stub row). Filtering on
+        // `file_id` here would silently drop every email/message/recording-
+        // sourced item from every count below even though each one still
+        // renders with a working link once its target's drawer is open —
+        // counted that way, "Vital documents" under-reported a real case by
+        // 10 (every email-sourced confirmed item) the day this was found.
         var foundItems = 0;
-        targets.forEach(function (t) { foundItems += (t.items || []).filter(function (i) { return i.file_id; }).length; });
+        targets.forEach(function (t) { foundItems += (t.items || []).length; });
         trow(ul, { label: "Vital documents", count: foundItems, key: "vital", spec: { vital: "*" } });
         if (open.vital) {
           trow(ul, { label: "Checklist", depth: 1, spec: { docview: "checklist" },
@@ -3872,15 +3881,15 @@
             var ts = targets.filter(function (t) { return (t.group || "other") === g; });
             if (!ts.length) return;
             var gn = 0;
-            ts.forEach(function (t) { gn += (t.items || []).filter(function (i) { return i.file_id; }).length; });
+            ts.forEach(function (t) { gn += (t.items || []).length; });
             var gkey = "vital/" + g;
             // A group with something found starts open; the viewer's own toggle wins after.
             if (open[gkey] == null) open[gkey] = gn > 0;
             trow(ul, { label: glabel[g] || "Other", count: gn, depth: 1, key: gkey, muted: !gn });
             if (!open[gkey]) return;
             ts.forEach(function (t) {
-              var n = (t.items || []).filter(function (i) { return i.file_id; }).length;
-              var unconf = (t.items || []).filter(function (i) { return i.file_id && !i.reviewed; }).length;
+              var n = (t.items || []).length;
+              var unconf = (t.items || []).filter(function (i) { return !i.reviewed; }).length;
               trow(ul, { label: t.label, count: n, depth: 2, spec: { vital: t.target },
                          muted: !t.found, title: t.found ? null : "Searched for; not found in this collection",
                          mark: EXAMINER && unconf ? "◆" : null,
