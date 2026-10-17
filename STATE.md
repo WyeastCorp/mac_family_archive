@@ -23,6 +23,86 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — to-do #4 built: By-year documents now nest by vital category instead of a flat count
+
+**Branch:** `claude/amazing-cannon-7fe56b` (built in its own worktree, per the task's own isolation — check `gh pr
+list --repo WyeastCorp/mac_family_archive --state open` before assuming it's merged).
+
+**What changed, and why this shape specifically:** the to-do (STATE's "PR #15 merged" entry,
+five-to-dos-down from here) asked to un-nest the Documents page's By-year view to match the
+original mockup instead of the flat per-year count PR #12 shipped as a deliberate v1
+simplification. Read the actual mockup artifact (`project/Documents.dc.html` on the canvas
+`memory/wyeast-frontend-brainstorm.md` points at) before building, rather than guessing from the
+to-do's one sentence — worth re-reading that canvas yourself before trusting this paragraph's
+summary of it, it may have moved on. The mockup nests EVERY document (vital or not) by its full
+category/subcategory within a year. This repo's real data can't support that: `documents_year_index`
+only ever gets a year from a vital document's `date_used` (see its own docstring, and the
+2026-10-16 "By-year" entry below) — ordinary documents have no date at all, so every document that
+lands in a real year already IS a vital document. Nesting by the mockup's full category taxonomy
+would have meant inventing a second grouping scheme for documents that already have one; instead
+each year now nests by the SAME `VITAL_DOC_GROUPS` category the Checklist already uses (`tax_records`
+→ "Taxes", `real_estate_property` → "Property", etc.) — matching, not duplicating, how the rest of
+the app already groups vital documents. "No date" never nests; it holds only non-vital documents,
+which have no group to nest by.
+
+**Where:** `documents_year_index()` in `tools/_archive_data.py` now returns `[{year, count,
+groups: [{group, label, count}]}]` instead of `[{year, count}]` — additive, not a breaking rename.
+`tools/family_archive.py` gained `_document_year_vital` (the one vital entry both the year AND the
+group are read from, so a document matching more than one vital target can't end up attributed to a
+year from one match and a group from another) and a new `?vital_group=` filter in
+`_filter_documents`. `report_assets/family/family.js`'s `arrange === "year"` tree now renders each
+year as an expandable row with its groups nested one level in, reusing the exact same `trow`/`open`/
+`glabel` machinery the Checklist's own vital-group nesting already uses (hoisted `glabel` to the
+shared scope both now read, removing a duplicate declaration) — not a second implementation of
+group-row rendering. New query param `vital_group` threads through `encodeURL`'s persist whitelist,
+`view`/`pick`/`isCurrent`, the pager's `getParams`, and the breadcrumb click-handler, the same way
+`year` itself already did.
+
+**Tested:** `tests/unit/test_archive_data.py` gained six new tests on the pure `documents_year_index`
+function (nesting, the always-empty "No date" groups list, the `group`-key fallback to
+`vital_doc_group(target)`, the "Other" fallback label, and — the one most worth re-reading before
+trusting the behavior — that a document matching several vital targets gets its year AND its group
+from the SAME entry, not two different ones). `tests/unit/test_family_archive.py`'s existing
+`test_api_section_documents_year_index_and_year_filter` was extended (not replaced) to also assert
+the nested `groups` shape and exercise the real `?vital_group=` filter end-to-end through
+`api_section`, not just the pure function in isolation. `./run_tests.sh` green — re-run it yourself
+rather than trust a count quoted here.
+
+**Verified live, not just by reading the diff:** started a THIRD server instance on port 7801 (7766,
+7783 and 7790 were all other sessions' live examiner servers at the time — checked with `lsof`
+first, never touched) against the real `oct7_mf` case. Clicked "By year", expanded a year with
+several hundred documents and saw it nest into real groups whose counts summed back to the year's
+own total (re-check live rather than trust a figure here — the undo/triage history in this case
+means it moves), clicked into one nested group and got exactly its own documents with a correct
+breadcrumb back to the year. Reloaded the resulting direct-link URL
+(`?year=2023&vital_group=estate_legal&arrange=year`) fresh — the prior By-year entry below records
+TWO wiring bugs that only showed up on a direct link, not a click, so this was checked deliberately:
+the tree auto-expanded the year and the pane showed the same single filtered document, both correct
+on first load. Confirmed "No date" (still the large majority of this case's documents, per the
+2026-10-16 By-year entry's own finding — re-check it, don't trust either entry's figure) renders
+with no expand chevron and no groups, as designed. Also reloaded the existing "By subject"
+arrangement and the Checklist page (which now shares its group-label map with the new code) to
+confirm neither regressed. No console errors on any of these loads. **Not separately verified:**
+the family role — this case is pre-release, so the family GET surface is gated closed (E5) and would
+need a second server process (`--role family`) to even reach a page; the data-layer functions this
+feature touches are role-agnostic (same `documents_year_index`/`_filter_documents` either role goes
+through), so this is a reasoned-through gap, not an untested one, but a real family-role click-through
+on a released case hasn't happened.
+
+**PII check:** the live verification above opened real document names and at least one real person's
+name in the browser (not in this file, a commit, or the PR). Nothing from the live case is quoted
+anywhere in the branch's commits, this entry, or the PR body — every example above uses the group
+labels/categories, which identify no one, same as `CLAUDE.md` requires.
+
+**Blocked:** nothing. The branch is ready for CI once pushed.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>` to check CI, then
+either merge this (the user's own call, not done here) or pick up another to-do from the "PR #15
+merged" entry below — #3 is already answered (see the entry right below this one); #1 and #2 are
+still open.
+
+---
+
 ### 2026-10-16, newest — to-do #3 investigated: email-thread linking already works; found and fixed a real undercount bug instead
 
 **Branch:** `claude/vital-docs-checklist-email-count-2026-10-16` (not yet merged — check `gh pr

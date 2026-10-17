@@ -3513,9 +3513,8 @@ def documents_index(rows):
 
 
 def documents_year_index(rows):
-    """Group document rows by year for the By-year arrangement (2026-10-16,
-    built honestly per the user's own call): [{year, count}], years
-    descending, "No date" always last regardless of count.
+    """Group document rows by year for the By-year arrangement: [{year, count,
+    groups}], years descending, "No date" always last regardless of count.
 
     The pipeline gives a date to exactly the ~13 vital document kinds (see
     the undated-ordinary-documents finding, 2026-10-15) — `r["vital"]`
@@ -3527,23 +3526,49 @@ def documents_year_index(rows):
     have `.vital` attached (api_section's documents branch does this before
     calling in); a plain document_rows() row with no `.vital` key reads as
     undated, same as one that has the key but no date_used.
+
+    `groups` (2026-10-17, un-nesting the v1 flat count per the user's to-do:
+    "match the original mockup") is each year's documents broken out by the
+    SAME VITAL_DOC_GROUPS category the Checklist already nests vital
+    documents into — [{group, label, count}], highest count first. Since
+    every document that lands in a real year IS a vital document (nothing
+    else is dated), "nested by subject within a year" the mockup asked for
+    has no other taxonomy to draw on here; inventing a second one would
+    contradict the Checklist's own grouping for the same documents. A
+    document matching several vital targets is attributed to whichever one
+    gave it its year — the SAME entry `_document_year`/`_document_year_vital`
+    pick in tools/family_archive.py, so a document's year and its group
+    always agree. "No date" never gets a breakdown: it holds only ordinary,
+    un-vital documents, which carry no group to nest by.
     """
     years = {}
     nodate = 0
     for r in rows:
-        y = None
+        year = None
+        group = None
         for v in r.get("vital") or ():
             val = str((v.get("date_used") or {}).get("value") or "")
             if len(val) >= 4 and val[:4].isdigit():
-                y = val[:4]
+                year = val[:4]
+                group = v.get("group") or vital_doc_group(v.get("target"))
                 break
-        if y is None:
+        if year is None:
             nodate += 1
         else:
-            years[y] = years.get(y, 0) + 1
-    out = [{"year": y, "count": c} for y, c in years.items()]
+            bucket = years.setdefault(year, {"count": 0, "groups": {}})
+            bucket["count"] += 1
+            gk = group or "other"
+            bucket["groups"][gk] = bucket["groups"].get(gk, 0) + 1
+    out = []
+    for year, bucket in years.items():
+        group_list = [
+            {"group": gk, "label": VITAL_DOC_GROUPS[gk][0] if gk in VITAL_DOC_GROUPS else "Other", "count": c}
+            for gk, c in bucket["groups"].items()
+        ]
+        group_list.sort(key=lambda e: (-e["count"], e["label"]))
+        out.append({"year": year, "count": bucket["count"], "groups": group_list})
     out.sort(key=lambda e: e["year"], reverse=True)
-    out.append({"year": "nodate", "count": nodate})
+    out.append({"year": "nodate", "count": nodate, "groups": []})
     return out
 
 

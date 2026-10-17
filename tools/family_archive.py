@@ -84,7 +84,7 @@ from tools._archive_data import (  # noqa: E402
     person_display_name, places_data, ranked_key, review_data, _identity_name,
     scanned_image_rows, timeline_rows, timeline_data, on_this_day_data, venues_data,
     tokenize, transcript_detail, video_rows, vital_docs_data, vital_doc_item_id,
-    near_miss_rows, vital_doc_label, vital_source_email,
+    near_miss_rows, vital_doc_label, vital_doc_group, vital_source_email,
     quarantine_pager_items, vital_pager_items,
     junk_rows, transparency_data, guided_review_data,
     apply_face_overlay, resolve_merge, is_video_frame, video_viewable, SCENE_LABELS,
@@ -533,16 +533,38 @@ _DOC_SORTS = {
 }
 
 
-def _document_year(r):
-    """The 4-digit year a document row's vital date_used falls in, or None —
-    the ONLY date any document in this app ever has (see documents_year_index
-    for why this means "no date" for nearly every ordinary document). Reads
-    the row's OWN first vital entry, same source Detail's docDateOf uses."""
+def _document_year_vital(r):
+    """The row's own first `vital` entry that carries a date, or None — the
+    ONE entry `_document_year` and `_document_group` both read, so a
+    document's year and its By-year group nesting always agree on which
+    vital match produced them, even when the document matches more than one
+    vital target. Same source Detail's docDateOf uses."""
     for v in r.get("vital") or ():
         val = str((v.get("date_used") or {}).get("value") or "")
         if len(val) >= 4 and val[:4].isdigit():
-            return val[:4]
+            return v
     return None
+
+
+def _document_year(r):
+    """The 4-digit year a document row's vital date_used falls in, or None —
+    the ONLY date any document in this app ever has (see documents_year_index
+    for why this means "no date" for nearly every ordinary document)."""
+    v = _document_year_vital(r)
+    if not v:
+        return None
+    return str((v.get("date_used") or {}).get("value"))[:4]
+
+
+def _document_group(r):
+    """The VITAL_DOC_GROUPS category (e.g. "tax_records") the same vital entry
+    that gave this row its year belongs to, or None — the By-year
+    arrangement's nested-group filter (?vital_group=), matching exactly the
+    group documents_year_index attributed the row to."""
+    v = _document_year_vital(r)
+    if not v:
+        return None
+    return v.get("group") or vital_doc_group(v.get("target"))
 
 
 def _filter_documents(rows, params):
@@ -555,7 +577,11 @@ def _filter_documents(rows, params):
     a checklist item for that target (`vital=*` → any target; needs rows stamped
     by _attach_vital); ?year=<YYYY>|nodate narrows by _document_year (the By-year
     arrangement, 2026-10-16 — mutually exclusive with ?cat/?vital in the UI, but
-    not enforced here, same as every other filter); ?sort=name|kind|significance
+    not enforced here, same as every other filter); ?vital_group=<group> narrows
+    further to the VITAL_DOC_GROUPS category documents_year_index nested that
+    year's documents into (2026-10-17, the By-year arrangement's un-nesting —
+    see _document_group for why this agrees with the year filter even when a
+    document matches more than one vital target); ?sort=name|kind|significance
     with ?dir=asc|desc reorders."""
     cat = _one(params, "cat")
     out = rows
@@ -576,6 +602,9 @@ def _filter_documents(rows, params):
         out = [r for r in out if _document_year(r) is None]
     elif year:
         out = [r for r in out if _document_year(r) == year]
+    vgroup = _one(params, "vital_group")
+    if vgroup:
+        out = [r for r in out if _document_group(r) == vgroup]
     key = _DOC_SORTS.get(_one(params, "sort"))
     if key:
         default_desc = _one(params, "sort") == "significance"
