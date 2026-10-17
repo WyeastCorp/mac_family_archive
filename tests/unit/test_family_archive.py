@@ -1903,33 +1903,57 @@ def _pages(case, name, params_base, limit=10):
 
 
 def test_api_section_documents_year_index_and_year_filter(tmp_path):
-    """By-year arrangement (2026-10-16): year_index rides the envelope
-    alongside the category index, and ?year=/?year=nodate narrow the rows —
-    built from the SAME vital date_used join Detail's docDateOf reads, since
-    that's the only date any document in this app ever has."""
+    """By-year arrangement: year_index rides the envelope alongside the
+    category index, and ?year=/?year=nodate narrow the rows — built from the
+    SAME vital date_used join Detail's docDateOf reads, since that's the only
+    date any document in this app ever has.
+
+    Also covers the un-nesting (2026-10-17, to-do #4): a year's documents
+    break out by vital group in year_index, and ?vital_group= narrows the
+    rows to just that group within the year — through the real server path
+    (_attach_vital → documents_year_index → _filter_documents), not just the
+    pure function in isolation (see test_archive_data.py for that)."""
     case, paths = setup_case(tmp_path)
     summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
     summ["document_classifications"] = [
         {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
          "source": "document", "significance": 5, "summary": "A will."},
+        {"file": "/d/deed.pdf", "filename": "deed.pdf", "category": "legal",
+         "source": "document", "significance": 4, "summary": "A deed."},
         {"file": "/d/recipe.pdf", "filename": "recipe.pdf", "category": "recipe",
          "source": "document", "significance": 1, "summary": "A recipe."},
     ]
     (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
-    (paths.metadata_dir / "vital_doc_confirmed.json").write_text(
-        json.dumps([{"path": "/d/will.pdf", "target": "will_testament", "tag": "will"}]))
-    (paths.metadata_dir / "vital_doc_candidates.json").write_text(
-        json.dumps({"will_testament": {"description": "a will", "hits": []}}))
-    (paths.metadata_dir / "date_index.json").write_text(json.dumps(
-        {"items": [{"file": "/d/will.pdf", "date_used": {"value": "2015-02"}}]}))
+    (paths.metadata_dir / "vital_doc_confirmed.json").write_text(json.dumps([
+        {"path": "/d/will.pdf", "target": "will_testament", "tag": "will"},
+        {"path": "/d/deed.pdf", "target": "deed_title", "tag": "deed"},
+    ]))
+    (paths.metadata_dir / "vital_doc_candidates.json").write_text(json.dumps({
+        "will_testament": {"description": "a will", "hits": []},
+        "deed_title": {"description": "a deed", "hits": []},
+    }))
+    (paths.metadata_dir / "date_index.json").write_text(json.dumps({"items": [
+        {"file": "/d/will.pdf", "date_used": {"value": "2015-02"}},
+        {"file": "/d/deed.pdf", "date_used": {"value": "2015-07"}},
+    ]}))
     case.load()
 
     full = case.api_section("documents", {})
-    assert full["year_index"] == [{"year": "2015", "count": 1}, {"year": "nodate", "count": 1}]
+    assert full["year_index"] == [
+        {"year": "2015", "count": 2, "groups": [
+            {"group": "estate_legal", "label": "Estate & legal", "count": 1},
+            {"group": "real_estate_property", "label": "Property", "count": 1},
+        ]},
+        {"year": "nodate", "count": 1, "groups": []},
+    ]
     by_year = case.api_section("documents", {"year": "2015"})
-    assert {r["file"] for r in by_year["rows"]} == {"/d/will.pdf"}
+    assert {r["file"] for r in by_year["rows"]} == {"/d/will.pdf", "/d/deed.pdf"}
     undated = case.api_section("documents", {"year": "nodate"})
     assert {r["file"] for r in undated["rows"]} == {"/d/recipe.pdf"}
+    # Clicking a nested group row narrows to just that group within the year —
+    # the deed stays out even though it's in the same year as the will.
+    by_group = case.api_section("documents", {"year": "2015", "vital_group": "estate_legal"})
+    assert {r["file"] for r in by_group["rows"]} == {"/d/will.pdf"}
 
 
 def test_api_section_paginates_documents_true_total_and_index(tmp_path):
