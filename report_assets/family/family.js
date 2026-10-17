@@ -3780,11 +3780,13 @@
     var index = data.index || [];
     var yearIndex = data.year_index || [];
     var vd = data.vital_docs || {};
+    var starredCount = data.starred_count || 0;
     var total = 0;
     index.forEach(function (c) { total += c.count; });
     var ROWS = {};          // file → row, for drops and the viewer
     var view = { cat: Q.cat || "", subcat: Q.subcat || "", vital: Q.vital || "", docview: Q.docview || "",
-                 coll: Q.collection_curation || "", year: Q.year || "", vgroup: Q.vital_group || "" };
+                 coll: Q.collection_curation || "", year: Q.year || "", vgroup: Q.vital_group || "",
+                 star: Q.favorite_curation || "" };
     // By-year arrangement (2026-10-16): a separate axis from the folder tree
     // itself, like layout — which PRIMARY list the tree shows (subject
     // categories vs. years), not which one is selected within it.
@@ -3832,6 +3834,7 @@
       getJSON("/api/documents?limit=1" + (includeEmails ? "&include_emails=1" : "")).then(function (d) {
         index = d.index || [];
         yearIndex = d.year_index || [];
+        starredCount = d.starred_count || 0;
         total = 0; index.forEach(function (c) { total += c.count; });
         maxCount = 1; index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
         drawTree();
@@ -3844,13 +3847,14 @@
       return (spec.docview || "") === view.docview && (spec.cat || "") === view.cat &&
              (spec.subcat || "") === view.subcat && (spec.vital || "") === view.vital &&
              (spec.coll || "") === view.coll && (spec.year || "") === view.year &&
-             (spec.vgroup || "") === view.vgroup;
+             (spec.vgroup || "") === view.vgroup && (spec.star || "") === view.star;
     }
     function pick(spec) {
       view = { cat: spec.cat || "", subcat: spec.subcat || "", vital: spec.vital || "", docview: spec.docview || "",
-               coll: spec.coll || "", year: spec.year || "", vgroup: spec.vgroup || "" };
+               coll: spec.coll || "", year: spec.year || "", vgroup: spec.vgroup || "", star: spec.star || "" };
       setQ({ cat: view.cat, subcat: view.subcat, vital: view.vital, docview: view.docview,
-             collection_curation: view.coll, year: view.year, vital_group: view.vgroup });
+             collection_curation: view.coll, year: view.year, vital_group: view.vgroup,
+             favorite_curation: view.star });
       clearSel();
       drawTree(); drawPane(true);
     }
@@ -4060,6 +4064,15 @@
       if (EXAMINER) {
         sep(ul);
         var cap = el("li", "tcap", "Collections"); ul.appendChild(cap);
+        // Starred (2026-10-17): the examiner curation star (the Detail card's
+        // ☆ Star button, favorite_curation) already existed, but nothing on
+        // Documents could browse just the starred set — same gap Photos'
+        // "Starred" chip already closed there. Lives in Collections, first,
+        // since it's a universal grouping rather than one named collection
+        // among others. Always shown, muted at 0 — same "a real zero is
+        // still information" rule Near-misses already uses.
+        trow(ul, { label: "Starred", count: starredCount, muted: !starredCount,
+                   spec: { star: "1" } });
         if (COLLS == null) {
           getJSON("/api/collections").then(function (d) {
             COLLS = (d && d.collections) || []; drawTree();
@@ -4115,6 +4128,7 @@
         var cc = (COLLS || []).filter(function (x) { return x.slug === view.coll; })[0];
         return ["Collections", cc ? cc.title : view.coll];
       }
+      if (view.star) return ["Collections", "Starred"];
       if (view.vital) {
         if (view.vital === "*") return ["Vital documents", "All vital documents"];
         var t = targets.filter(function (x) { return x.target === view.vital; })[0];
@@ -4157,6 +4171,9 @@
           if (view.subcat) pick({ cat: view.cat });
           else if (view.vgroup) pick({ year: view.year });
           else if (view.vital || view.docview) pick({ vital: "*" });
+          // Starred has no standalone page the way named collections do
+          // (/collections) — it's a filter within Documents only, so it
+          // deliberately has no case here and falls through to plain pick({}).
           else if (view.coll) { if (CTX.solo) pick({}); else location.href = "/collections"; }
           else pick({});
         };
@@ -4263,14 +4280,14 @@
       pg = pager("/api/documents", {
         getParams: function () {
           return { cat: view.cat, subcat: view.subcat, vital: view.vital, collection_curation: view.coll,
-                   year: view.year, vital_group: view.vgroup, sort: sort.by, dir: sort.dir,
-                   include_emails: includeEmails ? "1" : "" };
+                   year: view.year, vital_group: view.vgroup, favorite_curation: view.star,
+                   sort: sort.by, dir: sort.dir, include_emails: includeEmails ? "1" : "" };
         },
         render: function () { drawBody(); },
       });
       pg.limit = 300;
       pane.appendChild(pg.footer);
-      if (fetch || view.cat || view.vital || view.coll || view.year || view.vgroup || sort.by) pg.load(true); else pg.seed(data);
+      if (fetch || view.cat || view.vital || view.coll || view.year || view.vgroup || view.star || sort.by) pg.load(true); else pg.seed(data);
     }
 
     // Vital items with no document file (email/message/recording sourced) can't

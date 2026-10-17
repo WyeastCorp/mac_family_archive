@@ -622,7 +622,8 @@ def _filter_documents(rows, params):
     separately, from all rows, so counts stay correct).
 
     ?cat=/subcat= narrow to a category; ?collection_curation=<slug> to one curation
-    collection (needs rows stamped by apply_curation); ?vital=<target> to the documents that are
+    collection, ?favorite_curation=1 to starred documents (2026-10-17 — both need rows
+    stamped by apply_curation); ?vital=<target> to the documents that are
     a checklist item for that target (`vital=*` → any target; needs rows stamped
     by _attach_vital); ?year=<YYYY>|nodate narrows by _document_year (the By-year
     arrangement, 2026-10-16 — mutually exclusive with ?cat/?vital in the UI, but
@@ -642,6 +643,12 @@ def _filter_documents(rows, params):
     coll = _one(params, "collection_curation")
     if coll:
         out = [r for r in out if coll in (r.get("collections") or ())]
+    # Starred (2026-10-17): the examiner curation star, same virtual filter
+    # _apply_photo_view already has for Photos — reads the SAME favorite_curation
+    # overlay key apply_curation stamps, just never had a Documents-side filter
+    # or a sidebar entry point to reach it from.
+    if _one(params, "favorite_curation") == "1":
+        out = [r for r in out if r.get("favorite_curation")]
     vital = _one(params, "vital")
     if vital:
         out = [r for r in out
@@ -1596,6 +1603,14 @@ class ArchiveCase:
         if name == "documents":
             data = self.section("documents")           # {index, rows(full), vital_docs}
             rows = apply_curation(data["rows"], curation, "file")
+            # Starred count (2026-10-17): from the full, curated-but-unfiltered set,
+            # same "index built before any user filter narrows it" rule `index`/
+            # `year_index` already follow, so the sidebar's "Starred" row shows the
+            # true total regardless of what category/vital/year filter is active.
+            # Always 0 for family — starring is examiner-only (the button that sets
+            # favorite_curation never renders for family), so this needs no extra
+            # role gate of its own.
+            starred_count = sum(1 for r in rows if r.get("favorite_curation"))
             rows = _attach_vital(rows, data["vital_docs"], self.vital_candidate_targets())
             # Ordinary-document dates (2026-10-17, to-do: scoped to Documents' By-year
             # for now — see STATE.md). AFTER _attach_vital: documents_year_index and
@@ -1631,6 +1646,7 @@ class ArchiveCase:
             page["index"] = index                       # full index (all rows)
             page["year_index"] = year_index
             page["vital_docs"] = data["vital_docs"]    # checklist panel (G-2)
+            page["starred_count"] = starred_count
             return page
         if name == "correspondence":
             data = self.section("correspondence")      # {typed, handwritten, scanned}

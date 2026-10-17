@@ -23,6 +23,43 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — Starred documents: a Documents-side filter for the existing curation star
+
+**Branch:** `claude/starred-documents-2026-10-17`, built in an isolated git worktree (not yet
+merged — check `gh pr list --repo WyeastCorp/mac_family_archive --state open` before assuming it
+landed). **Built in a worktree on purpose**, not the shared `~/mac_family_archive` checkout: a
+sibling session (another fork of this same conversation) was concurrently building the Near-misses
+sub-tree reorg in that SAME shared working tree, at the same time — the two sets of uncommitted
+edits ended up interleaved in `report_assets/family/family.js`. Recreating this change from scratch
+against a clean `main`, in isolation, was the clean way to land it without touching or risking
+their in-progress work. If you're reading this and `~/mac_family_archive`'s working tree still has
+uncommitted changes mixed with a sidebar reorg, that's probably still their branch in flight —
+check with `git log`/`git status` there before assuming it's this feature.
+
+**What shipped:** the user noticed there was no way to browse just the starred documents on the
+Documents page — starring itself already existed (the Detail card's ☆ Star button), Photos already
+had its own "Starred" chip, but Documents had neither a filter nor a sidebar entry point. Added
+both: `?favorite_curation=1` in `_filter_documents` (same virtual filter `_apply_photo_view`
+already has for Photos), and a "Starred" row in the sidebar's Collections section — first, since
+it's a universal grouping rather than one named collection among others. `starred_count` rides the
+page envelope the same way `index`/`year_index` do, computed from the full set before any filter
+narrows it. Examiner-only throughout, with no new role gate needed — starring is already
+examiner-only.
+
+**Verified live, not just by reading the diff:** a server started from the isolated worktree (own
+port, nothing else running there) against the real `oct7_mf` case — clicked "Starred" in the
+sidebar, got the correct breadcrumb and exactly the one real pre-starred document, no console
+errors. `./run_tests.sh`: 817 passed (816 + 1 new — the new test exercises the real server path,
+not just the pure filter function), 3 skipped.
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge — check first whether the sidebar reorg (Near-misses sub-tree) landed first and might
+conflict in `family.js`, same as the last few rounds of concurrent work this session.
+
+---
+
 ### 2026-10-17, newest — sidebar reorg #1–#3 built (Near-misses own section, Vital Checklist / Nonvital renames); #4 (By-year scope) still open
 
 **Branch:** `claude/sidebar-reorg-near-misses-nonvital-2026-10-17` (not yet merged — check `gh pr

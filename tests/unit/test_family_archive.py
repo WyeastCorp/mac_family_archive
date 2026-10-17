@@ -4850,6 +4850,28 @@ def test_overlay_stamps_rows_favorite_note_collections(tmp_path):
     assert "favorite_curation" not in b and "note" not in b and "collections" not in b
 
 
+def test_documents_favorite_curation_filter_and_starred_count(tmp_path):
+    """2026-10-17: Documents gets the same ?favorite_curation=1 virtual filter
+    Photos already had (_apply_photo_view) — before this, a document COULD be
+    starred (the Detail card's Star button, verb_favorite) but nothing on the
+    Documents page could filter down to just the starred ones. starred_count
+    rides the page envelope the same way index/year_index do: computed from
+    the full, curated-but-unfiltered set, so it reads correctly regardless of
+    which category/vital/year filter happens to be active."""
+    case, paths = setup_case(tmp_path)
+    fa.verb_favorite(case, {"id": DOC_FIN, "on": True})
+    unfiltered = case.api_section("documents", {})
+    assert unfiltered["starred_count"] == 1
+    starred = case.api_section("documents", {"favorite_curation": "1"})
+    assert [r["file"] for r in starred["rows"]] == [DOC_FIN]
+    assert starred["starred_count"] == 1
+    # Unstarring drops it from the filter and the count, same as it always
+    # does for Photos.
+    fa.verb_favorite(case, {"id": DOC_FIN, "on": False})
+    after = case.api_section("documents", {"favorite_curation": "1"})
+    assert after["rows"] == [] and after["starred_count"] == 0
+
+
 def test_set_owner_addresses_both_roles_and_undo(tmp_path):
     case_fam, paths = setup_case(tmp_path, role="family")
     res = fa.verb_set_owner_addresses(case_fam, {"addresses": ["Alex Rendon <a.rendon@example.com>"]})
