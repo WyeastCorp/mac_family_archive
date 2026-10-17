@@ -246,7 +246,7 @@
      "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
      "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug",
-     "year", "arrange", "q", "significance", "important", "has_attachment", "direction"]
+     "year", "vital_group", "arrange", "q", "significance", "important", "has_attachment", "direction"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
     return location.pathname + (q.length ? "?" + q.join("&") : "");
   }
@@ -3732,7 +3732,7 @@
     index.forEach(function (c) { total += c.count; });
     var ROWS = {};          // file → row, for drops and the viewer
     var view = { cat: Q.cat || "", subcat: Q.subcat || "", vital: Q.vital || "", docview: Q.docview || "",
-                 coll: Q.collection_curation || "", year: Q.year || "" };
+                 coll: Q.collection_curation || "", year: Q.year || "", vgroup: Q.vital_group || "" };
     // By-year arrangement (2026-10-16): a separate axis from the folder tree
     // itself, like layout — which PRIMARY list the tree shows (subject
     // categories vs. years), not which one is selected within it.
@@ -3759,6 +3759,11 @@
     index.forEach(function (c) { if (c.count > maxCount) maxCount = c.count; });
     var targets = vd.available ? (vd.targets || []) : [];
     var groups = vd.groups || [];
+    // Shared by the Checklist's own group nesting below AND the By-year
+    // arrangement's nested groups (same VITAL_DOC_GROUPS, same labels) — one
+    // map so the two never drift into different wording for the same group.
+    var glabel = {};
+    groups.forEach(function (g) { glabel[g.group] = g.label; });
     // Operative view (2026-10-16): the pipeline's OWN ranking for this vital
     // kind (date_index_contract.md §2), replacing the naive client-side
     // "newest date first" sort below for wills/POAs/trusts/beneficiary forms
@@ -3786,13 +3791,14 @@
     function isCurrent(spec) {
       return (spec.docview || "") === view.docview && (spec.cat || "") === view.cat &&
              (spec.subcat || "") === view.subcat && (spec.vital || "") === view.vital &&
-             (spec.coll || "") === view.coll && (spec.year || "") === view.year;
+             (spec.coll || "") === view.coll && (spec.year || "") === view.year &&
+             (spec.vgroup || "") === view.vgroup;
     }
     function pick(spec) {
       view = { cat: spec.cat || "", subcat: spec.subcat || "", vital: spec.vital || "", docview: spec.docview || "",
-               coll: spec.coll || "", year: spec.year || "" };
+               coll: spec.coll || "", year: spec.year || "", vgroup: spec.vgroup || "" };
       setQ({ cat: view.cat, subcat: view.subcat, vital: view.vital, docview: view.docview,
-             collection_curation: view.coll, year: view.year });
+             collection_curation: view.coll, year: view.year, vital_group: view.vgroup });
       clearSel();
       drawTree(); drawPane(true);
     }
@@ -3898,8 +3904,6 @@
                             (EXAMINER && vd.unconfirmed_count ? "; " + num(vd.unconfirmed_count) + " to confirm" : ""),
                      mark: EXAMINER && vd.unconfirmed_count ? num(vd.unconfirmed_count) + " to confirm" : null });
           var gorder = groups.map(function (g) { return g.group; });
-          var glabel = {};
-          groups.forEach(function (g) { glabel[g.group] = g.label; });
           targets.forEach(function (t) { if (gorder.indexOf(t.group || "other") < 0) gorder.push(t.group || "other"); });
           gorder.forEach(function (g) {
             var ts = targets.filter(function (t) { return (t.group || "other") === g; });
@@ -3926,13 +3930,29 @@
 
       sep(ul);
       if (arrange === "year") {
-        // Flat, not nested by subject within a year (the mockup's richer
-        // version) — a deliberate v1 simplification given how few documents
-        // have a year at all. "No date" always sorts last server-side,
-        // regardless of how large it is — it's usually the biggest folder.
+        // Nested by vital group within each year (2026-10-17, the mockup's
+        // richer version, un-nesting the old v1 flat count). Since only
+        // vital documents ever carry a date (see documents_year_index),
+        // everything inside a real year IS a vital document — so "nested by
+        // subject" here is the SAME VITAL_DOC_GROUPS category the Checklist
+        // already nests vital documents into, not a second taxonomy.
+        // "No date" never nests (it holds only ordinary, un-vital documents,
+        // which have no group to nest by) and always sorts last
+        // server-side, regardless of how large it is — it's usually the
+        // biggest folder.
         yearIndex.forEach(function (y) {
-          trow(ul, { label: y.year === "nodate" ? "No date" : y.year, count: y.count,
-                     spec: { year: y.year } });
+          var yname = y.year === "nodate" ? "No date" : y.year;
+          var ykey = "y:" + y.year;
+          var yg = y.groups || [];
+          if (yg.length && open[ykey] == null) open[ykey] = (view.year === y.year);
+          trow(ul, { label: yname, count: y.count, spec: { year: y.year },
+                     key: yg.length ? ykey : null });
+          if (yg.length && open[ykey]) {
+            yg.forEach(function (g) {
+              trow(ul, { label: glabel[g.group] || g.label, count: g.count, depth: 1,
+                         spec: { year: y.year, vgroup: g.group } });
+            });
+          }
         });
         if (!yearIndex.length) ul.appendChild(el("li", "tnone", "No documents yet."));
       } else {
@@ -4016,7 +4036,10 @@
         return ["Vital documents", t ? t.label : pretty(view.vital)];
       }
       if (view.cat) return view.subcat ? [pretty(view.cat), pretty(view.subcat)] : ["Documents", pretty(view.cat)];
-      if (view.year) return ["Documents", view.year === "nodate" ? "No date" : view.year];
+      if (view.year) {
+        var yname = view.year === "nodate" ? "No date" : view.year;
+        return view.vgroup ? [yname, glabel[view.vgroup] || pretty(view.vgroup)] : ["Documents", yname];
+      }
       return [null, "All documents"];
     }
     function drawPane(fetch) {
@@ -4047,6 +4070,7 @@
         var cb = el("button", "linkbtn", esc(tt[0]));
         cb.onclick = function () {
           if (view.subcat) pick({ cat: view.cat });
+          else if (view.vgroup) pick({ year: view.year });
           else if (view.vital || view.docview) pick({ vital: "*" });
           else if (view.coll) { if (CTX.solo) pick({}); else location.href = "/collections"; }
           else pick({});
@@ -4141,14 +4165,14 @@
       pg = pager("/api/documents", {
         getParams: function () {
           return { cat: view.cat, subcat: view.subcat, vital: view.vital, collection_curation: view.coll,
-                   year: view.year, sort: sort.by, dir: sort.dir,
+                   year: view.year, vital_group: view.vgroup, sort: sort.by, dir: sort.dir,
                    include_emails: includeEmails ? "1" : "" };
         },
         render: function () { drawBody(); },
       });
       pg.limit = 300;
       pane.appendChild(pg.footer);
-      if (fetch || view.cat || view.vital || view.coll || view.year || sort.by) pg.load(true); else pg.seed(data);
+      if (fetch || view.cat || view.vital || view.coll || view.year || view.vgroup || sort.by) pg.load(true); else pg.seed(data);
     }
 
     // Vital items with no document file (email/message/recording sourced) can't

@@ -595,19 +595,89 @@ def test_significance_bucket_counts_matches_each_filter_option():
 
 
 def test_documents_year_index_groups_by_vital_date_nodate_always_last():
+    """Un-nested count only (no groups asserted here): proves the year bucketing
+    and "No date" ordering are unaffected by adding the groups breakdown below —
+    the two concerns (which year, which group within it) are independent."""
     rows = [
-        {"file": "/d/will.pdf", "vital": [{"date_used": {"value": "2015-02"}}]},
-        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}}]},
-        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}}]},
+        {"file": "/d/will.pdf", "vital": [{"date_used": {"value": "2015-02"}, "group": "estate_legal"}]},
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}, "group": "tax_records"}]},
+        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}, "group": "tax_records"}]},
         {"file": "/d/recipe.pdf"},                              # no .vital at all
         {"file": "/d/deed.pdf", "vital": [{}]},                  # .vital present, no date_used
         {"file": "/d/odd.pdf", "vital": [{"date_used": {"value": "unreadable"}}]},
     ]
-    assert ad.documents_year_index(rows) == [
-        {"year": "2023", "count": 2},
-        {"year": "2015", "count": 1},
-        {"year": "nodate", "count": 3},
+    out = ad.documents_year_index(rows)
+    assert [(e["year"], e["count"]) for e in out] == [
+        ("2023", 2), ("2015", 1), ("nodate", 3),
     ]
+
+
+def test_documents_year_index_nests_by_vital_group_within_a_year():
+    """The un-simplified By-year view (to-do #4, 2026-10-17): under a year,
+    documents break out by the SAME VITAL_DOC_GROUPS category the Checklist
+    nests vital documents into — e.g. 2023's tax return and property deed are
+    their own groups, not one flat count. Two documents in the same group
+    (both tax_records) collapse into one group entry with count 2, highest
+    count first."""
+    rows = [
+        {"file": "/d/tax23.pdf", "vital": [{"date_used": {"value": "2023-04"}, "group": "tax_records"}]},
+        {"file": "/d/tax23b.pdf", "vital": [{"date_used": {"value": "2023-06"}, "group": "tax_records"}]},
+        {"file": "/d/deed23.pdf", "vital": [{"date_used": {"value": "2023-09"}, "group": "real_estate_property"}]},
+    ]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2023"
+    assert out[0]["count"] == 3
+    assert out[0]["groups"] == [
+        {"group": "tax_records", "label": "Taxes", "count": 2},
+        {"group": "real_estate_property", "label": "Property", "count": 1},
+    ]
+
+
+def test_documents_year_index_nodate_bucket_never_gets_a_groups_breakdown():
+    """"No date" holds only ordinary, un-vital documents — they carry no vital
+    group to nest by, so unlike every real year its groups list is always
+    empty, never a guess."""
+    rows = [{"file": "/d/recipe.pdf"}, {"file": "/d/letter.pdf"}]
+    out = ad.documents_year_index(rows)
+    assert out == [{"year": "nodate", "count": 2, "groups": []}]
+
+
+def test_documents_year_index_group_falls_back_to_vital_doc_group_of_target():
+    """A vital entry missing its own `group` key (older data, or a row built by
+    hand without _attach_vital's own stamping) still nests correctly — the same
+    vital_doc_group(target) lookup _attach_vital itself uses, not a silent
+    "ungrouped" miss."""
+    rows = [{"file": "/d/will.pdf",
+             "vital": [{"date_used": {"value": "2020-01"}, "target": "will_testament"}]}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["groups"] == [{"group": "estate_legal", "label": "Estate & legal", "count": 1}]
+
+
+def test_documents_year_index_unknown_vital_group_labeled_other():
+    """A target with no VITAL_DOC_GROUPS entry (vital_doc_group's own "other"
+    fallback) still nests, under the same "Other" label the Checklist itself
+    shows for an unmapped target — not a crash and not a silently dropped row."""
+    rows = [{"file": "/d/mystery.pdf",
+             "vital": [{"date_used": {"value": "2019-01"}, "target": "something_new"}]}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["groups"] == [{"group": "other", "label": "Other", "count": 1}]
+
+
+def test_documents_year_index_attributes_year_and_group_from_the_same_vital_entry():
+    """A document matching more than one vital target must attribute its year
+    AND its group from the SAME entry (the first one with a date) — otherwise
+    a document could land in a year and a group that don't belong to the same
+    underlying match. Mirrors _document_year_vital in family_archive.py, which
+    this index has to stay in lockstep with for the filter and the index to
+    agree on what a click shows."""
+    rows = [{"file": "/d/dual.pdf", "vital": [
+        {"date_used": {"value": "unreadable"}, "group": "tax_records"},    # skipped: no usable date
+        {"date_used": {"value": "2021-05"}, "group": "real_estate_property"},  # this one wins
+        {"date_used": {"value": "2021-11"}, "group": "tax_records"},       # never reached
+    ]}]
+    out = ad.documents_year_index(rows)
+    assert out[0]["year"] == "2021"
+    assert out[0]["groups"] == [{"group": "real_estate_property", "label": "Property", "count": 1}]
 
 
 def test_email_category_counts_tallies_every_category_on_a_thread():
