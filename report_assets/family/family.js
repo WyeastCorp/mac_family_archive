@@ -3371,6 +3371,30 @@
         num(ov.neither) + (ov.neither_pct != null ? " <span class='pct'>(" + ov.neither_pct + "%)</span>" : "")));
     }
 
+    // Emails at a glance (2026-10-17, to-do #1): the email-side mirror of
+    // Documents at a glance above — of every email thread the archive holds,
+    // how many are vital / an unresolved near-miss candidate / neither. See
+    // report_data's email_overview docstring for why this is counted by
+    // THREAD (matching the Emails tab's own total) rather than by individual
+    // message, and why there's no "found by the pipeline" line the way
+    // Documents has one — email_triage's pre-triage count is message-grain,
+    // a different population than this thread-grain total, so pairing them
+    // would mislead rather than inform.
+    var eov = data.email_overview || {};
+    if (eov.total) {
+      main.appendChild(el("h2", "sec", "Emails at a glance"));
+      var sheetEov = el("div", "sheet"); main.appendChild(sheetEov);
+      sheetEov.appendChild(reportRow("In this archive", num(eov.total)));
+      sheetEov.appendChild(reportRow("Vital",
+        num(eov.vital) + (eov.vital_pct != null ? " <span class='pct'>(" + eov.vital_pct + "%)</span>" : "")));
+      if (eov.near_miss != null) {
+        sheetEov.appendChild(reportRow("Near-miss (unresolved)",
+          num(eov.near_miss) + (eov.near_miss_pct != null ? " <span class='pct'>(" + eov.near_miss_pct + "%)</span>" : "")));
+      }
+      sheetEov.appendChild(reportRow(eov.near_miss != null ? "Neither" : "Not yet confirmed vital",
+        num(eov.neither) + (eov.neither_pct != null ? " <span class='pct'>(" + eov.neither_pct + "%)</span>" : "")));
+    }
+
     main.appendChild(el("h2", "sec", "1 · What's here"));
     var total = 0; (data.here_folders || []).forEach(function (f) { total += f.count; });
     main.appendChild(el("p", "lede", num(total) + " documents, filed into " +

@@ -98,8 +98,53 @@ labels/categories, which identify no one, same as `CLAUDE.md` requires.
 
 **Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>` to check CI, then
 either merge this (the user's own call, not done here) or pick up another to-do from the "PR #15
-merged" entry below — #3 is already answered (see the entry right below this one); #1 and #2 are
-still open.
+merged" entry further below — by the time this merged, the entry right below this one (to-do #1)
+and to-do #3 (two entries below) were both already done too, built concurrently in a separate
+worktree; re-check `gh pr list` for current merge state rather than trust either entry. Only #2 and
+#5 are still open.
+
+### 2026-10-17, newest — to-do #1 built: "Emails at a glance" on the Report page
+
+**Branch:** `claude/emails-at-a-glance-2026-10-17` (not yet merged — check `gh pr list --repo
+WyeastCorp/mac_family_archive --state open` before assuming it landed).
+
+**What shipped:** the Report page now has an "Emails at a glance" section, same x/y/z/a shape
+as the existing "Documents at a glance" — of every email thread the archive holds, how many are
+vital, an unresolved near-miss, or neither. `tools/_archive_data.py`: `vital_docs_data()` gains
+`vital_email_thread_count` / `near_miss_email_thread_count` (built off the SAME thread-link
+resolution the Checklist already uses — the plumbing the previous entry below proved correct, not
+a new lookup); `report_data()` gains an `email_overview` block mirroring `doc_overview`.
+`report_assets/family/family.js`: a new sheet, same pattern as the Documents one.
+
+**Deliberately NOT done:** no "found by the pipeline" line the email side (unlike Documents' pre-
+filing count). `email_triage_summary.json`'s `email_count`/`kept_count` are MESSAGE-grain; this
+whole feature counts by THREAD (same unit `counts["emails"]`/the Emails tab already use) — pairing
+a message-grain number with a thread-grain total would show something that LOOKS like one honest
+partition but isn't. Left out rather than shown misleading.
+
+**Verified, not just reasoned through — re-check before trusting the specific numbers here, they
+rot like any other count:** ran a fresh local server against the real `oct7_mf` case (examiner
+role, a throwaway port, never 7766/7783) and confirmed live: the new "In this archive" total
+matches the Processed section's own Emails tile exactly (same number, zero drift — that's
+`counts["emails"]` reused, not recomputed). Cross-checked the "vital" count two independent ways —
+counted confirmed `.eml` paths directly in `vital_doc_confirmed.json`, and separately pulled every
+item's resolved `thread_id` from the live API and counted distinct ids — both landed on the same
+number, confirming the thread-grain count isn't accidentally equal to a path-grain one. Couldn't
+live-test the FAMILY role's rendering: `oct7_mf` predates the release gate, so family GET is closed
+end to end on this case (confirmed live — the family page says exactly that) — covered instead by
+new unit tests in `tests/unit/test_archive_data.py`, including one that forces two different
+messages (one confirmed, one a near-miss candidate) into the SAME thread to prove the "a thread
+already counted vital doesn't also count near-miss" rule actually fires, not just coincidentally
+holds on non-overlapping fixtures. `./run_tests.sh`: 804 passed (798 + 6 new), 3 skipped.
+
+**Blocked:** nothing.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or move to one of the remaining to-dos from the "five new to-dos" entry further below — #1
+(this one) and #3 (the email/near-miss investigation, two entries below) are now done; #2 (a
+dedicated near-miss browsing view) and #4 (by-year un-nesting) are self-contained and can start
+independently; #5 (a written report for Richard) is a writing task, not code. (#4 was also built
+concurrently in a separate worktree — see the entry above this one.)
 
 ---
 
