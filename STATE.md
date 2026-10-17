@@ -23,7 +23,81 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
-### 2026-10-17, newest — Richard's THIRD round installed (date_index/vital_doc_provenance); the new `corpus_dates.json` is NOT, still needs scoping
+### 2026-10-17, newest — corpus_dates.json wired into Documents' By-year ("Nonvital" group); Photos/Audio/Videos exposure recorded as a separate to-do
+
+**Branch:** `claude/corpus-dates-by-year-2026-10-17` (not yet merged — check `gh pr list --repo
+WyeastCorp/mac_family_archive --state open` before assuming it landed).
+
+**The scope decision, made by the user this session:** Documents' By-year only, not Photos/Audio/
+Videos/Messages — even though `corpus_dates.json` has real data for all of them (see the entry two
+below for the numbers). Reasoning, in the user's own words: the UI they actually use day to day
+(the Desktop launcher, `--documents-only`) can't reach those other sections at all regardless of
+what the data supports, so building there first would be invisible to them. **Separately
+recorded, not scoped or sized:** at some point this UI needs to actually expose Photos/Audio/
+Videos — see the entry two below for the full note; don't lose it just because this entry
+addressed Documents.
+
+**What shipped:** an ordinary (non-vital) document now gets a real year in By-year when
+`corpus_dates.json` has one for it, nested under a NEW "Nonvital" group — same term the (still
+unbuilt) sidebar-reorg to-do uses for the unlabeled category list, kept consistent on purpose.
+Vital documents are completely unaffected: `date_index.json` stays the one source of truth for a
+confirmed vital document's date; `corpus_dates.json` already defers to it (a vital document is a
+`{"see":"date_index"}` stub there, not a second, possibly-conflicting date) and the new code
+checks `r["vital"]` first, `r["corpus_date"]` only as a fallback — same precedence, enforced in
+code, not just assumed from the data being well-behaved.
+
+**Where:** `tools/_archive_data.py` gained `_corpus_dates_by_file(md)` (mirrors
+`_date_used_index`'s style — reads `corpus_dates.json`, scoped to `kind=="document"` entries that
+carry a real `date_used`, which excludes the `{"see":"date_index"}` stubs and every non-document
+kind for free, no special-casing). `documents_year_index()` now falls back to `r["corpus_date"]`
+when there's no vital date, grouping those as `"nonvital"` / `"Nonvital"`. `tools/family_archive.py`
+gained `_attach_corpus_date()` (same copy-on-write pattern `_attach_vital` already uses, called
+right after it) and routed `_document_year`/`_document_group`'s old direct `.vital` read through a
+new `_document_year_source(r)` — the one place both now read, so a document's year and its group
+always agree regardless of which source produced them, same guarantee the vital-only version
+already gave. Two now-stale comments in `report_assets/family/family.js` claiming "only vital
+documents ever carry a date" were updated — re-read them if this area gets touched again, they're
+easy to let rot back out of date.
+
+**Tested:** 7 new tests — `tests/unit/test_archive_data.py` covers the pure `documents_year_index`/
+`_corpus_dates_by_file` behavior (nonvital grouping, vital-wins-over-corpus precedence, mixed
+groups within one year, unreadable/missing corpus dates staying in "No date"); one new test in
+`tests/unit/test_family_archive.py` exercises the REAL server path
+(`_attach_vital → _attach_corpus_date → documents_year_index → _filter_documents`), not just the
+pure functions — confirms `?year=`/`?vital_group=nonvital` actually narrow correctly through
+`case.api_section`. `./run_tests.sh`: 816 passed (809 + 7), 3 skipped.
+
+**Verified live, not just by reading the diff:** `corpus_dates.json` is now installed in the real
+case (see the entry two below for how/why — it had no existing file to replace, so no backup-first
+pattern applied, just a plain copy-in). Restarted the examiner server first (backend/Python
+change — static JS auto-reloads on this app, Python does not; see `memory/
+wyeast-server-restart-after-backend-change.md` for why). Confirmed: "No date"'s count dropped by
+exactly 2,338 from its prior (vital-only) figure — the same number `_corpus_dates_by_file` reports
+independently from the raw file, cross-checked rather than assumed to match. Expanded 2014 (513
+documents that year) and saw it nest into "Nonvital" (467) alongside the pre-existing vital groups
+"Business" (45) and "Banking" (1); clicked into "Nonvital" and confirmed every row returned
+actually carries a `corpus_date` matching what's shown, via the raw `/api/documents` response, not
+just the rendered page. No console errors. **Family role wasn't live-tested** — same release-gate
+blocker every entry this session has hit on this case (family GET is closed end to end on an
+unreleased case) — the data-layer functions are role-agnostic either way (same `documents_year_index`
+regardless of role), so this is a reasoned-through gap, not an untested code path, but a real
+family-role click-through hasn't happened.
+
+**Re-check before trusting any number in this entry** — re-derive "No date"'s count and the 2014
+breakdown fresh rather than trust the figures above; this is a live, multi-session case and counts
+here have already been observed to drift between page loads earlier today.
+
+**Blocked:** nothing on this piece.
+
+**Next action:** `gh pr view --repo WyeastCorp/mac_family_archive <this branch>`, check CI, then
+merge or move to one of the remaining to-dos — see the sidebar-reorg entry below for #1-#4 of the
+original five (all done except the written report for Richard, #5) and for the still-open sidebar
+reorganization itself, which this entry's "Nonvital" naming now has to stay consistent with
+wherever it lands.
+
+---
+
+### 2026-10-17 — Richard's THIRD round installed (date_index/vital_doc_provenance/corpus_dates); corpus_dates.json now also wired into By-year (see the newest entry above)
 
 **`date_index (3).json` / `vital_doc_provenance (3).json` are now installed** into
 `output/metadata/` in the case at `/Volumes/oct7_mf_case/oct7_mf/`, same backup-first pattern as
@@ -36,10 +110,11 @@ off disk every call — confirmed earlier this session) and no console errors, `
 still green (809 passed / 3 skipped — a sanity check on the repo, not on this install, re-run it
 rather than trust the number).
 
-**`corpus_dates.json` is still sitting in Downloads, NOT installed.** It isn't a drop-in the way
-the other two are — there's no existing file in the case for it to replace, and nothing in this
-repo reads it yet. Needs scoping as a real feature before it goes anywhere near the case; see
-below for what's actually in it.
+**`corpus_dates.json` is now also installed** (as of the newest entry above this one) — plain
+copy-in to `output/metadata/`, no backup-first pattern needed since there was no existing file to
+replace. At the time THIS entry was first written it was still sitting in Downloads, not
+installed, pending a scope decision — see below for what's actually in it; the scope decision
+itself and the build it led to are in the entry above.
 
 **`date_index (3).json` vs. what's installed — checked by diff, not assumed:** `items`,
 `operative_views`, `account_views`, `tier`, `counts`, `case_id`, `schema_version`, `step` are
