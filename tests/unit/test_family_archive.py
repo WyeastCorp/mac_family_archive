@@ -1956,6 +1956,63 @@ def test_api_section_documents_year_index_and_year_filter(tmp_path):
     assert {r["file"] for r in by_group["rows"]} == {"/d/will.pdf"}
 
 
+def test_api_section_documents_year_index_corpus_date_through_real_server_path(tmp_path):
+    """2026-10-17 (to-do: corpus-wide dates, scoped to Documents' By-year):
+    corpus_dates.json's ordinary-document dates reach year_index/?year=/
+    ?vital_group= through the REAL server path (_attach_vital →
+    _attach_corpus_date → documents_year_index → _filter_documents), not just
+    the pure function in isolation (see test_archive_data.py for that). Builds
+    on the vital-only fixture directly above: will.pdf/deed.pdf stay vital-dated
+    via date_index.json as before; recipe.pdf — undated in that test — now gets
+    a corpus_dates.json date instead, landing in the SAME year as the vital
+    documents but its own "nonvital" group, never silently merged into
+    estate_legal/real_estate_property."""
+    case, paths = setup_case(tmp_path)
+    summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
+    summ["document_classifications"] = [
+        {"file": "/d/will.pdf", "filename": "will.pdf", "category": "legal",
+         "source": "document", "significance": 5, "summary": "A will."},
+        {"file": "/d/deed.pdf", "filename": "deed.pdf", "category": "legal",
+         "source": "document", "significance": 4, "summary": "A deed."},
+        {"file": "/d/recipe.pdf", "filename": "recipe.pdf", "category": "recipe",
+         "source": "document", "significance": 1, "summary": "A recipe."},
+    ]
+    (paths.metadata_dir / "case_summary.json").write_text(json.dumps(summ))
+    (paths.metadata_dir / "vital_doc_confirmed.json").write_text(json.dumps([
+        {"path": "/d/will.pdf", "target": "will_testament", "tag": "will"},
+        {"path": "/d/deed.pdf", "target": "deed_title", "tag": "deed"},
+    ]))
+    (paths.metadata_dir / "vital_doc_candidates.json").write_text(json.dumps({
+        "will_testament": {"description": "a will", "hits": []},
+        "deed_title": {"description": "a deed", "hits": []},
+    }))
+    (paths.metadata_dir / "date_index.json").write_text(json.dumps({"items": [
+        {"file": "/d/will.pdf", "date_used": {"value": "2015-02"}},
+        {"file": "/d/deed.pdf", "date_used": {"value": "2015-07"}},
+    ]}))
+    (paths.metadata_dir / "corpus_dates.json").write_text(json.dumps({"items": [
+        {"file": "/d/will.pdf", "kind": "document", "see": "date_index"},
+        {"file": "/d/deed.pdf", "kind": "document", "see": "date_index"},
+        {"file": "/d/recipe.pdf", "kind": "document",
+         "date_used": {"value": "2015-11-01", "basis": "pdf_created_no_later_than"}},
+    ]}))
+    case.load()
+
+    full = case.api_section("documents", {})
+    assert full["year_index"] == [
+        {"year": "2015", "count": 3, "groups": [
+            {"group": "estate_legal", "label": "Estate & legal", "count": 1},
+            {"group": "nonvital", "label": "Nonvital", "count": 1},
+            {"group": "real_estate_property", "label": "Property", "count": 1},
+        ]},
+        {"year": "nodate", "count": 0, "groups": []},
+    ]
+    by_year = case.api_section("documents", {"year": "2015"})
+    assert {r["file"] for r in by_year["rows"]} == {"/d/will.pdf", "/d/deed.pdf", "/d/recipe.pdf"}
+    by_group = case.api_section("documents", {"year": "2015", "vital_group": "nonvital"})
+    assert {r["file"] for r in by_group["rows"]} == {"/d/recipe.pdf"}
+
+
 def test_api_section_paginates_documents_true_total_and_index(tmp_path):
     case, paths = setup_case(tmp_path)
     summ = json.loads((paths.metadata_dir / "case_summary.json").read_text())
