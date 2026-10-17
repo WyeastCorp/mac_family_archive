@@ -246,7 +246,8 @@
      "layout", "sort", "dir", "modality", "qcat",
      "album", "favorite", "hidden", "participant", "venue", "tab", "date_from", "date_to",
      "vperson", "vscene", "favorite_curation", "collection_curation", "people", "gslug",
-     "year", "vital_group", "arrange", "q", "significance", "important", "has_attachment", "direction"]
+     "year", "vital_group", "arrange", "q", "significance", "important", "has_attachment", "direction",
+     "open_nearmiss"]
       .forEach(function (k) { if (Q[k]) q.push(k + "=" + encodeURIComponent(Q[k])); });
     return location.pathname + (q.length ? "?" + q.join("&") : "");
   }
@@ -3852,9 +3853,16 @@
     function pick(spec) {
       view = { cat: spec.cat || "", subcat: spec.subcat || "", vital: spec.vital || "", docview: spec.docview || "",
                coll: spec.coll || "", year: spec.year || "", vgroup: spec.vgroup || "", star: spec.star || "" };
+      // open_nearmiss (2026-10-17, sidebar reorg round 2) is NOT part of
+      // `view`/isCurrent — it's a one-shot "expand and scroll to this target"
+      // signal the near_misses docview branch in drawPane reads from Q and
+      // immediately clears (setQ({open_nearmiss:""})), same as the Report
+      // page's own near-miss deep-links already relied on; it isn't page
+      // identity, so two clicks on the same target row are never mistaken
+      // for "already there, just toggle" the way a real spec field would be.
       setQ({ cat: view.cat, subcat: view.subcat, vital: view.vital, docview: view.docview,
              collection_curation: view.coll, year: view.year, vital_group: view.vgroup,
-             favorite_curation: view.star });
+             favorite_curation: view.star, open_nearmiss: spec.open_nearmiss || "" });
       clearSel();
       drawTree(); drawPane(true);
     }
@@ -3956,10 +3964,11 @@
         targets.forEach(function (t) { foundItems += (t.items || []).length; });
         trow(ul, { label: "Vital documents", count: foundItems, key: "vital", spec: { vital: "*" } });
         if (open.vital) {
-          trow(ul, { label: "Vital Checklist", depth: 1, spec: { docview: "checklist" },
-                     title: num(vd.found_count) + " of " + num(vd.total_count) + " kinds found" +
-                            (EXAMINER && vd.unconfirmed_count ? "; " + num(vd.unconfirmed_count) + " to confirm" : ""),
-                     mark: EXAMINER && vd.unconfirmed_count ? num(vd.unconfirmed_count) + " to confirm" : null });
+          // 2026-10-17, sidebar reorg round 2: Vital Checklist used to live
+          // here, as the first row inside this tree. Moved out to its own
+          // top-level section below (the user's own correction) — this tree
+          // is now ONLY the found-vital-documents browse (group -> target),
+          // matching the shape Near-misses' own tree mirrors right after it.
           var gorder = groups.map(function (g) { return g.group; });
           targets.forEach(function (t) { if (gorder.indexOf(t.group || "other") < 0) gorder.push(t.group || "other"); });
           gorder.forEach(function (g) {
@@ -3985,24 +3994,63 @@
         }
       }
 
+      // Vital Checklist (2026-10-17, sidebar reorg round 2): its own
+      // top-level section now, a sibling of "Vital documents" rather than
+      // nested inside it — same bars-above-and-below treatment Near-misses
+      // got in round 1, positioned directly below Vital documents per the
+      // user's own instruction. EXAMINER-only unconfirmed badge unchanged;
+      // the row itself (like Near-misses) stays visible for family too —
+      // vd.found_count/total_count are both-role fields.
+      if (EXAMINER && vd.available) {
+        sep(ul);
+        trow(ul, { label: "Vital Checklist", spec: { docview: "checklist" },
+                   title: num(vd.found_count) + " of " + num(vd.total_count) + " kinds found" +
+                          (vd.unconfirmed_count ? "; " + num(vd.unconfirmed_count) + " to confirm" : ""),
+                   mark: vd.unconfirmed_count ? num(vd.unconfirmed_count) + " to confirm" : null });
+      }
+
       // Near-misses (2026-10-17, to-do #2; promoted to its own top-level
-      // section 2026-10-17, sidebar reorg #1): the user's own complaint —
-      // nested inside Vital documents, between Vital Checklist and the
-      // group breakdown, it read as just another row in a list rather than
-      // standing on its own. Same examiner-only gate as the badge it
-      // summarizes (t.near_miss_count is simply absent from a family
-      // target); always shown, muted at 0, same "a real zero is still
-      // information" reasoning as before — just no longer conditional on
-      // open.vital, since it isn't nested under Vital documents anymore.
+      // section, round 1; given its own group -> target sub-tree, round 2 —
+      // "the same navigation as Vital documents", the user's own words, with
+      // no Vital-Checklist-equivalent row: a near-miss isn't a confirmed
+      // document, there's nothing to "check off" at the group/target level,
+      // only within one target's own drawer). Same examiner-only gate as the
+      // badge it summarizes (t.near_miss_count is simply absent from a
+      // family target). The top row has BOTH a key (expand/collapse) and a
+      // spec (opens the full page) — same two-purpose click trow() already
+      // gives "Vital documents" itself (see its onclick: first click opens
+      // AND navigates, a second click while already there just toggles).
       if (EXAMINER) {
         sep(ul);
         var totalNearMiss = 0;
         targets.forEach(function (t) { totalNearMiss += t.near_miss_count || 0; });
-        trow(ul, { label: "Near-misses", spec: { docview: "near_misses" },
+        trow(ul, { label: "Near-misses", key: "nearmiss", spec: { docview: "near_misses" },
                    muted: !totalNearMiss,
                    title: num(totalNearMiss) + " candidate" + (totalNearMiss === 1 ? "" : "s") +
                           " the pipeline wasn't confident enough to confirm automatically",
                    mark: totalNearMiss ? num(totalNearMiss) : null });
+        if (open.nearmiss) {
+          var ngorder = groups.map(function (g) { return g.group; });
+          targets.forEach(function (t) { if (ngorder.indexOf(t.group || "other") < 0) ngorder.push(t.group || "other"); });
+          ngorder.forEach(function (g) {
+            var ts = targets.filter(function (t) { return (t.group || "other") === g && t.near_miss_count; });
+            if (!ts.length) return;
+            var ngn = 0;
+            ts.forEach(function (t) { ngn += t.near_miss_count || 0; });
+            var ngkey = "nearmiss/" + g;
+            if (open[ngkey] == null) open[ngkey] = true;
+            trow(ul, { label: glabel[g] || "Other", count: ngn, depth: 1, key: ngkey });
+            if (!open[ngkey]) return;
+            ts.forEach(function (t) {
+              // Deep-links into the SAME Near-misses page, that one target's
+              // drawer pre-expanded and scrolled into view — the identical
+              // open_nearmiss mechanic the Report's own near-miss links
+              // already use (see drawPane's docview==="near_misses" branch).
+              trow(ul, { label: t.label, count: t.near_miss_count, depth: 2,
+                         spec: { docview: "near_misses", open_nearmiss: t.target } });
+            });
+          });
+        }
       }
 
       sep(ul);
@@ -4547,7 +4595,15 @@
       }
       if (!vd.available) return;
       var panel = el("section", "vitals-panel");
-      panel.appendChild(el("h2", null, "Vital documents"));
+      panel.appendChild(el("h2", null, "Vital Checklist"));
+      // Explanatory blurb (2026-10-17, sidebar reorg round 2 — the user's own
+      // request): what this page IS and what it's FOR, since it's reached
+      // from its own top-level sidebar section now rather than sitting
+      // inside "Vital documents" where that context was implicit.
+      panel.appendChild(el("p", "vitals-tally",
+        "Every kind of vital document the archive looks for — wills, deeds, tax returns, and " +
+        "more. Confirm each one that's correct, or mark it not actually vital; a kind with " +
+        "nothing found yet stays open in case one turns up later."));
       // A found→missing transition (last item of a target dismissed/reassigned
       // away) needs to decrement this in place — track it locally instead of
       // re-reading vd.found_count, which goes stale the moment that happens.
@@ -4814,13 +4870,19 @@
       if (!vd.available) return;
       var panel = el("section", "vitals-panel");
       panel.appendChild(el("h2", null, "Near-misses"));
+      // Explanatory blurb (2026-10-17, sidebar reorg round 2 — the user's own
+      // request, same reasoning as the Vital Checklist's): what this page is
+      // and what it's for, now that it's reached from its own top-level
+      // sidebar section rather than a row inside the Checklist.
+      panel.appendChild(el("p", "vitals-tally",
+        "Documents the pipeline found but wasn't confident enough to confirm automatically. " +
+        "Review each one: promote it to the Vital Checklist if it really is that kind of vital " +
+        "document, or dismiss it if it isn't."));
       var targets = (vd.targets || []).filter(function (t) { return t.near_miss_count; });
       var total = targets.reduce(function (n, t) { return n + t.near_miss_count; }, 0);
       panel.appendChild(el("p", "vitals-tally",
-        esc(num(total) + " candidate" + (total === 1 ? "" : "s") + " the pipeline wasn't " +
-            "confident enough to confirm automatically, across " + num(targets.length) +
-            " kind" + (targets.length === 1 ? "" : "s") + ".") +
-        " Promoting or dismissing one here updates the Vital Checklist the same way acting on it there would."));
+        esc(num(total) + " candidate" + (total === 1 ? "" : "s") + ", across " + num(targets.length) +
+            " kind" + (targets.length === 1 ? "" : "s") + ".")));
       main.appendChild(panel);
       if (!targets.length) {
         panel.appendChild(el("p", "notice", "No near-misses right now."));
