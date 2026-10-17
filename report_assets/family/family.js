@@ -3090,6 +3090,53 @@
     return chip;
   }
 
+  // The toggle + lazy-loaded drawer for ONE target's near-miss list — shared
+  // by the Checklist's per-target row (vitalDocsPanel) and the dedicated
+  // Near-misses view (nearMissesPanel), so NEARMISS_OPEN's open/restore-after-
+  // render behavior and "what counts as a near-miss" (near_miss_count, from
+  // the one server-side definition in _near_miss_hits) stay single-sourced
+  // instead of drifting across two copies of the same toggle. Call only when
+  // t.near_miss_count is truthy; appends the toggle to `rhead` (not yet
+  // attached to `row`) and the drawer to `row`, then attaches `rhead` too.
+  function appendNearMissToggle(rhead, row, t, vd) {
+    var drawer = el("div", "vcand-drawer");
+    drawer.hidden = true;
+    var toggle = el("button", "vcand",
+      num(t.near_miss_count) + " near-miss" + (t.near_miss_count === 1 ? "" : "es"));
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.onclick = (function (tgt, btn, box, vdoc) {
+      return function () {
+        if (!box.hidden) {                       // collapse
+          box.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+          delete NEARMISS_OPEN[tgt];             // stay closed across renders
+          return;
+        }
+        box.hidden = false;
+        btn.setAttribute("aria-expanded", "true");
+        NEARMISS_OPEN[tgt] = NEARMISS_OPEN[tgt] || 0;
+        // vd carries all_targets, which the row's Reassign picker needs.
+        if (!box.dataset.loaded) nearMissLoad(tgt, box, 0, vdoc);
+      };
+    })(t.target, toggle, drawer, vd);
+    rhead.appendChild(toggle);
+    if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
+    row.appendChild(rhead);
+    row.appendChild(drawer);
+    // Re-open a drawer the examiner had open before this render, as deep as
+    // they had paged it. One request for `want` rows, not one per page — the
+    // server clamps to MAX_PAGE_LIMIT, past which the "Show more" button is
+    // still there to carry on.
+    if (NEARMISS_OPEN[t.target] != null) {
+      drawer.hidden = false;
+      toggle.setAttribute("aria-expanded", "true");
+      nearMissLoad(t.target, drawer, 0, vd, NEARMISS_OPEN[t.target]);
+      // The panel is rebuilt from the top, so the row they were working in
+      // may be off-screen now. Put it back in front of them.
+      scrollBackTo(row);
+    }
+  }
+
   // BACKLOG #43 — where a vital document came from, and which date to show for it.
   // EXAMINER-ONLY: the server sends these fields to the examiner role only. `date_used`
   // always carries its basis, so an email's "no later than" date is never read as a
@@ -3446,9 +3493,10 @@
           var bits = [];
           if (u.unconfirmed) bits.push(num(u.unconfirmed) + " not yet confirmed");
           // Clickable (the user's own example: "death certificate, 27 near
-          // misses") — opens the Checklist with this target's near-miss
-          // drawer already expanded and scrolled into view.
-          if (u.near_miss) bits.push("<a href='/documents?docview=checklist&open_nearmiss=" +
+          // misses") — opens the dedicated Near-misses view (2026-10-17, was
+          // the Checklist before that view existed) with this target's drawer
+          // already expanded and scrolled into view.
+          if (u.near_miss) bits.push("<a href='/documents?docview=near_misses&open_nearmiss=" +
             encodeURIComponent(u.target) + "'>" + num(u.near_miss) + " near-miss" +
             (u.near_miss === 1 ? "" : "es") + "</a>");
           sheet4.appendChild(reportRow(u.what, bits.join(" · ")));
@@ -3897,6 +3945,23 @@
                      title: num(vd.found_count) + " of " + num(vd.total_count) + " kinds found" +
                             (EXAMINER && vd.unconfirmed_count ? "; " + num(vd.unconfirmed_count) + " to confirm" : ""),
                      mark: EXAMINER && vd.unconfirmed_count ? num(vd.unconfirmed_count) + " to confirm" : null });
+          // Near-misses (2026-10-17, to-do #2): a dedicated, cross-target view —
+          // before this, reviewing every near-miss meant opening the Checklist
+          // and hunting row by row for the targets with a number. Same examiner-
+          // only gate as the badge it summarizes (t.near_miss_count is simply
+          // absent from a family target). Always shown, muted at 0, same as
+          // every other grouped row below — not hidden, so an examiner who
+          // cleared every near-miss still sees it's a real zero, not a feature
+          // that vanished.
+          if (EXAMINER) {
+            var totalNearMiss = 0;
+            targets.forEach(function (t) { totalNearMiss += t.near_miss_count || 0; });
+            trow(ul, { label: "Near-misses", depth: 1, spec: { docview: "near_misses" },
+                       muted: !totalNearMiss,
+                       title: num(totalNearMiss) + " candidate" + (totalNearMiss === 1 ? "" : "s") +
+                              " the pipeline wasn't confident enough to confirm automatically",
+                       mark: totalNearMiss ? num(totalNearMiss) : null });
+          }
           var gorder = groups.map(function (g) { return g.group; });
           var glabel = {};
           groups.forEach(function (g) { glabel[g.group] = g.label; });
@@ -4006,6 +4071,7 @@
     var pg = null, body = null;
     function titleFor() {
       if (view.docview === "checklist") return ["Vital documents", "Checklist"];
+      if (view.docview === "near_misses") return ["Vital documents", "Near-misses"];
       if (view.coll) {
         var cc = (COLLS || []).filter(function (x) { return x.slug === view.coll; })[0];
         return ["Collections", cc ? cc.title : view.coll];
@@ -4077,6 +4143,19 @@
           setQ({ open_nearmiss: "" });
         }
         vitalDocsPanel(pane, vd);
+        return;
+      }
+
+      if (view.docview === "near_misses") {
+        // Same open_nearmiss deep-link handling as the Checklist above — the
+        // Report's per-target near-miss links now point HERE instead (see
+        // "3 · Where the archive isn't sure"), since this is where reviewing
+        // a near-miss actually belongs now.
+        if (Q.open_nearmiss) {
+          NEARMISS_OPEN[Q.open_nearmiss] = NEARMISS_OPEN[Q.open_nearmiss] || 0;
+          setQ({ open_nearmiss: "" });
+        }
+        nearMissesPanel(pane, vd);
         return;
       }
 
@@ -4247,6 +4326,7 @@
       // three shared, Detail-authored functions about a page mode they
       // otherwise have no reason to know exists.
       if (view.docview === "checklist") { drawPane(false); return; }
+      if (view.docview === "near_misses") { drawPane(false); return; }
       if (!body) return;
       body.innerHTML = "";
       var rows = rowsInOrder();
@@ -4428,45 +4508,7 @@
           '<span class="vlabel">' + esc(t.label) + '</span>';
         var vmarkEl = rhead.querySelector(".vmark");
         if (EXAMINER && t.near_miss_count) {  // near-miss hits, examiner-only
-          // Was a dead span: it stated a number and gave no way to look at it,
-          // so reviewing a near-miss meant opening vital_doc_candidates.json
-          // on the workstation by hand. Now it opens the list inline.
-          var drawer = el("div", "vcand-drawer");
-          drawer.hidden = true;
-          var toggle = el("button", "vcand",
-            num(t.near_miss_count) + " near-miss" + (t.near_miss_count === 1 ? "" : "es"));
-          toggle.setAttribute("aria-expanded", "false");
-          toggle.onclick = (function (tgt, btn, box, vdoc) {
-            return function () {
-              if (!box.hidden) {                       // collapse
-                box.hidden = true;
-                btn.setAttribute("aria-expanded", "false");
-                delete NEARMISS_OPEN[tgt];             // stay closed across renders
-                return;
-              }
-              box.hidden = false;
-              btn.setAttribute("aria-expanded", "true");
-              NEARMISS_OPEN[tgt] = NEARMISS_OPEN[tgt] || 0;
-              // vd carries all_targets, which the row's Reassign picker needs.
-              if (!box.dataset.loaded) nearMissLoad(tgt, box, 0, vdoc);
-            };
-          })(t.target, toggle, drawer, vd);
-          rhead.appendChild(toggle);
-          if (t.near_miss_capped) rhead.appendChild(vitalCapChip(t.k || vd.per_target_k));
-          row.appendChild(rhead);
-          row.appendChild(drawer);
-          // Re-open a drawer the examiner had open before this render, as deep
-          // as they had paged it. One request for `want` rows, not one per
-          // page — the server clamps to MAX_PAGE_LIMIT, past which the "Show
-          // more" button is still there to carry on.
-          if (NEARMISS_OPEN[t.target] != null) {
-            drawer.hidden = false;
-            toggle.setAttribute("aria-expanded", "true");
-            nearMissLoad(t.target, drawer, 0, vd, NEARMISS_OPEN[t.target]);
-            // The panel is rebuilt from the top, so the row they were working
-            // in may be off-screen now. Put it back in front of them.
-            scrollBackTo(row);
-          }
+          appendNearMissToggle(rhead, row, t, vd);
         } else {
           // Retrieval can hit the cap even with no near-misses left to review
           // (every hit already confirmed/dismissed) — the truncation still
@@ -4689,6 +4731,59 @@
       });
       panel.appendChild(rows);
       main.appendChild(panel);
+    }
+
+    // Dedicated Near-misses view (2026-10-17, BACKLOG to-do #2): every target
+    // that has at least one near-miss, grouped the same way the Checklist's
+    // own sidebar groups vital-doc kinds (vd.groups — Estate & legal, Taxes,
+    // Banking, ...). Before this, reviewing near-misses across every kind
+    // meant opening the Checklist and hunting row by row for the targets with
+    // a number; the Checklist mixes confirmed/unconfirmed items in among them
+    // one target at a time. This is the exact same drawers (appendNearMissToggle,
+    // nearMissLoad, near_miss_rows server-side) just surfaced on their own —
+    // no new near-miss definition, no new data path, same pagination/cap
+    // handling the Checklist's drawer already has at any scale.
+    function nearMissesPanel(main, vd) {
+      VITAL_SEL = {};
+      var staleVBar = document.getElementById("vselbar"); if (staleVBar) staleVBar.remove();
+      if (!vd) return;
+      if (vd.available === false) {
+        main.appendChild(el("p", "notice", "Vital-document scan not available for this case."));
+        return;
+      }
+      if (!vd.available) return;
+      var panel = el("section", "vitals-panel");
+      panel.appendChild(el("h2", null, "Near-misses"));
+      var targets = (vd.targets || []).filter(function (t) { return t.near_miss_count; });
+      var total = targets.reduce(function (n, t) { return n + t.near_miss_count; }, 0);
+      panel.appendChild(el("p", "vitals-tally",
+        esc(num(total) + " candidate" + (total === 1 ? "" : "s") + " the pipeline wasn't " +
+            "confident enough to confirm automatically, across " + num(targets.length) +
+            " kind" + (targets.length === 1 ? "" : "s") + ".") +
+        " Promoting or dismissing one here updates the Checklist the same way acting on it there would."));
+      main.appendChild(panel);
+      if (!targets.length) {
+        panel.appendChild(el("p", "notice", "No near-misses right now."));
+        return;
+      }
+      var glabel = {};
+      (vd.groups || []).forEach(function (g) { glabel[g.group] = g.label; });
+      var gorder = (vd.groups || []).map(function (g) { return g.group; });
+      targets.forEach(function (t) { if (gorder.indexOf(t.group || "other") < 0) gorder.push(t.group || "other"); });
+      var rows = el("div", "vitals-rows");
+      gorder.forEach(function (g) {
+        var ts = targets.filter(function (t) { return (t.group || "other") === g; });
+        if (!ts.length) return;
+        rows.appendChild(el("h3", "sec3", glabel[g] || "Other"));
+        ts.forEach(function (t) {
+          var row = el("div", "vitals-row found");
+          var rhead = el("div", "vitals-row-head");
+          rhead.appendChild(txt("span", "vlabel", t.label));
+          appendNearMissToggle(rhead, row, t, vd);
+          rows.appendChild(row);
+        });
+      });
+      panel.appendChild(rows);
     }
 
     function detailView(rows) {
