@@ -86,20 +86,28 @@ chunk of what's in "No date" today would get a real year, which changes the prem
 
 **No code anywhere reads `corpus_dates.json`** (grepped `tools/`, `wyeast/`, `docs/`,
 `report_assets/`, `tests/` for the string — zero hits) and no contract doc exists for its shape,
-same gap `near_misses` already has. This is new capability, not a bug fix — needs real scoping
-(which sections would use it — Documents' By-year first, almost certainly, but also potentially
-Photos/Videos/Recordings/Messages, none of which show dates at all today) before anyone builds
-against it, the same way `date_index_contract.md` got written before `operative_views`/
-`account_views` were consumed. Consider asking Richard for one.
+same gap `near_misses` already has.
 
-**Blocked:** on the user for `corpus_dates.json` — which section(s) would actually use it (By-year
-first, almost certainly; Photos/Videos/Recordings/Messages show no dates at all today and could
-too), and whether to ask Richard for a contract doc the way `date_index_contract.md` got written,
-before any code reads it.
+**Correction, checked live against the real case, not assumed — Photos/Audio/Videos are NOT all
+empty in `oct7_mf`:** this entry originally floated Photos/Videos/Recordings as other places
+`corpus_dates.json` could land. The Report page's own "Processed" tile shows **Photos: 0, Audio:
+104, Videos: 50** for this case — Photos really is empty, but Audio and Video are not; both have
+real content and working pages (`P.recordings`, `P.photos` filtered to `media: "videos"`), just no
+date-based browsing. **But the user's own point stands and is the one that actually decides this:**
+the UI they personally use day to day (the Desktop launcher, `--documents-only` — see the global
+CLAUDE.md's Wyeast section) redirects every page except Documents back to Documents server-side
+(`SOLO_PAGE` in `tools/family_archive.py`), so Photos/Audio/Videos are invisible to them
+regardless of what exists in the code or the data. **Decision made: scope `corpus_dates.json` to
+Documents' By-year only, for now.** Separately noted, not for this round: **at some point this UI
+needs to actually expose Photos/Audio/Videos to the user** — either lifting the `--documents-only`
+restriction on the launcher they use, or deciding that restriction is permanent and those sections
+are examiner-workstation-only. Not scoped, not sized, just recorded so it isn't lost.
 
-**Next action:** when picked back up, decide where `corpus_dates.json` fits first (a real design
-conversation, not a file swap) — re-read this entry's "design-relevant detail" paragraph above
-before touching the sidebar-reorg to-do's open By-year question, since they bear on each other.
+**Blocked:** nothing on the Documents/By-year piece — scope decided, see the entry above this one
+for build status. The Photos/Audio/Videos exposure question is a separate, unscoped to-do.
+
+**Next action:** see the newest entry above this one for where the By-year + `corpus_dates.json`
+build actually landed.
 
 ---
 
