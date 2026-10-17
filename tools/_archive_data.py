@@ -2465,6 +2465,20 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
     # a count that's supposed to partition the SAME total_docs denominator.
     vital_doc_paths = set()
     near_miss_doc_paths = set()
+    # EMAIL-grain mirror of the two sets above (2026-10-17, the Report's email-
+    # side "Documents at a glance" — BACKLOG to-do #1). Counted by THREAD, not
+    # by individual .eml path: the Emails section (and `counts["emails"]`,
+    # which `report_data` reuses as this partition's denominator) is organized
+    # by thread, so a message-grain count here would not partition the same
+    # population it's displayed next to. `vital_email_thread_ids` fills during
+    # the same per-item loop below (it already resolves each item's thread via
+    # `thread_links`); `near_miss_email_paths` collects near-miss .eml paths
+    # per target, then ONE batch `_vital_thread_links` call after the loop
+    # resolves all of them to thread ids at once — same pattern `near_miss_rows`
+    # uses for the drawer, just resolved in bulk across every target instead of
+    # one at a time.
+    vital_email_thread_ids = set()
+    near_miss_email_paths = set()
     for t in order:
         items = []
         for iid, i in by_target.get(t, []):
@@ -2530,6 +2544,8 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                         item_row["source_unresolved"] = True
             if item_row["file_id"]:
                 vital_doc_paths.add(item_row["file_id"])
+            elif item_row["thread_id"]:
+                vital_email_thread_ids.add(item_row["thread_id"])
             items.append(item_row)
         found = bool(items)  # a target is "found" iff ≥1 item SURVIVES the overlay
         if found:
@@ -2550,6 +2566,8 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
             row["near_miss_count"] = len(target_near_misses)
             near_miss_doc_paths.update(
                 h["path"] for h in target_near_misses if h.get("path") in browsable)
+            near_miss_email_paths.update(
+                h["path"] for h in target_near_misses if h.get("path") not in browsable)
             row["description"] = cand.get("description")
             # Whether retrieval hit the per-target ceiling for THIS target: the
             # embed stage pulls at most k hits before LLM confirmation, so a
@@ -2575,6 +2593,20 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
                 row["near_miss_capped"] = n_hits >= per_target_k
                 row["k"] = per_target_k
         targets.append(row)
+
+    # Resolve the near-miss email paths collected above to thread ids, ONE
+    # batch call covering every target at once (near_miss_rows does the same
+    # resolution per-target, on demand, for the drawer — this is the same
+    # lookup, just run once up front since the Report needs a single total,
+    # not a per-target list). A thread already counted as vital (it has a
+    # CONFIRMED item in it) is not also a near-miss — same "- vital" rule the
+    # document-side near_miss_doc_paths/vital_doc_paths pair already applies.
+    near_miss_email_thread_ids = set()
+    if role == "examiner":
+        for link in _vital_thread_links(md, role, near_miss_email_paths,
+                                        threads_index=threads_index).values():
+            near_miss_email_thread_ids.add(link["thread_id"])
+    near_miss_email_thread_ids -= vital_email_thread_ids
 
     # Operative views (2026-10-16): the pipeline's OWN ranking for wills, POAs,
     # trusts and beneficiary forms (date_index_contract.md §2) — replacing the
@@ -2617,6 +2649,15 @@ def vital_docs_data(paths, summary, role, decisions=None, threads_index=None,
         # near_miss_count already restricts to.
         "near_miss_document_count": len(near_miss_doc_paths - vital_doc_paths)
                                     if role == "examiner" else None,
+        # EMAIL-grain mirror of the two counts above, for the Report's email-
+        # side "Documents at a glance" (to-do #1) — counted by THREAD (see the
+        # comment above vital_email_thread_ids), both roles for the vital half
+        # since it leaks nothing the Emails section doesn't already show once a
+        # thread's vital item is confirmed; near-miss stays examiner-only, same
+        # restriction near_miss_document_count already carries.
+        "vital_email_thread_count": len(vital_email_thread_ids),
+        "near_miss_email_thread_count": len(near_miss_email_thread_ids)
+                                        if role == "examiner" else None,
         # Found vital docs still awaiting an examiner decision (confirm / dismiss /
         # reassign) — the guided step's "to confirm" number. Examiner-only; a family
         # session neither confirms nor sees this. Matches _vital_docs_cleared.
@@ -2732,6 +2773,33 @@ def report_data(index, vital_docs, counts=None, docs_found=None):
         "near_miss_pct": _pct(near_miss_doc_count, total_docs) if near_miss_doc_count is not None else None,
         "neither": neither_count, "neither_pct": _pct(neither_count, total_docs),
     }
+    # 2026-10-17: the email-side equivalent of doc_overview (to-do #1) — same
+    # x/y/z/a partition, but of EMAIL THREADS rather than documents. `total`
+    # reuses `counts["emails"]` (the SAME number the Emails tab itself shows)
+    # rather than recomputing a thread count here, for the identical reason
+    # `counts` is threaded through this whole function: so this line can never
+    # drift from what the Emails tab displays. vital_email_thread_count /
+    # near_miss_email_thread_count (vital_docs_data) are already counted by
+    # thread for exactly this reason — see the comment above
+    # vital_email_thread_ids there for why message-grain would have been the
+    # wrong unit. No "found" line here (unlike documents' pre-filing
+    # source_docs_found): email_triage_summary.json's email_count/kept_count
+    # are MESSAGE-grain, not thread-grain, so pairing either with this
+    # thread-grain total would be comparing two different populations — left
+    # out rather than shown misleadingly.
+    total_emails = (counts or {}).get("emails")
+    vital_email_count = vital_docs.get("vital_email_thread_count") or 0
+    near_miss_email_count = vital_docs.get("near_miss_email_thread_count")
+    email_accounted = vital_email_count + (near_miss_email_count or 0)
+    neither_email_count = (max(total_emails - email_accounted, 0)
+                           if total_emails is not None else None)
+    email_overview = {
+        "total": total_emails,
+        "vital": vital_email_count, "vital_pct": _pct(vital_email_count, total_emails),
+        "near_miss": near_miss_email_count,
+        "near_miss_pct": _pct(near_miss_email_count, total_emails) if near_miss_email_count is not None else None,
+        "neither": neither_email_count, "neither_pct": _pct(neither_email_count, total_emails),
+    }
     # Section 3: real, un-fabricated open items — see the docstring above for
     # exactly what this is and isn't. None for family (unconfirmed_count is
     # already role-gated upstream) means an empty list, not a shorter one.
@@ -2757,6 +2825,7 @@ def report_data(index, vital_docs, counts=None, docs_found=None):
         "total_count": total_count,
         "found_pct": _pct(found_count, total_count),
         "doc_overview": doc_overview,
+        "email_overview": email_overview,
         "processed": dict(counts or {}),
         "unsure": unsure,
     }

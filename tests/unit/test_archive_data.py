@@ -1762,6 +1762,118 @@ def test_vital_docs_document_level_counts_for_report(tmp_path):
     assert fam["near_miss_document_count"] is None, "near-miss stays examiner-only"
 
 
+def test_vital_docs_email_level_counts_for_report(tmp_path):
+    """vital_email_thread_count/near_miss_email_thread_count (2026-10-17, the
+    Report's email-side "Documents at a glance", to-do #1): the email mirror
+    of vital_document_count/near_miss_document_count above — but counted by
+    THREAD, not by .eml path, since that's the unit the Emails tab (and the
+    "total" this partitions against) already uses. _vital_case's confirmed
+    deed_title is /m/deed.eml; resolved here to thread T-DEED via
+    threads_index, same as near_miss_rows' own deep-link tests do."""
+    paths, summary = _vital_case(tmp_path)
+    idx = {"threads": [{"thread_id": "T-DEED", "subject": "Re: the deed",
+                        "files": ["/m/deed.eml"]}]}
+    exam = ad.vital_docs_data(paths, summary, "examiner", threads_index=idx)
+    assert exam["vital_email_thread_count"] == 1
+    # _vital_case's candidate hits are all non-email (/x, and the two bare dicts
+    # under passport_id, which `_near_miss_hits` treats as paths of None) — no
+    # near-miss email thread to find here.
+    assert exam["near_miss_email_thread_count"] == 0
+    fam = ad.vital_docs_data(paths, summary, "family", threads_index=idx)
+    assert fam["vital_email_thread_count"] == 1, "email-level vital count is not examiner-only"
+    assert fam["near_miss_email_thread_count"] is None, "near-miss stays examiner-only"
+
+
+def test_vital_docs_near_miss_email_thread_count_from_near_miss_case(tmp_path):
+    """The near-miss half, exercised against _near_miss_case's msg1.eml (an
+    email-sourced near-miss for will_testament) — resolved to thread T7, the
+    same fixture `test_near_miss_rows_deep_links_email_via_thread` uses."""
+    paths, summary = _near_miss_case(tmp_path)
+    idx = {"threads": [{"thread_id": "T7", "subject": "Re: the will",
+                        "files": ["/m/msg1.eml"]}]}
+    exam = ad.vital_docs_data(paths, summary, "examiner", threads_index=idx)
+    assert exam["near_miss_email_thread_count"] == 1
+    assert exam["vital_email_thread_count"] == 0, "the only confirmed item (will.pdf) is a document"
+
+
+def test_vital_docs_email_thread_near_miss_excludes_already_vital_thread(tmp_path):
+    """A thread is never counted as BOTH vital and near-miss — mirrors the
+    "- vital_doc_paths" rule near_miss_document_count already applies, but for
+    threads: two DIFFERENT messages in the SAME conversation, one confirmed as
+    the vital item and the other a near-miss candidate, must not inflate the
+    near-miss count just because they happen to share a thread."""
+    paths = CasePaths.from_case_id("TE", str(tmp_path))
+    md = paths.metadata_dir
+    md.mkdir(parents=True, exist_ok=True)
+    (md / "vital_doc_confirmed.json").write_text(json.dumps([
+        {"path": "/m/a.eml", "target": "will_testament", "tag": "vital_doc:will_testament"},
+    ]))
+    (md / "vital_doc_candidates.json").write_text(json.dumps({
+        "will_testament": {"description": "last will", "hits": [
+            {"path": "/m/a.eml", "score": 0.9, "snippet": "the confirmed one"},
+            {"path": "/m/b.eml", "score": 0.4, "snippet": "same thread, different message"},
+        ]},
+    }))
+    summary = {"document_classifications": [
+        {"file": "/m/a.eml", "filename": "a.eml", "source": "email"},
+        {"file": "/m/b.eml", "filename": "b.eml", "source": "email"},
+    ]}
+    idx = {"threads": [{"thread_id": "T1", "subject": "the will",
+                        "files": ["/m/a.eml", "/m/b.eml"]}]}
+    exam = ad.vital_docs_data(paths, summary, "examiner", threads_index=idx)
+    assert exam["vital_email_thread_count"] == 1
+    assert exam["near_miss_email_thread_count"] == 0, \
+        "T1 already counts as vital (via a.eml) — b.eml must not double it into near-miss too"
+
+
+def test_report_data_email_overview_partitions_total_emails():
+    """2026-10-17: the email-side x/y/z/a partition (to-do #1) — same shape as
+    doc_overview, but "total" reuses counts["emails"] (the Emails tab's own
+    number, thread-grain) rather than a document folder-count tree. No
+    "found" line: email_triage_summary.json's pre-triage counts are
+    message-grain, a different population than this thread-grain total, so
+    pairing them would mislead rather than inform (see the comment in
+    report_data itself)."""
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_email_thread_count": 3, "near_miss_email_thread_count": 4,
+                  "groups": [], "targets": []}
+    r = ad.report_data([], vital_docs, counts={"emails": 20})
+    assert r["email_overview"] == {
+        "total": 20,
+        "vital": 3, "vital_pct": 15,
+        "near_miss": 4, "near_miss_pct": 20,
+        "neither": 13, "neither_pct": 65,
+    }
+    assert "found" not in r["email_overview"]
+
+
+def test_report_data_email_overview_family_absorbs_near_miss_into_neither():
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_email_thread_count": 2, "near_miss_email_thread_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data([], vital_docs, counts={"emails": 10})
+    assert r["email_overview"] == {
+        "total": 10, "vital": 2, "vital_pct": 20,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": 8, "neither_pct": 80,
+    }
+
+
+def test_report_data_email_overview_no_emails_tile_has_no_percentages():
+    """counts without an "emails" key (an older caller, or a case with no
+    email stage at all) — total is None, every percentage is None, and
+    "neither" must not be a lie (0 - 0 computed against a missing total)."""
+    vital_docs = {"available": True, "found_count": 0, "total_count": 0,
+                  "vital_email_thread_count": 0, "near_miss_email_thread_count": None,
+                  "groups": [], "targets": []}
+    r = ad.report_data([], vital_docs)
+    assert r["email_overview"] == {
+        "total": None, "vital": 0, "vital_pct": None,
+        "near_miss": None, "near_miss_pct": None,
+        "neither": None, "neither_pct": None,
+    }
+
+
 def _near_miss_case(tmp_path, *, k=4, rejections=True):
     """A case whose will_testament target has `k` candidate hits, ONE of which was
     confirmed — so there are k-1 near-misses. Mixes a browsable document, an
