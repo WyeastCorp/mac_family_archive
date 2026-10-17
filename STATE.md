@@ -23,6 +23,55 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-16, newest — Richard's refreshed files installed into `oct7_mf`; `near_misses` key is live on disk but still unread by any code
+
+**What changed:** the two files from the entry below (`date_index (2).json`, `vital_doc_provenance
+(2).json` in Downloads) are now `output/metadata/date_index.json` /
+`vital_doc_provenance.json` inside the case at `/Volumes/oct7_mf_case/oct7_mf/`. The files that were
+there before are preserved alongside them with a `.bak-<timestamp>` suffix in the same directory —
+check that directory's listing rather than trusting a filename quoted here, in case a later session
+has since cleaned them up.
+
+**Checked directly before installing, not assumed:** diffed the new `date_index.json` against the
+one it replaced — `items`, `operative_views`, `account_views`, `tier`, `counts`, `case_id`,
+`schema_version`, `step` are byte-identical; the ONLY addition is the top-level `near_misses` key
+(plus a new `timestamp`). `vital_doc_provenance.json` differs from its predecessor only in
+`timestamp` — a pure refresh, no content change. Also read every function in `tools/_archive_data.py`
+that touches `date_index.json` (`_date_used_index`, `_operative_views_index`) — both read only
+`items`/`operative_views` and silently ignore unknown top-level keys, so this install cannot have
+changed anything this repo currently does.
+
+**Verified, not just asserted:** loaded the new file through this repo's own `load_json` /
+`_date_used_index` / `_operative_views_index` directly against the real case path — parses, same
+non-empty results as before. Then hit the already-running examiner server at `127.0.0.1:7766`
+(the Desktop-launcher pinned copy, reading this same case directory) before and after the swap —
+Documents and the Checklist both rendered, no console errors, no server error. `./run_tests.sh`
+still green (798 passed / 3 skipped — restated here only as "still green," re-run it rather than
+trust that number later; the suite builds its own fixture cases and never touches the real one, so
+it was never going to catch a problem with this install — it's a sanity check on the repo, not on
+the case). One thing noticed, not caused by this install: the Vital-documents/Checklist counts
+shown on two page loads a few seconds apart, with nothing clicked in between, differed by one — a
+live multi-tab case changing under its own steam, exactly the "a count that moved is more often
+that than a bug" warning in `CLAUDE.md`; re-derive any count fresh rather than trust either reading.
+
+**Still true from the entry below, unchanged by this install:** the `near_misses` key is NOT
+consumed by any code in this repo yet — `near_miss_rows()`/`_near_miss_hits()` still read the older,
+differently-shaped `vital_doc_candidates.json` exclusively. Installing the file only makes the data
+available on disk; to-do #3 two entries below (why no emails show up as vital/near-miss) is the
+design work of deciding whether/how to read this new key, and per that entry's own note, there is
+still no contract doc for its shape (unlike `operative_views`) — read the file fresh and consider
+asking Richard for one before building against it, rather than trusting this paragraph's recollection
+of its fields.
+
+**Blocked:** on a design decision (to-do #2) and the investigation (to-do #3) before writing any
+code that reads `near_misses` — nothing here changes that.
+
+**Next action:** pick up to-do #3 from the entry below — read `near_misses` items fresh (don't trust
+field names quoted in old entries) and check whether `near_miss_rows()` would need a second data
+path, or a merge, to surface email-sourced near-misses this new key already resolves.
+
+---
+
 ### 2026-10-16, newest — Richard sent a refreshed date_index.json with a NEW `near_misses` key; directly answers to-do #3 below
 
 **Not yet installed into the case — sitting in Downloads, not in `oct7_mf`'s `output/metadata/`.**
