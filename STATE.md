@@ -23,14 +23,23 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
-### 2026-10-17, newest — Richard sent a THIRD round (date_index/vital_doc_provenance) plus a brand-new `corpus_dates.json` — investigated, NOT installed, user asked to be consulted first
+### 2026-10-17, newest — Richard's THIRD round installed (date_index/vital_doc_provenance); the new `corpus_dates.json` is NOT, still needs scoping
 
-**Not yet installed — sitting in Downloads.** `/Users/claudeai/Downloads/date_index (3).json`,
-`vital_doc_provenance (3).json`, and `corpus_dates.json` (no numbered suffix — never seen before,
-not a refresh of anything already installed). The user explicitly asked for a report before any
-install this time (unlike the `(2)` round, which got installed the same session it was found) —
-**do not install without asking first**, even though `date_index (3)`/`vital_doc_provenance (3)`
-look as safe as the `(2)` round did.
+**`date_index (3).json` / `vital_doc_provenance (3).json` are now installed** into
+`output/metadata/` in the case at `/Volumes/oct7_mf_case/oct7_mf/`, same backup-first pattern as
+every prior round — the files they replaced are preserved alongside them with a
+`.bak-<timestamp>` suffix in the same directory (check that listing rather than trusting a
+filename quoted here). Verified after install: parsed cleanly through this repo's own
+`load_json`/`_date_used_index`/`_operative_views_index` against the real case path, the
+already-running examiner server picked it up with no restart needed (both functions read fresh
+off disk every call — confirmed earlier this session) and no console errors, `./run_tests.sh`
+still green (809 passed / 3 skipped — a sanity check on the repo, not on this install, re-run it
+rather than trust the number).
+
+**`corpus_dates.json` is still sitting in Downloads, NOT installed.** It isn't a drop-in the way
+the other two are — there's no existing file in the case for it to replace, and nothing in this
+repo reads it yet. Needs scoping as a real feature before it goes anywhere near the case; see
+below for what's actually in it.
 
 **`date_index (3).json` vs. what's installed — checked by diff, not assumed:** `items`,
 `operative_views`, `account_views`, `tier`, `counts`, `case_id`, `schema_version`, `step` are
@@ -83,13 +92,14 @@ Photos/Videos/Recordings/Messages, none of which show dates at all today) before
 against it, the same way `date_index_contract.md` got written before `operative_views`/
 `account_views` were consumed. Consider asking Richard for one.
 
-**Blocked:** on the user — they asked to be consulted before installing anything from this round,
-unlike the `(2)` round.
+**Blocked:** on the user for `corpus_dates.json` — which section(s) would actually use it (By-year
+first, almost certainly; Photos/Videos/Recordings/Messages show no dates at all today and could
+too), and whether to ask Richard for a contract doc the way `date_index_contract.md` got written,
+before any code reads it.
 
-**Next action:** ask the user whether to install `date_index (3).json` /
-`vital_doc_provenance (3).json` now (low-risk, same backup-first pattern as before) and whether/
-when to start scoping `corpus_dates.json` as a real feature — it's a bigger decision than a file
-swap, not something to default into.
+**Next action:** when picked back up, decide where `corpus_dates.json` fits first (a real design
+conversation, not a file swap) — re-read this entry's "design-relevant detail" paragraph above
+before touching the sidebar-reorg to-do's open By-year question, since they bear on each other.
 
 ---
 
