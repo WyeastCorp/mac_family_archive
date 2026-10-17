@@ -3486,7 +3486,7 @@
           "or candidates the archive wasn't confident enough to list automatically. " +
           "Review them on the "));
         var lede3 = main.lastChild;
-        var clink = el("a", null, "Checklist"); clink.href = "/documents?docview=checklist";
+        var clink = el("a", null, "Vital Checklist"); clink.href = "/documents?docview=checklist";
         lede3.appendChild(clink); lede3.appendChild(document.createTextNode("."));
         var sheet4 = el("div", "sheet"); main.appendChild(sheet4);
         data.unsure.forEach(function (u) {
@@ -3948,27 +3948,10 @@
         targets.forEach(function (t) { foundItems += (t.items || []).length; });
         trow(ul, { label: "Vital documents", count: foundItems, key: "vital", spec: { vital: "*" } });
         if (open.vital) {
-          trow(ul, { label: "Checklist", depth: 1, spec: { docview: "checklist" },
+          trow(ul, { label: "Vital Checklist", depth: 1, spec: { docview: "checklist" },
                      title: num(vd.found_count) + " of " + num(vd.total_count) + " kinds found" +
                             (EXAMINER && vd.unconfirmed_count ? "; " + num(vd.unconfirmed_count) + " to confirm" : ""),
                      mark: EXAMINER && vd.unconfirmed_count ? num(vd.unconfirmed_count) + " to confirm" : null });
-          // Near-misses (2026-10-17, to-do #2): a dedicated, cross-target view —
-          // before this, reviewing every near-miss meant opening the Checklist
-          // and hunting row by row for the targets with a number. Same examiner-
-          // only gate as the badge it summarizes (t.near_miss_count is simply
-          // absent from a family target). Always shown, muted at 0, same as
-          // every other grouped row below — not hidden, so an examiner who
-          // cleared every near-miss still sees it's a real zero, not a feature
-          // that vanished.
-          if (EXAMINER) {
-            var totalNearMiss = 0;
-            targets.forEach(function (t) { totalNearMiss += t.near_miss_count || 0; });
-            trow(ul, { label: "Near-misses", depth: 1, spec: { docview: "near_misses" },
-                       muted: !totalNearMiss,
-                       title: num(totalNearMiss) + " candidate" + (totalNearMiss === 1 ? "" : "s") +
-                              " the pipeline wasn't confident enough to confirm automatically",
-                       mark: totalNearMiss ? num(totalNearMiss) : null });
-          }
           var gorder = groups.map(function (g) { return g.group; });
           targets.forEach(function (t) { if (gorder.indexOf(t.group || "other") < 0) gorder.push(t.group || "other"); });
           gorder.forEach(function (g) {
@@ -3994,7 +3977,34 @@
         }
       }
 
+      // Near-misses (2026-10-17, to-do #2; promoted to its own top-level
+      // section 2026-10-17, sidebar reorg #1): the user's own complaint —
+      // nested inside Vital documents, between Vital Checklist and the
+      // group breakdown, it read as just another row in a list rather than
+      // standing on its own. Same examiner-only gate as the badge it
+      // summarizes (t.near_miss_count is simply absent from a family
+      // target); always shown, muted at 0, same "a real zero is still
+      // information" reasoning as before — just no longer conditional on
+      // open.vital, since it isn't nested under Vital documents anymore.
+      if (EXAMINER) {
+        sep(ul);
+        var totalNearMiss = 0;
+        targets.forEach(function (t) { totalNearMiss += t.near_miss_count || 0; });
+        trow(ul, { label: "Near-misses", spec: { docview: "near_misses" },
+                   muted: !totalNearMiss,
+                   title: num(totalNearMiss) + " candidate" + (totalNearMiss === 1 ? "" : "s") +
+                          " the pipeline wasn't confident enough to confirm automatically",
+                   mark: totalNearMiss ? num(totalNearMiss) : null });
+      }
+
       sep(ul);
+      // Nonvital (2026-10-17, sidebar reorg #3 — placeholder name, the user's
+      // own word, "for now"): a label for the category-folder list below,
+      // which previously had none. By-year's list (the other arrange mode)
+      // is left unlabeled here on purpose — whether/how By-year should even
+      // apply to this section at all is #4, still an open question (see
+      // STATE.md), not decided by this rename.
+      if (arrange !== "year") ul.appendChild(el("li", "tcap", "Nonvital"));
       if (arrange === "year") {
         // Nested by group within each year (2026-10-17, the mockup's richer
         // version, un-nesting the old v1 flat count). A vital document's
@@ -4091,8 +4101,12 @@
     // ── main pane ──
     var pg = null, body = null;
     function titleFor() {
-      if (view.docview === "checklist") return ["Vital documents", "Checklist"];
-      if (view.docview === "near_misses") return ["Vital documents", "Near-misses"];
+      if (view.docview === "checklist") return ["Vital documents", "Vital Checklist"];
+      // No parent crumb (2026-10-17, sidebar reorg #1): Near-misses is now a
+      // top-level section, a sibling of Vital documents rather than nested
+      // under it — same [null, label] pattern the true root ("All documents")
+      // uses below, for the same reason (nothing to go "back" to above it).
+      if (view.docview === "near_misses") return [null, "Near-misses"];
       if (view.coll) {
         var cc = (COLLS || []).filter(function (x) { return x.slug === view.coll; })[0];
         return ["Collections", cc ? cc.title : view.coll];
@@ -4281,7 +4295,7 @@
         " folders. The largest are " + big.join(", ") + ".")));
       if (vd.available) {
         var line = num(vd.found_count) + " of " + num(vd.total_count) + " kinds of vital document were found.";
-        if (EXAMINER && vd.unconfirmed_count) line += " " + num(vd.unconfirmed_count) + " still need your confirmation; the Checklist has them all.";
+        if (EXAMINER && vd.unconfirmed_count) line += " " + num(vd.unconfirmed_count) + " still need your confirmation; the Vital Checklist has them all.";
         box.appendChild(el("p", null, esc(line)));
       }
       box.appendChild(el("p", null, esc(EXAMINER
@@ -4785,7 +4799,7 @@
         esc(num(total) + " candidate" + (total === 1 ? "" : "s") + " the pipeline wasn't " +
             "confident enough to confirm automatically, across " + num(targets.length) +
             " kind" + (targets.length === 1 ? "" : "s") + ".") +
-        " Promoting or dismissing one here updates the Checklist the same way acting on it there would."));
+        " Promoting or dismissing one here updates the Vital Checklist the same way acting on it there would."));
       main.appendChild(panel);
       if (!targets.length) {
         panel.appendChild(el("p", "notice", "No near-misses right now."));
