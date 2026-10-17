@@ -23,6 +23,76 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — Richard sent a THIRD round (date_index/vital_doc_provenance) plus a brand-new `corpus_dates.json` — investigated, NOT installed, user asked to be consulted first
+
+**Not yet installed — sitting in Downloads.** `/Users/claudeai/Downloads/date_index (3).json`,
+`vital_doc_provenance (3).json`, and `corpus_dates.json` (no numbered suffix — never seen before,
+not a refresh of anything already installed). The user explicitly asked for a report before any
+install this time (unlike the `(2)` round, which got installed the same session it was found) —
+**do not install without asking first**, even though `date_index (3)`/`vital_doc_provenance (3)`
+look as safe as the `(2)` round did.
+
+**`date_index (3).json` vs. what's installed — checked by diff, not assumed:** `items`,
+`operative_views`, `account_views`, `tier`, `counts`, `case_id`, `schema_version`, `step` are
+byte-identical to what's already in the case. Only `near_misses` changed, and only its DATES, not
+its population — still 832 paths / 1366 targets, same as installed. What changed: `with_date_used`
+rose 627→712, and a NEW basis appears for the first time, `pdf_created_no_later_than` (210
+occurrences in `target.date_used.basis` — the raw per-candidate label is `"pdf_created"`, the
+resolved basis adds the `_no_later_than` suffix, same convention `email_sent_no_later_than`
+already uses). Richard's extractor now also reads a PDF's embedded creation-date metadata as a
+date candidate, where before it only read in-text mentions and email-sent dates. **This basis value
+is undocumented** — not in `docs/date_index_contract.md`, not handled anywhere in
+`report_assets/family/family.js`'s basis-label code (grepped both, zero hits) — but it's harmless
+today because `near_misses` still isn't read by any code in this repo (same caveat the `(2)` round
+left standing). Whoever eventually builds against `near_misses` needs to add this basis to the
+contract doc and the front-end's basis-label table, not just the already-documented
+`email_sent_no_later_than`.
+
+**`vital_doc_provenance (3).json`:** byte-identical to installed except `timestamp` — a pure
+refresh, same as the `(2)` round's provenance file was.
+
+**`corpus_dates.json` — genuinely new, not a refresh of anything, reads like the "date codifying
+the whole corpus" work Richard said he was starting when he sent the `(2)` round:** `step:
+"date_index"` (same stage name as the existing file) but a COMPLETELY different, much broader
+shape — this is NOT a `date_index.json` replacement. Top level: `{case_id, counts, emails, items,
+schema_version, step, timestamp}`. `items[]` is a flat list of 9,748 entries covering EVERY
+document (5,240), photo+video (4,209), audio file (104), and message chunk (195) in the
+corpus — not just vital-doc candidates. Each entry: `{file, kind, date_used: {value, precision,
+basis, confidence} | null, evidence, junk_routed?}`. Emails get their own summary block instead of
+per-item entries (31,806 items, 31,722 already dated via `email_index.json`'s existing
+`email_date_iso` field, 84 listed by path as undated) — presumably because email dating was
+already solved and didn't need re-doing.
+
+**The one design-relevant detail, checked directly rather than assumed:** of the 5,240 documents,
+509 are stub entries (`{"file":..., "kind":"document", "see":"date_index"}`) — these are the
+already-CONFIRMED VITAL documents, which this pass politely defers to the existing
+`date_index.json` rather than risking a second, possibly-conflicting date for the same file. The
+other 4,731 are genuinely NEW: 2,338 of them now have a real `date_used` (bases seen:
+`email_sent_no_later_than`, `pdf_created_no_later_than`) that NO document in this repo has ever
+had before — these are exactly the non-vital ("Nonvital", per the sidebar-reorg entry two below)
+documents that land in "No date" today. **This directly bears on the sidebar-reorg to-do's open
+question #4** (whether By-year should be Vital-only): if this file ever gets wired in, a large
+chunk of what's in "No date" today would get a real year, which changes the premise that By-year
+"only ever organizes vital documents" — read both entries together before building either one.
+
+**No code anywhere reads `corpus_dates.json`** (grepped `tools/`, `wyeast/`, `docs/`,
+`report_assets/`, `tests/` for the string — zero hits) and no contract doc exists for its shape,
+same gap `near_misses` already has. This is new capability, not a bug fix — needs real scoping
+(which sections would use it — Documents' By-year first, almost certainly, but also potentially
+Photos/Videos/Recordings/Messages, none of which show dates at all today) before anyone builds
+against it, the same way `date_index_contract.md` got written before `operative_views`/
+`account_views` were consumed. Consider asking Richard for one.
+
+**Blocked:** on the user — they asked to be consulted before installing anything from this round,
+unlike the `(2)` round.
+
+**Next action:** ask the user whether to install `date_index (3).json` /
+`vital_doc_provenance (3).json` now (low-risk, same backup-first pattern as before) and whether/
+when to start scoping `corpus_dates.json` as a real feature — it's a bigger decision than a file
+swap, not something to default into.
+
+---
+
 ### 2026-10-17, newest — TO DO (not started): sidebar reorganization — Near-misses promoted to its own section, two renames, By-year scoped to Vital only
 
 **The user's own request, stepping away before it could be scoped further — read it fresh rather
