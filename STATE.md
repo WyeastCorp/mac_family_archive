@@ -23,6 +23,37 @@ lsof -nP -iTCP:7766 -sTCP:LISTEN                # is an archive already running,
 
 ---
 
+### 2026-10-17, newest — Markland is wondering about a feature: showing a document's source email
+
+While looking at an ordinary (non-vital) Legal-category document whose filename carried the
+`msgNNNNN_` import prefix — the marker the pipeline stamps on a file pulled out of an email, to
+keep two different messages' attachments from colliding on the same basename — Markland asked
+whether the archive could surface that connection on the document itself, the way it already does
+for Vital Documents. Not filed as a bug; recorded here as a feature Markland raised and wants
+scoped, not yet sized or built.
+
+**Current state, read from the code, not assumed:** `document_rows()` in `tools/_archive_data.py`
+(the Documents list and its Detail card) carries no source-email field at all for ordinary
+documents — it's not hidden by the front end, the server never computes it for anything but a
+confirmed Vital Document. The only place a document today links back to its source email is the
+Vital checklist (`vital_docs_data()` / `vital_source_email()`), and only after that document is
+confirmed vital. The reverse direction already exists for email — an email's attachment chip can
+link forward to its delivered document (`delivered_basename_index()`) — there's just no index
+built the other way (attachment → source email) for ordinary documents.
+
+**What it would take:** invert that lookup and feed it into `document_rows()` or the Detail card's
+data path. The real work isn't the lookup — it's `wyeast/core/audience.py`'s family/examiner
+split: some source emails are deliberately screened out of what family can see, so a reverse link
+has to pass the same audience gate the Vital checklist's thread-linking already does
+(`_vital_thread_links`, scoped to the caller's own audience index) before showing a family member
+anything. Skipping that check to ship this faster would be the actual bug.
+
+(Deliberately not naming the specific document or quoting its filename here — see CLAUDE.md's
+rule against pasting real case material into the repo. The `msgNNNNN_` prefix pattern is
+reproducible on any email-sourced file in any case, no case-specific detail needed to act on this.)
+
+---
+
 ### 2026-10-17, newest — to-do #2 built: a dedicated, grouped Near-misses view
 
 **Branch:** `claude/dedicated-near-miss-view-2026-10-17` (not yet merged — check `gh pr list
